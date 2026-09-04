@@ -1,0 +1,35 @@
+{% extends 'base.html' %}
+{% block title %}Dashboard | SkillSikka{% endblock %}
+{% block content %}
+<div class="app-shell">
+    <aside class="sidebar">
+        <div class="brand"><span class="brand-mark small">SS</span><strong>SkillSikka</strong></div>
+        <p class="sidebar-label">Workspace</p>
+        <nav>
+            <a class="nav-item active" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
+            <a class="nav-item" href="#users"><span>◎</span> Users</a>
+            <a class="nav-item" href="#reviews"><span>◇</span> Verification queue</a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="avatar">{{ request.user.name|slice:':1'|upper }}</div>
+            <div><strong>{{ request.user.name }}</strong><small>{{ request.user.role.name|default:'Administrator' }}</small></div>
+            <a class="logout" href="{% url 'logout' %}" aria-label="Log out">↗</a>
+        </div>
+    </aside>
+    <main class="dashboard-main">
+        <header class="topbar"><div><p class="eyebrow">Thursday, September 4, 2026</p><h1>Good morning, {{ request.user.name|cut:' '|truncatewords:1 }}</h1></div><div class="top-actions"><span class="status-dot">All systems operational</span><button class="icon-button" aria-label="Notifications">♢</button></div></header>
+        {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
+        <section class="stats-grid">
+            <article class="stat-card accent-teal"><span class="stat-icon">◎</span><p>Total users</p><strong>{{ stats.total_users }}</strong><small>Across all roles</small></article>
+            <article class="stat-card accent-amber"><span class="stat-icon">◇</span><p>Pending reviews</p><strong>{{ stats.pending_reviews }}</strong><small>Need your attention</small></article>
+            <article class="stat-card accent-blue"><span class="stat-icon">↗</span><p>Active accounts</p><strong>{{ stats.active_users }}</strong><small>Currently enabled</small></article>
+        </section>
+        <section class="content-section" id="users">
+            <div class="section-heading"><div><p class="eyebrow">People directory</p><h2>Recent users</h2></div><button class="outline-button">Export list <span>↓</span></button></div>
+            <div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Verification</th><th>Joined</th><th>Status</th></tr></thead><tbody>
+                {% for user in users %}<tr><td><div class="person"><span class="table-avatar">{{ user.name|slice:':1'|upper }}</span><span><strong>{{ user.name }}</strong><small>{{ user.email }}</small></span></div></td><td>{{ user.role.name|default:'Unassigned'|title }}</td><td><span class="pill {{ user.verification_status }}">{{ user.get_verification_status_display }}</span></td><td>{{ user.created_at|date:'M d, Y' }}</td><td><span class="active-label"><i></i>{% if user.is_active %}Active{% else %}Inactive{% endif %}</span></td></tr>{% empty %}<tr><td colspan="5" class="empty-state">No users yet. Your directory will appear here.</td></tr>{% endfor %}
+            </tbody></table></div>
+        </section>
+    </main>
+</div>
+{% endblock %}
