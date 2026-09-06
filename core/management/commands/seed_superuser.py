@@ -3,11 +3,11 @@ from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
 from getpass import getpass
 
-from core.models import User
+from core.models import Role, User
 
 
 class Command(BaseCommand):
-    help = 'Create or update the dashboard superuser in the core_user table.'
+    help = 'Create or update the dashboard superuser in the users table.'
 
     def add_arguments(self, parser):
         parser.add_argument('--email', required=True)
@@ -28,6 +28,7 @@ class Command(BaseCommand):
         user = User.objects.filter(email=email).first()
         if user:
             user.name = options['name']
+            user.role = Role.objects.get(name='super_admin')
             user.set_password(password)
             user.is_active = True
             user.is_staff = True

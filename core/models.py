@@ -9,6 +9,9 @@ class Role(models.Model):
 	name = models.CharField(max_length=40, unique=True)
 	description = models.TextField(blank=True)
 
+	class Meta:
+		db_table = 'roles'
+
 	def __str__(self):
 		return self.name
 
@@ -16,6 +19,9 @@ class Role(models.Model):
 class Permission(models.Model):
 	name = models.CharField(max_length=80, unique=True)
 	description = models.TextField(blank=True)
+
+	class Meta:
+		db_table = 'permissions'
 
 	def __str__(self):
 		return self.name
@@ -26,6 +32,7 @@ class RolePermission(models.Model):
 	permission = models.ForeignKey(Permission, on_delete=models.CASCADE, related_name='role_permissions')
 
 	class Meta:
+		db_table = 'rolepermissions'
 		constraints = [
 			models.UniqueConstraint(fields=['role', 'permission'], name='unique_role_permission'),
 		]
@@ -84,6 +91,9 @@ class User(AbstractBaseUser, PermissionsMixin):
 	objects = UserManager()
 	USERNAME_FIELD = 'email'
 	REQUIRED_FIELDS = ['name']
+
+	class Meta:
+		db_table = 'users'
 
 	def __str__(self):
 		return self.name or self.email
