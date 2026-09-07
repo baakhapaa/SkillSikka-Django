@@ -1,0 +1,79 @@
+{% extends 'base.html' %}
+{% block title %}Locations & grades | SkillSikka{% endblock %}
+{% block content %}
+<style>
+.page-intro{color:var(--muted);max-width:620px;margin-bottom:28px}.management-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}.management-card{background:var(--white);border:1px solid var(--line);padding:24px;border-radius:4px;box-shadow:var(--shadow)}.management-card h2{margin-bottom:0}.count-label{color:var(--muted);font-size:13px}.management-card .form-stack{margin:18px 0 24px}.form-stack select{width:100%;padding:15px 16px;border:1px solid #d7e1df;border-radius:3px;background:var(--white);font:inherit;color:var(--ink)}.form-error{color:#b64b45;font-size:12px}.record-list{border-top:1px solid var(--line);list-style:none;margin:0;padding:8px 0 0}.record-list li{display:flex;justify-content:space-between;gap:16px;padding:10px 0;border-bottom:1px solid var(--line);font-size:14px}.record-list small{color:var(--muted)}@media (max-width:800px){.management-grid{grid-template-columns:1fr}}
+</style>
+<div class="app-shell">
+    <aside class="sidebar">
+        <div class="brand"><span class="brand-mark small">SS</span><strong>SkillSikka</strong></div>
+        <p class="sidebar-label">Workspace</p>
+        <nav>
+            <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
+            <a class="nav-item active" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="avatar">{{ request.user.name|slice:':1'|upper }}</div>
+            <div><strong>{{ request.user.name }}</strong><small>{{ request.user.role.name|default:'Administrator' }}</small></div>
+            <a class="logout" href="{% url 'logout' %}" aria-label="Log out">↗</a>
+        </div>
+    </aside>
+    <main class="dashboard-main">
+        <header class="topbar"><div><p class="eyebrow">Directory settings</p><h1>Locations & grades</h1></div><div class="top-actions"><a class="outline-button" href="{% url 'dashboard' %}">Back to overview</a></div></header>
+        {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
+        <p class="page-intro">Build your directory in order: add a province, its districts, municipalities, then schools. Grades are shared across all schools.</p>
+        <section class="management-grid">
+            <article class="management-card">
+                <div class="section-heading"><div><p class="eyebrow">01</p><h2>Province</h2></div><span class="count-label">{{ provinces|length }} total</span></div>
+                <form method="post" class="form-stack">
+                    {% csrf_token %}<input type="hidden" name="form_type" value="province">
+                    {% for field in forms.province %}<label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% for error in field.errors %}<small class="form-error">{{ error }}</small>{% endfor %}{% endfor %}
+                    {% for error in forms.province.non_field_errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                    <button class="primary-button" type="submit">Add province</button>
+                </form>
+                <ul class="record-list">{% for province in provinces %}<li>{{ province.name }}</li>{% empty %}<li class="empty-state">No provinces yet.</li>{% endfor %}</ul>
+            </article>
+            <article class="management-card">
+                <div class="section-heading"><div><p class="eyebrow">02</p><h2>District</h2></div><span class="count-label">{{ districts|length }} total</span></div>
+                <form method="post" class="form-stack">
+                    {% csrf_token %}<input type="hidden" name="form_type" value="district">
+                    {% for field in forms.district %}<label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% for error in field.errors %}<small class="form-error">{{ error }}</small>{% endfor %}{% endfor %}
+                    {% for error in forms.district.non_field_errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                    <button class="primary-button" type="submit">Add district</button>
+                </form>
+                <ul class="record-list">{% for district in districts %}<li><span>{{ district.name }}</span><small>{{ district.province.name }}</small></li>{% empty %}<li class="empty-state">No districts yet.</li>{% endfor %}</ul>
+            </article>
+            <article class="management-card">
+                <div class="section-heading"><div><p class="eyebrow">03</p><h2>Municipality</h2></div><span class="count-label">{{ municipalities|length }} total</span></div>
+                <form method="post" class="form-stack">
+                    {% csrf_token %}<input type="hidden" name="form_type" value="municipality">
+                    {% for field in forms.municipality %}<label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% for error in field.errors %}<small class="form-error">{{ error }}</small>{% endfor %}{% endfor %}
+                    {% for error in forms.municipality.non_field_errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                    <button class="primary-button" type="submit">Add municipality</button>
+                </form>
+                <ul class="record-list">{% for municipality in municipalities %}<li><span>{{ municipality.name }}</span><small>{{ municipality.district.name }}</small></li>{% empty %}<li class="empty-state">No municipalities yet.</li>{% endfor %}</ul>
+            </article>
+            <article class="management-card management-card-wide">
+                <div class="section-heading"><div><p class="eyebrow">04</p><h2>School</h2></div><span class="count-label">{{ schools|length }} total</span></div>
+                <form method="post" class="form-stack">
+                    {% csrf_token %}<input type="hidden" name="form_type" value="school">
+                    {% for field in forms.school %}<label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% for error in field.errors %}<small class="form-error">{{ error }}</small>{% endfor %}{% endfor %}
+                    {% for error in forms.school.non_field_errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                    <button class="primary-button" type="submit">Add school</button>
+                </form>
+                <ul class="record-list">{% for school in schools %}<li><span>{{ school.name }} <small>{{ school.get_sector_display }}</small></span><small>{{ school.municipality.name }}</small></li>{% empty %}<li class="empty-state">No schools yet.</li>{% endfor %}</ul>
+            </article>
+            <article class="management-card">
+                <div class="section-heading"><div><p class="eyebrow">05</p><h2>Grade</h2></div><span class="count-label">{{ grades|length }} total</span></div>
+                <form method="post" class="form-stack">
+                    {% csrf_token %}<input type="hidden" name="form_type" value="grade">
+                    {% for field in forms.grade %}<label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% for error in field.errors %}<small class="form-error">{{ error }}</small>{% endfor %}{% endfor %}
+                    {% for error in forms.grade.non_field_errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                    <button class="primary-button" type="submit">Add grade</button>
+                </form>
+                <ul class="record-list">{% for grade in grades %}<li>{{ grade.name }}</li>{% empty %}<li class="empty-state">No grades yet.</li>{% endfor %}</ul>
+            </article>
+        </section>
+    </main>
+</div>
+{% endblock %}

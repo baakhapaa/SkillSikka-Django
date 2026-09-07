@@ -9,6 +9,7 @@
             <a class="nav-item active" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
             <a class="nav-item" href="#users"><span>◎</span> Users</a>
             <a class="nav-item" href="#reviews"><span>◇</span> Verification queue</a>
+            {% if request.user.is_superuser or request.user.role.name == 'super_admin' %}<a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>{% endif %}
         </nav>
         <div class="sidebar-footer">
             <div class="avatar">{{ request.user.name|slice:':1'|upper }}</div>

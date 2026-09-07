@@ -3,7 +3,8 @@ from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import redirect, render
 
-from .models import User
+from .forms import DistrictForm, GradeForm, MunicipalityForm, ProvinceForm, SchoolForm
+from .models import District, Grade, Municipality, Province, School, User
 
 
 def login_view(request):
@@ -33,7 +34,43 @@ def dashboard(request):
 		'pending_reviews': users.filter(verification_status='pending').count(),
 		'active_users': users.filter(is_active=True).count(),
 	}
-	return render(request, 'dashboard.html', {'users': users[:8], 'stats': stats})
+	return render(request, 'admin/dashboard.html', {'users': users[:8], 'stats': stats})
+
+
+@login_required
+def manage_geography(request):
+	if not (request.user.is_superuser or getattr(request.user.role, 'name', '') == 'super_admin'):
+		messages.error(request, 'You do not have permission to manage locations and grades.')
+		return redirect('dashboard')
+
+	forms = {
+		'province': ProvinceForm(prefix='province'),
+		'district': DistrictForm(prefix='district'),
+		'municipality': MunicipalityForm(prefix='municipality'),
+		'grade': GradeForm(prefix='grade'),
+		'school': SchoolForm(prefix='school'),
+	}
+	if request.method == 'POST':
+		form_type = request.POST.get('form_type')
+		form = forms.get(form_type)
+		if form is None:
+			messages.error(request, 'Choose a valid record type.')
+		else:
+			form = form.__class__(request.POST, prefix=form_type)
+			forms[form_type] = form
+			if form.is_valid():
+				record = form.save()
+				messages.success(request, f'{record.__class__.__name__} "{record.name}" added successfully.')
+				return redirect('manage_geography')
+
+	return render(request, 'admin/geography.html', {
+		'forms': forms,
+		'provinces': Province.objects.order_by('name'),
+		'districts': District.objects.select_related('province').order_by('province__name', 'name'),
+		'municipalities': Municipality.objects.select_related('district__province').order_by('district__province__name', 'district__name', 'name'),
+		'grades': Grade.objects.order_by('name'),
+		'schools': School.objects.select_related('municipality__district__province').order_by('name'),
+	})
 
 
 def logout_view(request):

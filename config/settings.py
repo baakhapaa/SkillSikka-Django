@@ -84,7 +84,7 @@ if config('DB_ENGINE', default='sqlite') == 'mysql':
             'USER': config('DB_USER', default='root'),
             'PASSWORD': config('DB_PASSWORD', default='root'),
             'HOST': config('DB_HOST', default='127.0.0.1'),
-            'PORT': config('DB_PORT', default='3306'),
+            'PORT': config('DB_PORT', default='3307'),
         }
     }
 else:
@@ -134,6 +134,8 @@ STATIC_URL = 'static/'
 STATICFILES_DIRS = [
     BASE_DIR / 'static',
 ]
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field

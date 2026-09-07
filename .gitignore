@@ -12,3 +12,4 @@ media/
 staticfiles/
 .pytest_cache/
 .coverage
+plan.md
