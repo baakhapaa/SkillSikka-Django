@@ -31,7 +31,6 @@ ALLOWED_HOSTS = config(
 # Application definition
 
 INSTALLED_APPS = [
-    'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
@@ -61,7 +60,7 @@ ROOT_URLCONF = 'config.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [BASE_DIR / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -86,7 +85,7 @@ if config('DB_ENGINE', default='sqlite') == 'mysql':
             'ENGINE': 'django.db.backends.mysql',
             'NAME': config('DB_NAME', default='skillsikka'),
             'USER': config('DB_USER', default='root'),
-            'PASSWORD': config('DB_PASSWORD', default=''),
+            'PASSWORD': config('DB_PASSWORD', default='root'),
             'HOST': config('DB_HOST', default='127.0.0.1'),
             'PORT': config('DB_PORT', default='3306'),
         }
@@ -158,6 +157,11 @@ else:
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+AUTH_USER_MODEL = 'core.User'
+LOGIN_URL = '/login'
+LOGIN_REDIRECT_URL = '/'
+LOGOUT_REDIRECT_URL = '/login'
 
 
 # Django REST Framework / JWT / OpenAPI schema
