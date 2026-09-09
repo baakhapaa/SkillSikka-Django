@@ -11,7 +11,9 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 from pathlib import Path
-from decouple import config, Csv
+
+from decouple import Csv, config
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -19,13 +21,22 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = config(
-    'SECRET_KEY', default='django-insecure-8qtkd&ixe31xqfku2%mfq0_u55ny=o#9cupcr#ks4!bm2grt56')
+    'SECRET_KEY',
+    default='django-insecure-8qtkd&ixe31xqfku2%mfq0_u55ny=o#9cupcr#ks4!bm2grt56'
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = config('DEBUG', default=True, cast=bool)
+DEBUG = config(
+    'DEBUG',
+    default=True,
+    cast=bool
+)
 
 ALLOWED_HOSTS = config(
-    'ALLOWED_HOSTS', default='localhost,127.0.0.1', cast=Csv())
+    'ALLOWED_HOSTS',
+    default='localhost,127.0.0.1',
+    cast=Csv()
+)
 
 
 # Application definition
@@ -36,12 +47,16 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+
     'rest_framework',
     'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
     'drf_spectacular',
     'corsheaders',
+
     'core',
 ]
+
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -55,7 +70,9 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
+
 ROOT_URLCONF = 'config.urls'
+
 
 TEMPLATES = [
     {
@@ -72,22 +89,38 @@ TEMPLATES = [
     },
 ]
 
+
 WSGI_APPLICATION = 'config.wsgi.application'
 
 
 # Database
-# https://docs.djangoproject.com/en/5.2/ref/settings/#databases
-# Defaults to sqlite for zero-config local dev; set DB_ENGINE=mysql in .env to use MySQL.
+# Defaults to SQLite for local development.
+# Set DB_ENGINE=mysql in .env to use MySQL.
 
 if config('DB_ENGINE', default='sqlite') == 'mysql':
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.mysql',
-            'NAME': config('DB_NAME', default='skillsikka'),
-            'USER': config('DB_USER', default='root'),
-            'PASSWORD': config('DB_PASSWORD', default='root'),
-            'HOST': config('DB_HOST', default='127.0.0.1'),
-            'PORT': config('DB_PORT', default='3307'),
+            'NAME': config(
+                'DB_NAME',
+                default='skillsikka'
+            ),
+            'USER': config(
+                'DB_USER',
+                default='root'
+            ),
+            'PASSWORD': config(
+                'DB_PASSWORD',
+                default='root'
+            ),
+            'HOST': config(
+                'DB_HOST',
+                default='127.0.0.1'
+            ),
+            'PORT': config(
+                'DB_PORT',
+                default='3307'
+            ),
         }
     }
 else:
@@ -100,26 +133,36 @@ else:
 
 
 # Password validation
-# https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
 
 AUTH_PASSWORD_VALIDATORS = [
     {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
+        'NAME': (
+            'django.contrib.auth.password_validation.'
+            'UserAttributeSimilarityValidator'
+        ),
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        'NAME': (
+            'django.contrib.auth.password_validation.'
+            'MinimumLengthValidator'
+        ),
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
+        'NAME': (
+            'django.contrib.auth.password_validation.'
+            'CommonPasswordValidator'
+        ),
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+        'NAME': (
+            'django.contrib.auth.password_validation.'
+            'NumericPasswordValidator'
+        ),
     },
 ]
 
 
 # Internationalization
-# https://docs.djangoproject.com/en/5.2/topics/i18n/
 
 LANGUAGE_CODE = 'en-us'
 
@@ -130,48 +173,74 @@ USE_I18N = True
 USE_TZ = True
 
 
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/5.2/howto/static-files/
+# Static files
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+
 STORAGES = {
     'staticfiles': {
-        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+        'BACKEND': (
+            'whitenoise.storage.'
+            'CompressedManifestStaticFilesStorage'
+        ),
     },
 }
+
 
 if config('USE_S3', default=False, cast=bool):
     AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID')
     AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY')
     AWS_STORAGE_BUCKET_NAME = config('AWS_STORAGE_BUCKET_NAME')
-    AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='ap-south-1')
+
+    AWS_S3_REGION_NAME = config(
+        'AWS_S3_REGION_NAME',
+        default='ap-south-1'
+    )
+
     AWS_DEFAULT_ACL = None
     AWS_S3_FILE_OVERWRITE = False
-    STORAGES['default'] = {'BACKEND': 'storages.backends.s3.S3Storage'}
+
+    STORAGES['default'] = {
+        'BACKEND': 'storages.backends.s3.S3Storage'
+    }
+
 else:
     MEDIA_URL = 'media/'
     MEDIA_ROOT = BASE_DIR / 'media'
 
+
 # Default primary key field type
-# https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+
+# Custom User Model
+
 AUTH_USER_MODEL = 'core.User'
+
+
+# Django web authentication redirects
+
 LOGIN_URL = '/login'
 LOGIN_REDIRECT_URL = '/'
 LOGOUT_REDIRECT_URL = '/login'
 
 
-# Django REST Framework / JWT / OpenAPI schema
+# Django REST Framework / JWT
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
-    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    'DEFAULT_SCHEMA_CLASS': (
+        'drf_spectacular.openapi.AutoSchema'
+    ),
 }
+
+
+# OpenAPI / Swagger schema
 
 SPECTACULAR_SETTINGS = {
     'TITLE': 'SkillSikka API',
@@ -179,14 +248,49 @@ SPECTACULAR_SETTINGS = {
     'VERSION': 'v1',
 }
 
-CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='', cast=Csv())
-CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', default='', cast=Csv())
 
-ENABLE_HTTPS = config('ENABLE_HTTPS', default=False, cast=bool)
+# CORS / CSRF
+
+CORS_ALLOWED_ORIGINS = config(
+    'CORS_ALLOWED_ORIGINS',
+    default='',
+    cast=Csv()
+)
+
+CSRF_TRUSTED_ORIGINS = config(
+    'CSRF_TRUSTED_ORIGINS',
+    default='',
+    cast=Csv()
+)
+
+
+# HTTPS / Production security
+
+ENABLE_HTTPS = config(
+    'ENABLE_HTTPS',
+    default=False,
+    cast=bool
+)
 
 if not DEBUG and ENABLE_HTTPS:
-    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_PROXY_SSL_HEADER = (
+        'HTTP_X_FORWARDED_PROTO',
+        'https'
+    )
+
     SECURE_SSL_REDIRECT = True
     SECURE_HSTS_SECONDS = 31536000
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
+
+
+# Email
+# Development:
+# Password-reset OTP emails are printed in the Django terminal.
+# Replace with SMTP configuration for production.
+
+EMAIL_BACKEND = (
+    'django.core.mail.backends.console.EmailBackend'
+)
+
+DEFAULT_FROM_EMAIL = 'noreply@skillsikka.com'
