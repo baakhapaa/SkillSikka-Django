@@ -10,6 +10,7 @@ from .serializers import (
 	DistrictSerializer,
 	GradeSerializer,
 	InstructorRegistrationSerializer,
+	LoginSerializer,
 	MunicipalitySerializer,
 	ProvinceSerializer,
 	SchoolSerializer,
@@ -51,6 +52,28 @@ class InstructorRegistrationAPIView(RegistrationResponseMixin, APIView):
 	serializer_class = InstructorRegistrationSerializer
 	role_name = 'instructor'
 	parser_classes = [JSONParser, FormParser, MultiPartParser]
+
+class LoginAPIView(APIView):
+	def post(self, request):
+		serializer = LoginSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+
+		user = serializer.validated_data['user']
+		refresh = RefreshToken.for_user(user)
+
+		return Response({
+			'user': {
+				'id': str(user.id),
+				'email': user.email,
+				'name': user.name,
+				'role': user.role.name if user.role else None,
+				'verification_status': user.verification_status,
+			},
+			'tokens': {
+				'refresh': str(refresh),
+				'access': str(refresh.access_token),
+			},
+		}, status=status.HTTP_200_OK)
 
 
 class RoleListAPIView(APIView):

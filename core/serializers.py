@@ -174,7 +174,12 @@ class InstructorRegistrationSerializer(RegistrationSerializer):
 		qualification = validated_data.pop('qualification')
 		subject_expertise = validated_data.pop('subject_expertise')
 		experience_years = validated_data.pop('experience_years')
-		user, province, district, municipality, school = self._create_user(validated_data, 'instructor')
+
+		user, province, district, municipality, school = self._create_user(
+			validated_data,
+			'instructor'
+		)
+
 		InstructorProfile.objects.create(
 			user=user,
 			province=province,
@@ -185,19 +190,59 @@ class InstructorRegistrationSerializer(RegistrationSerializer):
 			subject_expertise=subject_expertise,
 			experience_years=experience_years,
 		)
+
 		if cv_resume:
 			VerificationDocument.objects.create(
 				user=user,
 				document_type='cv_resume',
-				file_url=self._save_upload(cv_resume, 'verification-documents', user.pk),
+				file_url=self._save_upload(
+					cv_resume,
+					'verification-documents',
+					user.pk
+				),
 			)
+
 		for uploaded_file in documents:
 			VerificationDocument.objects.create(
 				user=user,
 				document_type='certificate',
-				file_url=self._save_upload(uploaded_file, 'verification-documents', user.pk),
+				file_url=self._save_upload(
+					uploaded_file,
+					'verification-documents',
+					user.pk
+				),
 			)
+
 		return user
+
+
+class LoginSerializer(serializers.Serializer):
+	email = serializers.EmailField()
+	password = serializers.CharField(write_only=True)
+
+	def validate(self, attrs):
+		email = attrs.get('email')
+		password = attrs.get('password')
+
+		try:
+			user = User.objects.get(email__iexact=email)
+		except User.DoesNotExist:
+			raise serializers.ValidationError({
+				'detail': 'Invalid email or password.'
+			})
+
+		if not user.check_password(password):
+			raise serializers.ValidationError({
+				'detail': 'Invalid email or password.'
+			})
+
+		if not user.is_active:
+			raise serializers.ValidationError({
+				'detail': 'This account is inactive.'
+			})
+
+		attrs['user'] = user
+		return attrs
 
 
 def user_role(role_name):
