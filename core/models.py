@@ -231,3 +231,95 @@ class InstructorProfile(models.Model):
 
 	class Meta:
 		db_table = 'instructor_profiles'
+
+
+class Subject(models.Model):
+	name = models.CharField(max_length=150, unique=True)
+
+	class Meta:
+		db_table = 'subjects'
+
+	def __str__(self):
+		return self.name
+
+
+class Chapter(models.Model):
+	subject = models.ForeignKey(Subject, on_delete=models.CASCADE, related_name='chapters')
+	grade = models.ForeignKey(Grade, on_delete=models.CASCADE, related_name='chapters')
+	name = models.CharField(max_length=200)
+	order = models.PositiveSmallIntegerField(default=0)
+
+	class Meta:
+		db_table = 'chapters'
+		constraints = [
+			models.UniqueConstraint(fields=['subject', 'grade', 'name'], name='unique_chapter_per_subject_grade'),
+		]
+		ordering = ['order']
+
+	def __str__(self):
+		return self.name
+
+
+class Course(models.Model):
+	COURSE_TYPE_CHOICES = (
+		('academic', 'Academic'),
+		('skill', 'Skill Development'),
+	)
+
+	title = models.CharField(max_length=200)
+	description = models.TextField(blank=True)
+	instructor = models.ForeignKey(User, on_delete=models.PROTECT, related_name='courses')
+	course_type = models.CharField(max_length=10, choices=COURSE_TYPE_CHOICES)
+	subject = models.ForeignKey(Subject, on_delete=models.PROTECT, null=True, blank=True, related_name='courses')
+	grade = models.ForeignKey(Grade, on_delete=models.PROTECT, null=True, blank=True, related_name='courses')
+	is_paid = models.BooleanField(default=False)
+	price = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+	thumbnail_url = models.URLField(blank=True)
+	is_published = models.BooleanField(default=False)
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'courses'
+
+	def __str__(self):
+		return self.title
+
+
+class Topic(models.Model):
+	chapter = models.ForeignKey(Chapter, on_delete=models.CASCADE, related_name='topics')
+	name = models.CharField(max_length=200)
+	order = models.PositiveSmallIntegerField(default=0)
+
+	class Meta:
+		db_table = 'topics'
+		ordering = ['order']
+
+	def __str__(self):
+		return self.name
+
+
+class Lesson(models.Model):
+	CONTENT_TYPE_CHOICES = (
+		('video', 'Video'),
+		('pdf', 'PDF'),
+		('ebook', 'Ebook'),
+		('text', 'Text'),
+	)
+
+	topic = models.ForeignKey(Topic, on_delete=models.CASCADE, null=True, blank=True, related_name='lessons')
+	course = models.ForeignKey(Course, on_delete=models.CASCADE, null=True, blank=True, related_name='lessons')
+
+	title = models.CharField(max_length=200)
+	content_type = models.CharField(max_length=10, choices=CONTENT_TYPE_CHOICES)
+	content_url = models.URLField(blank=True)
+	content_text = models.TextField(blank=True)
+	order = models.PositiveSmallIntegerField(default=0)
+	created_at = models.DateTimeField(auto_now_add=True)
+
+	class Meta:
+		db_table = 'lessons'
+		ordering = ['order']
+
+	def __str__(self):
+		return self.title

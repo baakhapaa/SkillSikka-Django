@@ -2,9 +2,10 @@ from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import redirect, render
+from django.utils import timezone
 
 from .forms import DistrictForm, GradeForm, MunicipalityForm, ProvinceForm, SchoolForm
-from .models import District, Grade, Municipality, Province, School, User
+from .models import District, Grade, Municipality, Province, School, User, VerificationDocument
 
 
 def login_view(request):
@@ -71,6 +72,56 @@ def manage_geography(request):
 		'grades': Grade.objects.order_by('name'),
 		'schools': School.objects.select_related('municipality__district__province').order_by('name'),
 	})
+
+
+def is_admin(user):
+	return user.is_superuser or getattr(user.role, 'name', '') == 'super_admin'
+
+
+@login_required
+def verification_queue(request):
+	if not is_admin(request.user):
+		messages.error(request, 'You do not have permission to review verifications.')
+		return redirect('dashboard')
+
+	pending_users = User.objects.filter(
+		verification_status='pending',
+	).select_related('role').prefetch_related(
+		'verification_documents', 'student_profile', 'instructor_profile',
+	).order_by('created_at')
+
+	return render(request, 'admin/verifications.html', {'pending_users': pending_users})
+
+
+@login_required
+def review_verification(request, user_id):
+	if not is_admin(request.user):
+		messages.error(request, 'You do not have permission to review verifications.')
+		return redirect('dashboard')
+
+	user = User.objects.filter(pk=user_id).first()
+	if user is None:
+		messages.error(request, 'User not found.')
+		return redirect('verification_queue')
+
+	if request.method == 'POST':
+		action = request.POST.get('action')
+		if action == 'approve':
+			user.verification_status = 'verified'
+			user.verified_by = request.user
+			user.verified_at = timezone.now()
+			user.save(update_fields=['verification_status', 'verified_by', 'verified_at'])
+			messages.success(request, f'{user.name} has been verified.')
+		elif action == 'reject':
+			user.verification_status = 'rejected'
+			user.verified_by = request.user
+			user.verified_at = timezone.now()
+			user.save(update_fields=['verification_status', 'verified_by', 'verified_at'])
+			messages.warning(request, f'{user.name} has been rejected.')
+		else:
+			messages.error(request, 'Invalid action.')
+
+	return redirect('verification_queue')
 
 
 def logout_view(request):

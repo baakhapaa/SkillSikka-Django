@@ -150,8 +150,12 @@ if config('USE_S3', default=False, cast=bool):
     AWS_S3_FILE_OVERWRITE = False
     STORAGES['default'] = {'BACKEND': 'storages.backends.s3.S3Storage'}
 else:
+
     MEDIA_URL = 'media/'
     MEDIA_ROOT = BASE_DIR / 'media'
+    STORAGES['default'] = {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    }
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
