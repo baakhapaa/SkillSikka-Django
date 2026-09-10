@@ -13,9 +13,13 @@ from django.utils.text import slugify
 from rest_framework import serializers
 
 from .models import (
+	Course,
 	District,
+	Enrollment,
 	Grade,
 	InstructorProfile,
+	Lesson,
+	LessonProgress,
 	Municipality,
 	PasswordResetOTP,
 	Province,
@@ -524,3 +528,69 @@ class ResetPasswordSerializer(serializers.Serializer):
 def user_role(role_name):
 	from .models import Role
 	return Role.objects.get(name=role_name)
+
+
+class EnrollmentSerializer(serializers.ModelSerializer):
+	course_title = serializers.CharField(source='course.title', read_only=True)
+	course_thumbnail_url = serializers.CharField(source='course.thumbnail_url', read_only=True)
+
+	class Meta:
+		model = Enrollment
+		fields = [
+			'id', 'course', 'course_title', 'course_thumbnail_url',
+			'status', 'amount_paid', 'payment_reference',
+			'enrolled_at', 'completed_at',
+		]
+		read_only_fields = ['id', 'status', 'enrolled_at', 'completed_at']
+
+
+class EnrollCourseSerializer(serializers.Serializer):
+	def validate(self, attrs):
+		course = self.context['course']
+		student = self.context['request'].user
+
+		if course.course_type != 'skill':
+			raise serializers.ValidationError({
+				'detail': 'Only skill development courses require enrollment.'
+			})
+
+		if not course.is_published:
+			raise serializers.ValidationError({
+				'detail': 'This course is not available for enrollment.'
+			})
+
+		if Enrollment.objects.filter(student=student, course=course).exists():
+			raise serializers.ValidationError({
+				'detail': 'You are already enrolled in this course.'
+			})
+
+		return attrs
+
+	def create(self, validated_data):
+		course = self.context['course']
+		student = self.context['request'].user
+
+		enrollment_status = 'pending_payment' if course.is_paid else 'active'
+
+		return Enrollment.objects.create(
+			student=student,
+			course=course,
+			status=enrollment_status,
+			amount_paid=course.price if not course.is_paid else None,
+		)
+
+
+class LessonProgressSerializer(serializers.ModelSerializer):
+	lesson_title = serializers.CharField(source='lesson.title', read_only=True)
+
+	class Meta:
+		model = LessonProgress
+		fields = ['id', 'lesson', 'lesson_title', 'is_completed', 'completed_at']
+		read_only_fields = ['id', 'lesson_title', 'completed_at']
+
+class CourseProgressSerializer(serializers.Serializer):
+	course_id = serializers.IntegerField()
+	total_lessons = serializers.IntegerField()
+	completed_lessons = serializers.IntegerField()
+	progress_percentage = serializers.FloatField()
+	is_completed = serializers.BooleanField()

@@ -1,4 +1,5 @@
 from django.db.models import QuerySet
+from django.utils import timezone
 
 from rest_framework import generics, status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -11,8 +12,12 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import (
+	Course,
 	District,
+	Enrollment,
 	Grade,
+	Lesson,
+	LessonProgress,
 	Municipality,
 	Province,
 	School,
@@ -21,9 +26,12 @@ from .models import (
 
 from .serializers import (
 	DistrictSerializer,
+	EnrollCourseSerializer,
+	EnrollmentSerializer,
 	ForgotPasswordSerializer,
 	GradeSerializer,
 	InstructorRegistrationSerializer,
+	LessonProgressSerializer,
 	LoginSerializer,
 	MunicipalitySerializer,
 	ProvinceSerializer,
@@ -268,3 +276,136 @@ class SchoolListAPIView(LookupListAPIView):
 class GradeListAPIView(LookupListAPIView):
 	lookup_model = Grade
 	serializer_class = GradeSerializer
+
+
+class EnrollCourseAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def post(self, request, course_id):
+		course = Course.objects.filter(pk=course_id).first()
+		if course is None:
+			return Response({'detail': 'Course not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+		serializer = EnrollCourseSerializer(data={}, context={'course': course, 'request': request})
+		serializer.is_valid(raise_exception=True)
+		enrollment = serializer.save()
+
+		return Response(
+			EnrollmentSerializer(enrollment).data,
+			status=status.HTTP_201_CREATED,
+		)
+
+
+class MyEnrollmentsAPIView(generics.ListAPIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = EnrollmentSerializer
+
+	def get_queryset(self):
+		return Enrollment.objects.filter(
+			student=self.request.user
+		).select_related('course').order_by('-enrolled_at')
+
+
+class CompleteLessonAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def post(self, request, lesson_id):
+		lesson = Lesson.objects.filter(pk=lesson_id).select_related(
+			'course', 'topic__chapter'
+		).first()
+
+		if lesson is None:
+			return Response({'detail': 'Lesson not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+		student = request.user
+		enrollment = None
+
+		if lesson.course is not None:
+			has_access = Enrollment.objects.filter(
+				student=student,
+				course=lesson.course,
+				status__in=['active', 'completed'],
+			).exists()
+
+			if not has_access:
+				return Response(
+					{'detail': 'You must be enrolled in this course to access this lesson.'},
+					status=status.HTTP_403_FORBIDDEN,
+				)
+
+			enrollment = Enrollment.objects.filter(
+				student=student, course=lesson.course
+			).first()
+
+		elif lesson.topic is not None:
+			student_grade_id = getattr(
+				getattr(student, 'student_profile', None), 'grade_id', None
+			)
+
+			if student_grade_id != lesson.topic.chapter.grade_id:
+				return Response(
+					{'detail': 'This lesson is not part of your grade.'},
+					status=status.HTTP_403_FORBIDDEN,
+				)
+
+		else:
+			return Response(
+				{'detail': 'This lesson is not attached to any course or topic.'},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+
+		progress, _ = LessonProgress.objects.update_or_create(
+			student=student,
+			lesson=lesson,
+			defaults={
+				'enrollment': enrollment,
+				'is_completed': True,
+				'completed_at': timezone.now(),
+			},
+		)
+
+		return Response(LessonProgressSerializer(progress).data, status=status.HTTP_200_OK)
+class CourseProgressAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def get(self, request, course_id):
+		course = Course.objects.filter(pk=course_id).first()
+		if course is None:
+			return Response({'detail': 'Course not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+		student = request.user
+
+		enrollment = Enrollment.objects.filter(
+			student=student, course=course, status__in=['active', 'completed'],
+		).first()
+
+		if enrollment is None:
+			return Response(
+				{'detail': 'You must be enrolled in this course to view progress.'},
+				status=status.HTTP_403_FORBIDDEN,
+			)
+
+		total_lessons = Lesson.objects.filter(course=course).count()
+		completed_lessons = LessonProgress.objects.filter(
+			student=student, lesson__course=course, is_completed=True,
+		).count()
+
+		progress_percentage = round((completed_lessons / total_lessons) * 100, 2) if total_lessons > 0 else 0.0
+		is_completed = total_lessons > 0 and completed_lessons == total_lessons
+
+		if is_completed and enrollment.status != 'completed':
+			enrollment.status = 'completed'
+			enrollment.completed_at = timezone.now()
+			enrollment.save(update_fields=['status', 'completed_at'])
+
+		return Response({
+			'course_id': course.id,
+			'total_lessons': total_lessons,
+			'completed_lessons': completed_lessons,
+			'progress_percentage': progress_percentage,
+			'is_completed': is_completed,
+		}, status=status.HTTP_200_OK)

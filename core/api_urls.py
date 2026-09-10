@@ -3,14 +3,18 @@ from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 
 from .api_views import (
+	CompleteLessonAPIView,
+	CourseProgressAPIView,
 	CurrentUserAPIView,
 	DistrictListAPIView,
+	EnrollCourseAPIView,
 	ForgotPasswordAPIView,
 	GradeListAPIView,
 	InstructorRegistrationAPIView,
 	LoginAPIView,
 	LogoutAPIView,
 	MunicipalityListAPIView,
+	MyEnrollmentsAPIView,
 	ProvinceListAPIView,
 	ResetPasswordAPIView,
 	RoleListAPIView,
@@ -109,5 +113,29 @@ urlpatterns = [
 		'grades/',
 		GradeListAPIView.as_view(),
 		name='api-grades'
+	),
+
+	path(
+		'courses/<int:course_id>/enroll/',
+		EnrollCourseAPIView.as_view(),
+		name='api-enroll-course'
+	),
+
+	path(
+		'my-enrollments/',
+		MyEnrollmentsAPIView.as_view(),
+		name='api-my-enrollments'
+	),
+
+	path(
+		'lessons/<int:lesson_id>/complete/',
+		CompleteLessonAPIView.as_view(),
+		name='api-complete-lesson'
+	),
+
+	path(
+		'courses/<int:course_id>/progress/',
+		CourseProgressAPIView.as_view(),
+		name='api-course-progress'
 	),
 ]
