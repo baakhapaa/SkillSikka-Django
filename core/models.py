@@ -513,3 +513,46 @@ class PasswordResetOTP(models.Model):
 
 	def __str__(self):
 		return f'Password reset OTP for {self.user.email}'
+
+
+class Enrollment(models.Model):
+	STATUS_CHOICES = (
+		('pending_payment', 'Pending payment'),
+		('active', 'Active'),
+		('completed', 'Completed'),
+		('cancelled', 'Cancelled'),
+	)
+
+	student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='enrollments')
+	course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='enrollments')
+	status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
+	amount_paid = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+	payment_reference = models.CharField(max_length=200, blank=True)
+	enrolled_at = models.DateTimeField(auto_now_add=True)
+	completed_at = models.DateTimeField(null=True, blank=True)
+
+	class Meta:
+		db_table = 'enrollments'
+		constraints = [
+			models.UniqueConstraint(fields=['student', 'course'], name='unique_enrollment_per_student_course'),
+		]
+
+	def __str__(self):
+		return f'{self.student.name} - {self.course.title}'
+
+
+class LessonProgress(models.Model):
+	student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='lesson_progress')
+	lesson = models.ForeignKey(Lesson, on_delete=models.CASCADE, related_name='progress_records')
+	enrollment = models.ForeignKey(Enrollment, on_delete=models.CASCADE, null=True, blank=True, related_name='lesson_progress')
+	is_completed = models.BooleanField(default=False)
+	completed_at = models.DateTimeField(null=True, blank=True)
+
+	class Meta:
+		db_table = 'lesson_progress'
+		constraints = [
+			models.UniqueConstraint(fields=['student', 'lesson'], name='unique_progress_per_student_lesson'),
+		]
+
+	def __str__(self):
+		return f'{self.student.name} - {self.lesson.title}'
