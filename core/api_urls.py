@@ -3,7 +3,11 @@ from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 
 from .api_views import (
+	ChapterDetailAPIView,
+	ChapterListCreateAPIView,
 	CompleteLessonAPIView,
+	CourseDetailAPIView,
+	CourseListCreateAPIView,
 	CourseProgressAPIView,
 	CurrentUserAPIView,
 	DistrictListAPIView,
@@ -11,6 +15,8 @@ from .api_views import (
 	ForgotPasswordAPIView,
 	GradeListAPIView,
 	InstructorRegistrationAPIView,
+	LessonDetailAPIView,
+	LessonListCreateAPIView,
 	LoginAPIView,
 	LogoutAPIView,
 	MunicipalityListAPIView,
@@ -20,16 +26,28 @@ from .api_views import (
 	RoleListAPIView,
 	SchoolListAPIView,
 	StudentRegistrationAPIView,
+	SubjectDetailAPIView,
+	SubjectListCreateAPIView,
+	TopicDetailAPIView,
+	TopicListCreateAPIView,
 	VerifyPasswordResetOTPAPIView,
 )
 
 
 urlpatterns = [
+	# =========================
+	# Roles
+	# =========================
+
 	path(
 		'roles/',
 		RoleListAPIView.as_view(),
 		name='api-roles'
 	),
+
+	# =========================
+	# Registration
+	# =========================
 
 	path(
 		'register/student/',
@@ -42,6 +60,10 @@ urlpatterns = [
 		InstructorRegistrationAPIView.as_view(),
 		name='api-register-instructor'
 	),
+
+	# =========================
+	# Authentication
+	# =========================
 
 	path(
 		'login/',
@@ -67,6 +89,10 @@ urlpatterns = [
 		name='api-logout'
 	),
 
+	# =========================
+	# Password Reset
+	# =========================
+
 	path(
 		'forgot-password/',
 		ForgotPasswordAPIView.as_view(),
@@ -84,6 +110,10 @@ urlpatterns = [
 		ResetPasswordAPIView.as_view(),
 		name='api-password-reset'
 	),
+
+	# =========================
+	# Location Lookups
+	# =========================
 
 	path(
 		'locations/provinces/',
@@ -114,6 +144,86 @@ urlpatterns = [
 		GradeListAPIView.as_view(),
 		name='api-grades'
 	),
+
+	# =========================
+	# Subject Management
+	# =========================
+
+	path(
+		'subjects/',
+		SubjectListCreateAPIView.as_view(),
+		name='api-subject-list-create'
+	),
+
+	path(
+		'subjects/<int:pk>/',
+		SubjectDetailAPIView.as_view(),
+		name='api-subject-detail'
+	),
+
+	# =========================
+	# Chapter Management
+	# =========================
+
+	path(
+		'chapters/',
+		ChapterListCreateAPIView.as_view(),
+		name='api-chapter-list-create'
+	),
+
+	path(
+		'chapters/<int:pk>/',
+		ChapterDetailAPIView.as_view(),
+		name='api-chapter-detail'
+	),
+
+	# =========================
+	# Topic Management
+	# =========================
+
+	path(
+		'topics/',
+		TopicListCreateAPIView.as_view(),
+		name='api-topic-list-create'
+	),
+
+	path(
+		'topics/<int:pk>/',
+		TopicDetailAPIView.as_view(),
+		name='api-topic-detail'
+	),
+
+	# =========================
+	# Course Management
+	# =========================
+
+	path(
+		'courses/',
+		CourseListCreateAPIView.as_view(),
+		name='api-course-list-create'
+	),
+
+	path(
+		'courses/<int:pk>/',
+		CourseDetailAPIView.as_view(),
+		name='api-course-detail'
+	),
+
+	path(
+		'lessons/',
+		LessonListCreateAPIView.as_view(),
+		name='api-lesson-list-create'
+	),
+
+	path(
+		'lessons/<int:pk>/',
+		LessonDetailAPIView.as_view(),
+		name='api-lesson-detail'
+	),
+
+	# =========================
+	# Enrollment & Progress
+	# =========================
 
 	path(
 		'courses/<int:course_id>/enroll/',
