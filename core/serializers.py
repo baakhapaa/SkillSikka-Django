@@ -13,16 +13,21 @@ from django.utils.text import slugify
 from rest_framework import serializers
 
 from .models import (
-	District,
-	Grade,
-	InstructorProfile,
-	Municipality,
-	PasswordResetOTP,
-	Province,
-	School,
-	StudentProfile,
-	User,
-	VerificationDocument,
+        Chapter,
+        Course,
+        District,
+        Grade,
+        InstructorProfile,
+        Lesson,
+        Municipality,
+        PasswordResetOTP,
+        Province,
+        School,
+        StudentProfile,
+        Subject,
+        Topic,
+        User,
+        VerificationDocument,
 )
 
 
@@ -524,3 +529,252 @@ class ResetPasswordSerializer(serializers.Serializer):
 def user_role(role_name):
 	from .models import Role
 	return Role.objects.get(name=role_name)
+
+class SubjectSerializer(serializers.ModelSerializer):
+        class Meta:
+                model = Subject
+                fields = ['id', 'name']
+
+
+class ChapterSerializer(serializers.ModelSerializer):
+        subject_name = serializers.CharField(
+                source='subject.name',
+                read_only=True
+        )
+        grade_name = serializers.CharField(
+                source='grade.name',
+                read_only=True
+        )
+
+        class Meta:
+                model = Chapter
+                fields = [
+                        'id',
+                        'subject',
+                        'subject_name',
+                        'grade',
+                        'grade_name',
+                        'name',
+                        'order',
+                ]
+
+
+class TopicSerializer(serializers.ModelSerializer):
+        chapter_name = serializers.CharField(
+                source='chapter.name',
+                read_only=True
+        )
+
+        class Meta:
+                model = Topic
+                fields = [
+                        'id',
+                        'chapter',
+                        'chapter_name',
+                        'name',
+                        'order',
+                ]
+
+
+class CourseSerializer(serializers.ModelSerializer):
+        instructor_name = serializers.CharField(
+                source='instructor.name',
+                read_only=True
+        )
+        subject_name = serializers.CharField(
+                source='subject.name',
+                read_only=True
+        )
+        grade_name = serializers.CharField(
+                source='grade.name',
+                read_only=True
+        )
+
+        class Meta:
+                model = Course
+                fields = [
+                        'id',
+                        'title',
+                        'description',
+                        'instructor',
+                        'instructor_name',
+                        'course_type',
+                        'subject',
+                        'subject_name',
+                        'grade',
+                        'grade_name',
+                        'is_paid',
+                        'price',
+                        'thumbnail_url',
+                        'is_published',
+                        'created_at',
+                        'updated_at',
+                ]
+                read_only_fields = [
+                        'instructor',
+                        'created_at',
+                        'updated_at',
+                ]
+
+        def validate(self, attrs):
+                course_type = attrs.get(
+                        'course_type',
+                        getattr(self.instance, 'course_type', None)
+                )
+                subject = attrs.get(
+                        'subject',
+                        getattr(self.instance, 'subject', None)
+                )
+                grade = attrs.get(
+                        'grade',
+                        getattr(self.instance, 'grade', None)
+                )
+                is_paid = attrs.get(
+                        'is_paid',
+                        getattr(self.instance, 'is_paid', False)
+                )
+                price = attrs.get(
+                        'price',
+                        getattr(self.instance, 'price', None)
+                )
+
+                if course_type == 'academic':
+                        if subject is None:
+                                raise serializers.ValidationError({
+                                        'subject': 'Subject is required for an academic course.'
+                                })
+                        if grade is None:
+                                raise serializers.ValidationError({
+                                        'grade': 'Grade is required for an academic course.'
+                                })
+
+                elif course_type == 'skill':
+                        attrs['subject'] = None
+                        attrs['grade'] = None
+
+                if is_paid:
+                        if price is None or price <= 0:
+                                raise serializers.ValidationError({
+                                        'price': 'A paid course must have a price greater than 0.'
+                                })
+                else:
+                        attrs['price'] = None
+
+                return attrs
+
+
+class LessonSerializer(serializers.ModelSerializer):
+    topic_name = serializers.CharField(
+        source='topic.name',
+        read_only=True
+    )
+    course_title = serializers.CharField(
+        source='course.title',
+        read_only=True
+    )
+
+    class Meta:
+        model = Lesson
+        fields = [
+            'id',
+            'topic',
+            'topic_name',
+            'course',
+            'course_title',
+            'title',
+            'content_type',
+            'content_url',
+            'content_text',
+            'order',
+            'created_at',
+        ]
+        read_only_fields = ['created_at']
+
+    def validate(self, attrs):
+        topic = attrs.get(
+            'topic',
+            getattr(self.instance, 'topic', None)
+        )
+
+        course = attrs.get(
+            'course',
+            getattr(self.instance, 'course', None)
+        )
+
+        content_type = attrs.get(
+            'content_type',
+            getattr(self.instance, 'content_type', None)
+        )
+
+        content_url = attrs.get(
+            'content_url',
+            getattr(self.instance, 'content_url', '')
+        )
+
+        content_text = attrs.get(
+            'content_text',
+            getattr(self.instance, 'content_text', '')
+        )
+
+        # Every lesson must belong to a course.
+        if course is None:
+            raise serializers.ValidationError({
+                'course': 'A lesson must belong to a course.'
+            })
+
+        # Academic course:
+        # Topic is allowed, but if supplied it must belong
+        # to the same grade and subject as the course.
+        if course.course_type == 'academic':
+            if course.subject is None or course.grade is None:
+                raise serializers.ValidationError({
+                    'course': (
+                        'An academic course must have a subject '
+                        'and grade.'
+                    )
+                })
+
+            if topic is not None:
+                if (
+                    topic.chapter.subject_id != course.subject_id
+                    or
+                    topic.chapter.grade_id != course.grade_id
+                ):
+                    raise serializers.ValidationError({
+                        'topic': (
+                            'The selected topic does not belong '
+                            'to the same subject and grade as '
+                            'this academic course.'
+                        )
+                    })
+
+        # Skill course:
+        # Topic/chapter academic structure is not used.
+        elif course.course_type == 'skill':
+            if topic is not None:
+                raise serializers.ValidationError({
+                    'topic': (
+                        'Skill course lessons cannot be linked '
+                        'to an academic topic.'
+                    )
+                })
+
+        # Text lessons require text content.
+        if content_type == 'text':
+            if not content_text:
+                raise serializers.ValidationError({
+                    'content_text': (
+                        'Text content is required for a text lesson.'
+                    )
+                })
+
+        # Video/PDF/eBook lessons require URL.
+        else:
+            if not content_url:
+                raise serializers.ValidationError({
+                    'content_url': (
+                        'A content URL is required for this lesson type.'
+                    )
+                })
+
+        return attrs
