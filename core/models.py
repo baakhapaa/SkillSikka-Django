@@ -556,3 +556,131 @@ class LessonProgress(models.Model):
 
 	def __str__(self):
 		return f'{self.student.name} - {self.lesson.title}'
+
+
+class Quiz(models.Model):
+    course = models.ForeignKey(
+        Course,
+        on_delete=models.CASCADE,
+        related_name='quizzes'
+    )
+    title = models.CharField(max_length=200)
+    description = models.TextField(blank=True)
+    pass_percentage = models.PositiveSmallIntegerField(default=40)
+    max_attempts = models.PositiveSmallIntegerField(default=1)
+    is_published = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'quizzes'
+
+    def __str__(self):
+        return self.title
+
+
+class Question(models.Model):
+    quiz = models.ForeignKey(
+        Quiz,
+        on_delete=models.CASCADE,
+        related_name='questions'
+    )
+    text = models.TextField()
+    marks = models.PositiveSmallIntegerField(default=1)
+    order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        db_table = 'questions'
+        ordering = ['order']
+
+    def __str__(self):
+        return self.text
+
+
+class QuestionOption(models.Model):
+    question = models.ForeignKey(
+        Question,
+        on_delete=models.CASCADE,
+        related_name='options'
+    )
+    text = models.CharField(max_length=500)
+    is_correct = models.BooleanField(default=False)
+
+    class Meta:
+        db_table = 'question_options'
+
+    def __str__(self):
+        return self.text
+
+
+class QuizAttempt(models.Model):
+    student = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='quiz_attempts'
+    )
+    quiz = models.ForeignKey(
+        Quiz,
+        on_delete=models.CASCADE,
+        related_name='attempts'
+    )
+    enrollment = models.ForeignKey(
+        Enrollment,
+        on_delete=models.CASCADE,
+        related_name='quiz_attempts'
+    )
+    score = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        default=0
+    )
+    percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0
+    )
+    is_passed = models.BooleanField(default=False)
+    started_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'quiz_attempts'
+
+    def __str__(self):
+        return f'{self.student.name} - {self.quiz.title}'
+
+
+class StudentAnswer(models.Model):
+    attempt = models.ForeignKey(
+        QuizAttempt,
+        on_delete=models.CASCADE,
+        related_name='answers'
+    )
+    question = models.ForeignKey(
+        Question,
+        on_delete=models.CASCADE,
+        related_name='student_answers'
+    )
+    selected_option = models.ForeignKey(
+        QuestionOption,
+        on_delete=models.PROTECT,
+        related_name='student_answers'
+    )
+    is_correct = models.BooleanField(default=False)
+    marks_awarded = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        default=0
+    )
+
+    class Meta:
+        db_table = 'student_answers'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['attempt', 'question'],
+                name='unique_answer_per_attempt_question'
+            )
+        ]
+
+    def __str__(self):
+        return f'{self.attempt_id} - {self.question_id}'

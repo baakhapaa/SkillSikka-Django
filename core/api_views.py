@@ -1,4 +1,4 @@
-from django.db.models import Q, QuerySet
+﻿from django.db.models import Q, QuerySet
 from django.utils import timezone
 
 from rest_framework import generics, status
@@ -14,43 +14,49 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import (
-	Chapter,
-	Course,
-	District,
-	Enrollment,
-	Grade,
-	Lesson,
-	LessonProgress,
-	Municipality,
-	Province,
-	School,
-	Subject,
-	Topic,
-	User,
+        Chapter,
+        Course,
+        District,
+        Enrollment,
+        Grade,
+        Lesson,
+        LessonProgress,
+        Municipality,
+        Province,
+        Question,
+        QuestionOption,
+        Quiz,
+        QuizAttempt,
+        School,
+        StudentAnswer,
+        Subject,
+        Topic,
+        User,
 )
-
 from .serializers import (
-	ChapterSerializer,
-	CourseSerializer,
-	DistrictSerializer,
-	EnrollCourseSerializer,
-	EnrollmentSerializer,
-	ForgotPasswordSerializer,
-	GradeSerializer,
-	InstructorRegistrationSerializer,
-	LessonProgressSerializer,
-	LessonSerializer,
-	LoginSerializer,
-	MunicipalitySerializer,
-	ProvinceSerializer,
-	ResetPasswordSerializer,
-	SchoolSerializer,
-	StudentRegistrationSerializer,
-	SubjectSerializer,
-	TopicSerializer,
-	VerifyPasswordResetOTPSerializer,
+        ChapterSerializer,
+        CourseSerializer,
+        DistrictSerializer,
+        EnrollCourseSerializer,
+        EnrollmentSerializer,
+        ForgotPasswordSerializer,
+        GradeSerializer,
+        InstructorRegistrationSerializer,
+        LessonProgressSerializer,
+        LessonSerializer,
+        LoginSerializer,
+        MunicipalitySerializer,
+        ProvinceSerializer,
+        QuestionManagementSerializer,
+        QuestionOptionManagementSerializer,
+        QuizManagementSerializer,
+        ResetPasswordSerializer,
+        SchoolSerializer,
+        StudentRegistrationSerializer,
+        SubjectSerializer,
+        TopicSerializer,
+        VerifyPasswordResetOTPSerializer,
 )
-
 
 # =========================================================
 # Registration
@@ -991,3 +997,312 @@ class CourseProgressAPIView(APIView):
 			'progress_percentage': progress_percentage,
 			'is_completed': is_completed,
 		}, status=status.HTTP_200_OK)
+        # =========================================================
+# Quiz Management
+# =========================================================
+
+class QuizListCreateAPIView(generics.ListCreateAPIView):
+        authentication_classes = [JWTAuthentication]
+        permission_classes = [IsAuthenticated]
+        serializer_class = QuizManagementSerializer
+
+        def get_queryset(self):
+                user = self.request.user
+
+                queryset = Quiz.objects.select_related(
+                        'course',
+                        'course__instructor'
+                ).prefetch_related(
+                        'questions__options'
+                )
+
+                if _is_admin(user):
+                        return queryset.order_by('-created_at')
+
+                if _is_instructor(user):
+                        return queryset.filter(
+                                course__instructor=user
+                        ).order_by('-created_at')
+
+                return queryset.filter(
+                        is_published=True,
+                        course__is_published=True
+                ).order_by('-created_at')
+
+        def perform_create(self, serializer):
+                course = serializer.validated_data['course']
+                user = self.request.user
+
+                if not (_is_instructor(user) or _is_admin(user)):
+                        raise PermissionDenied(
+                                'Only instructors can create quizzes.'
+                        )
+
+                if not _is_admin(user):
+                        if course.instructor_id != user.id:
+                                raise PermissionDenied(
+                                        'You can only create quizzes for your own courses.'
+                                )
+
+                serializer.save(is_published=False)
+
+
+class QuizDetailAPIView(generics.RetrieveUpdateDestroyAPIView):
+        authentication_classes = [JWTAuthentication]
+        permission_classes = [IsAuthenticated]
+        serializer_class = QuizManagementSerializer
+
+        def get_queryset(self):
+                user = self.request.user
+
+                queryset = Quiz.objects.select_related(
+                        'course',
+                        'course__instructor'
+                ).prefetch_related(
+                        'questions__options'
+                )
+
+                if _is_admin(user):
+                        return queryset
+
+                if _is_instructor(user):
+                        return queryset.filter(
+                                course__instructor=user
+                        )
+
+                return queryset.filter(
+                        is_published=True,
+                        course__is_published=True
+                )
+
+        def perform_update(self, serializer):
+                quiz = self.get_object()
+                user = self.request.user
+
+                if not (
+                        _is_admin(user)
+                        or quiz.course.instructor_id == user.id
+                ):
+                        raise PermissionDenied(
+                                'You can only update quizzes for your own courses.'
+                        )
+
+                serializer.save()
+
+        def perform_destroy(self, instance):
+                user = self.request.user
+
+                if not (
+                        _is_admin(user)
+                        or instance.course.instructor_id == user.id
+                ):
+                        raise PermissionDenied(
+                                'You can only delete quizzes from your own courses.'
+                        )
+
+                instance.delete()
+
+# =========================================================
+# Question Management
+# =========================================================
+
+class QuestionListCreateAPIView(generics.ListCreateAPIView):
+        authentication_classes = [JWTAuthentication]
+        permission_classes = [IsAuthenticated]
+        serializer_class = QuestionManagementSerializer
+
+        def get_queryset(self):
+                user = self.request.user
+
+                queryset = Question.objects.select_related(
+                        'quiz',
+                        'quiz__course',
+                        'quiz__course__instructor'
+                ).prefetch_related(
+                        'options'
+                )
+
+                if _is_admin(user):
+                        return queryset
+
+                if _is_instructor(user):
+                        return queryset.filter(
+                                quiz__course__instructor=user
+                        )
+
+                return queryset.none()
+
+        def perform_create(self, serializer):
+                quiz = serializer.validated_data['quiz']
+                user = self.request.user
+
+                if not (_is_instructor(user) or _is_admin(user)):
+                        raise PermissionDenied(
+                                'Only instructors can create questions.'
+                        )
+
+                if (
+                        not _is_admin(user)
+                        and quiz.course.instructor_id != user.id
+                ):
+                        raise PermissionDenied(
+                                'You can only add questions to quizzes from your own courses.'
+                        )
+
+                serializer.save()
+
+
+class QuestionDetailAPIView(generics.RetrieveUpdateDestroyAPIView):
+        authentication_classes = [JWTAuthentication]
+        permission_classes = [IsAuthenticated]
+        serializer_class = QuestionManagementSerializer
+
+        def get_queryset(self):
+                user = self.request.user
+
+                queryset = Question.objects.select_related(
+                        'quiz',
+                        'quiz__course',
+                        'quiz__course__instructor'
+                ).prefetch_related(
+                        'options'
+                )
+
+                if _is_admin(user):
+                        return queryset
+
+                if _is_instructor(user):
+                        return queryset.filter(
+                                quiz__course__instructor=user
+                        )
+
+                return queryset.none()
+
+        def perform_update(self, serializer):
+                question = self.get_object()
+                user = self.request.user
+
+                if (
+                        not _is_admin(user)
+                        and question.quiz.course.instructor_id != user.id
+                ):
+                        raise PermissionDenied(
+                                'You can only update questions from your own quizzes.'
+                        )
+
+                serializer.save()
+
+        def perform_destroy(self, instance):
+                user = self.request.user
+
+                if (
+                        not _is_admin(user)
+                        and instance.quiz.course.instructor_id != user.id
+                ):
+                        raise PermissionDenied(
+                                'You can only delete questions from your own quizzes.'
+                        )
+
+                instance.delete()
+                # =========================================================
+# Question Option Management
+# =========================================================
+
+class QuestionOptionListCreateAPIView(generics.ListCreateAPIView):
+        authentication_classes = [JWTAuthentication]
+        permission_classes = [IsAuthenticated]
+        serializer_class = QuestionOptionManagementSerializer
+
+        def get_queryset(self):
+                user = self.request.user
+
+                queryset = QuestionOption.objects.select_related(
+                        'question',
+                        'question__quiz',
+                        'question__quiz__course',
+                        'question__quiz__course__instructor'
+                )
+
+                if _is_admin(user):
+                        return queryset
+
+                if _is_instructor(user):
+                        return queryset.filter(
+                                question__quiz__course__instructor=user
+                        )
+
+                return queryset.none()
+
+        def perform_create(self, serializer):
+                question = serializer.validated_data['question']
+                user = self.request.user
+
+                if not (_is_instructor(user) or _is_admin(user)):
+                        raise PermissionDenied(
+                                'Only instructors can create question options.'
+                        )
+
+                if (
+                        not _is_admin(user)
+                        and question.quiz.course.instructor_id != user.id
+                ):
+                        raise PermissionDenied(
+                                'You can only add options to questions from your own quizzes.'
+                        )
+
+                serializer.save()
+
+
+class QuestionOptionDetailAPIView(
+        generics.RetrieveUpdateDestroyAPIView
+):
+        authentication_classes = [JWTAuthentication]
+        permission_classes = [IsAuthenticated]
+        serializer_class = QuestionOptionManagementSerializer
+
+        def get_queryset(self):
+                user = self.request.user
+
+                queryset = QuestionOption.objects.select_related(
+                        'question',
+                        'question__quiz',
+                        'question__quiz__course',
+                        'question__quiz__course__instructor'
+                )
+
+                if _is_admin(user):
+                        return queryset
+
+                if _is_instructor(user):
+                        return queryset.filter(
+                                question__quiz__course__instructor=user
+                        )
+
+                return queryset.none()
+
+        def perform_update(self, serializer):
+                option = self.get_object()
+                user = self.request.user
+
+                if (
+                        not _is_admin(user)
+                        and option.question.quiz.course.instructor_id != user.id
+                ):
+                        raise PermissionDenied(
+                                'You can only update options from your own quizzes.'
+                        )
+
+                serializer.save()
+
+        def perform_destroy(self, instance):
+                user = self.request.user
+
+                if (
+                        not _is_admin(user)
+                        and instance.question.quiz.course.instructor_id != user.id
+                ):
+                        raise PermissionDenied(
+                                'You can only delete options from your own quizzes.'
+                        )
+
+                instance.delete()

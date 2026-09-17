@@ -22,6 +22,8 @@ from .api_views import (
 	MunicipalityListAPIView,
 	MyEnrollmentsAPIView,
 	ProvinceListAPIView,
+	QuizDetailAPIView,
+    QuizListCreateAPIView,
 	ResetPasswordAPIView,
 	RoleListAPIView,
 	SchoolListAPIView,
@@ -31,6 +33,10 @@ from .api_views import (
 	TopicDetailAPIView,
 	TopicListCreateAPIView,
 	VerifyPasswordResetOTPAPIView,
+	QuestionDetailAPIView,
+    QuestionListCreateAPIView,
+	QuestionOptionDetailAPIView,
+    QuestionOptionListCreateAPIView,
 )
 
 
@@ -248,4 +254,50 @@ urlpatterns = [
 		CourseProgressAPIView.as_view(),
 		name='api-course-progress'
 	),
+	        # =========================
+        # Quiz Management
+        # =========================
+
+        path(
+                'quizzes/',
+                QuizListCreateAPIView.as_view(),
+                name='api-quiz-list-create'
+        ),
+
+        path(
+                'quizzes/<int:pk>/',
+                QuizDetailAPIView.as_view(),
+                name='api-quiz-detail'
+        ),
+
+		        # =========================
+        # Question Management
+        # =========================
+
+        path(
+                'questions/',
+                QuestionListCreateAPIView.as_view(),
+                name='api-question-list-create'
+        ),
+
+        path(
+                'questions/<int:pk>/',
+                QuestionDetailAPIView.as_view(),
+                name='api-question-detail'
+        ),
+		        # =========================
+        # Question Option Management
+        # =========================
+
+        path(
+                'question-options/',
+                QuestionOptionListCreateAPIView.as_view(),
+                name='api-question-option-list-create'
+        ),
+
+        path(
+                'question-options/<int:pk>/',
+                QuestionOptionDetailAPIView.as_view(),
+                name='api-question-option-detail'
+        ),
 ]
