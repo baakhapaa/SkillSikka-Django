@@ -556,3 +556,77 @@ class LessonProgress(models.Model):
 
 	def __str__(self):
 		return f'{self.student.name} - {self.lesson.title}'
+
+
+class Payment(models.Model):
+	PROVIDER_CHOICES = (
+		('esewa', 'eSewa'),
+		('khalti', 'Khalti'),
+	)
+
+	STATUS_CHOICES = (
+		('initiated', 'Initiated'),
+		('successful', 'Successful'),
+		('failed', 'Failed'),
+		('cancelled', 'Cancelled'),
+	)
+
+	student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='payments')
+	course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='payments')
+	enrollment = models.ForeignKey(Enrollment, on_delete=models.CASCADE, related_name='payments')
+	amount = models.DecimalField(max_digits=8, decimal_places=2)
+	provider = models.CharField(max_length=10, choices=PROVIDER_CHOICES)
+	transaction_reference = models.CharField(max_length=200, unique=True)
+	status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='initiated')
+	created_at = models.DateTimeField(auto_now_add=True)
+	verified_at = models.DateTimeField(null=True, blank=True)
+
+	class Meta:
+		db_table = 'payments'
+
+	def __str__(self):
+		return f'{self.student.name} - {self.course.title} - {self.status}'
+
+
+class LearningStreak(models.Model):
+	student = models.OneToOneField(User, on_delete=models.CASCADE, primary_key=True, related_name='learning_streak')
+	current_streak = models.PositiveIntegerField(default=0)
+	longest_streak = models.PositiveIntegerField(default=0)
+	last_active_date = models.DateField(null=True, blank=True)
+
+	class Meta:
+		db_table = 'learning_streaks'
+
+	def __str__(self):
+		return f'{self.student.name} - {self.current_streak} day streak'
+
+
+class StreakHistory(models.Model):
+	student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='streak_history')
+	date = models.DateField()
+
+	class Meta:
+		db_table = 'streak_history'
+		constraints = [
+			models.UniqueConstraint(fields=['student', 'date'], name='unique_streak_day_per_student'),
+		]
+		ordering = ['-date']
+
+	def __str__(self):
+		return f'{self.student.name} - {self.date}'
+
+
+class StreakSettings(models.Model):
+	grace_period_days = models.PositiveIntegerField(default=0)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'streak_settings'
+
+	def __str__(self):
+		return f'Streak settings (grace period: {self.grace_period_days} days)'
+
+	@classmethod
+	def get_solo(cls):
+		obj, _ = cls.objects.get_or_create(pk=1)
+		return obj

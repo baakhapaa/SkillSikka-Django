@@ -23,6 +23,7 @@ from .models import (
 	LessonProgress,
 	Municipality,
 	PasswordResetOTP,
+	Payment,
 	Province,
 	School,
 	StudentProfile,
@@ -848,3 +849,104 @@ class CourseProgressSerializer(serializers.Serializer):
 	completed_lessons = serializers.IntegerField()
 	progress_percentage = serializers.FloatField()
 	is_completed = serializers.BooleanField()
+
+
+class PaymentSerializer(serializers.ModelSerializer):
+	course_title = serializers.CharField(source='course.title', read_only=True)
+
+	class Meta:
+		model = Payment
+		fields = [
+			'id', 'course', 'course_title', 'enrollment', 'amount',
+			'provider', 'transaction_reference', 'status',
+			'created_at', 'verified_at',
+		]
+		read_only_fields = ['id', 'status', 'created_at', 'verified_at']
+
+
+class InitiatePaymentSerializer(serializers.Serializer):
+	provider = serializers.ChoiceField(choices=Payment.PROVIDER_CHOICES)
+
+	def validate(self, attrs):
+		course = self.context['course']
+		student = self.context['request'].user
+
+		if not course.is_paid:
+			raise serializers.ValidationError({
+				'detail': 'This course is free and does not require payment.'
+			})
+
+		enrollment = Enrollment.objects.filter(student=student, course=course).first()
+		if enrollment is None:
+			raise serializers.ValidationError({
+				'detail': 'You must enroll in this course before initiating payment.'
+			})
+
+		if enrollment.status == 'active' or enrollment.status == 'completed':
+			raise serializers.ValidationError({
+				'detail': 'This enrollment is already active.'
+			})
+
+		attrs['enrollment'] = enrollment
+		attrs['course'] = course
+		return attrs
+
+	def create(self, validated_data):
+		import uuid
+		enrollment = validated_data['enrollment']
+		course = validated_data['course']
+		student = self.context['request'].user
+
+		return Payment.objects.create(
+			student=student,
+			course=course,
+			enrollment=enrollment,
+			amount=course.price,
+			provider=validated_data['provider'],
+			transaction_reference=str(uuid.uuid4()),
+			status='initiated',
+		)
+
+
+class VerifyPaymentSerializer(serializers.Serializer):
+	transaction_reference = serializers.CharField()
+	gateway_status = serializers.ChoiceField(choices=[('success', 'Success'), ('failure', 'Failure')])
+
+	def validate(self, attrs):
+		payment = Payment.objects.filter(
+			transaction_reference=attrs['transaction_reference'],
+		).select_related('enrollment').first()
+
+		if payment is None:
+			raise serializers.ValidationError({'detail': 'Payment not found.'})
+
+		if payment.student_id != self.context['request'].user.id:
+			raise serializers.ValidationError({'detail': 'This payment does not belong to you.'})
+
+		if payment.status != 'initiated':
+			raise serializers.ValidationError({'detail': 'This payment has already been processed.'})
+
+		attrs['payment'] = payment
+		return attrs
+
+	def save(self):
+		payment = self.validated_data['payment']
+		gateway_status = self.validated_data['gateway_status']
+
+		with transaction.atomic():
+			if gateway_status == 'success':
+				payment.status = 'successful'
+				payment.verified_at = timezone.now()
+				payment.save(update_fields=['status', 'verified_at'])
+
+				enrollment = payment.enrollment
+				enrollment.status = 'active'
+				enrollment.amount_paid = payment.amount
+				enrollment.payment_reference = payment.transaction_reference
+				enrollment.save(update_fields=['status', 'amount_paid', 'payment_reference'])
+			else:
+				payment.status = 'failed'
+				payment.verified_at = timezone.now()
+				payment.save(update_fields=['status', 'verified_at'])
+
+		return payment

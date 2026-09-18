@@ -14,6 +14,7 @@ from .api_views import (
 	EnrollCourseAPIView,
 	ForgotPasswordAPIView,
 	GradeListAPIView,
+	InitiatePaymentAPIView,
 	InstructorRegistrationAPIView,
 	LessonDetailAPIView,
 	LessonListCreateAPIView,
@@ -21,6 +22,8 @@ from .api_views import (
 	LogoutAPIView,
 	MunicipalityListAPIView,
 	MyEnrollmentsAPIView,
+	MyPaymentsAPIView,
+	PaymentStatusAPIView,
 	ProvinceListAPIView,
 	ResetPasswordAPIView,
 	RoleListAPIView,
@@ -31,6 +34,7 @@ from .api_views import (
 	TopicDetailAPIView,
 	TopicListCreateAPIView,
 	VerifyPasswordResetOTPAPIView,
+	VerifyPaymentAPIView,
 )
 
 
@@ -247,5 +251,33 @@ urlpatterns = [
 		'courses/<int:course_id>/progress/',
 		CourseProgressAPIView.as_view(),
 		name='api-course-progress'
+	),
+
+	# =========================
+	# Payment
+	# =========================
+
+	path(
+		'courses/<int:course_id>/initiate-payment/',
+		InitiatePaymentAPIView.as_view(),
+		name='api-initiate-payment'
+	),
+
+	path(
+		'payments/verify/',
+		VerifyPaymentAPIView.as_view(),
+		name='api-verify-payment'
+	),
+
+	path(
+		'payments/<int:payment_id>/',
+		PaymentStatusAPIView.as_view(),
+		name='api-payment-status'
+	),
+
+	path(
+		'my-payments/',
+		MyPaymentsAPIView.as_view(),
+		name='api-my-payments'
 	),
 ]

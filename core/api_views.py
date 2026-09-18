@@ -22,6 +22,7 @@ from .models import (
 	Lesson,
 	LessonProgress,
 	Municipality,
+	Payment,
 	Province,
 	School,
 	Subject,
@@ -37,11 +38,13 @@ from .serializers import (
 	EnrollmentSerializer,
 	ForgotPasswordSerializer,
 	GradeSerializer,
+	InitiatePaymentSerializer,
 	InstructorRegistrationSerializer,
 	LessonProgressSerializer,
 	LessonSerializer,
 	LoginSerializer,
 	MunicipalitySerializer,
+	PaymentSerializer,
 	ProvinceSerializer,
 	ResetPasswordSerializer,
 	SchoolSerializer,
@@ -49,6 +52,7 @@ from .serializers import (
 	SubjectSerializer,
 	TopicSerializer,
 	VerifyPasswordResetOTPSerializer,
+	VerifyPaymentSerializer,
 )
 
 
@@ -991,3 +995,59 @@ class CourseProgressAPIView(APIView):
 			'progress_percentage': progress_percentage,
 			'is_completed': is_completed,
 		}, status=status.HTTP_200_OK)
+
+
+# =========================================================
+# Payment
+# =========================================================
+
+class InitiatePaymentAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def post(self, request, course_id):
+		course = Course.objects.filter(pk=course_id).first()
+		if course is None:
+			return Response({'detail': 'Course not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+		serializer = InitiatePaymentSerializer(data=request.data, context={'course': course, 'request': request})
+		serializer.is_valid(raise_exception=True)
+		payment = serializer.save()
+
+		return Response(PaymentSerializer(payment).data, status=status.HTTP_201_CREATED)
+
+
+class VerifyPaymentAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def post(self, request):
+		serializer = VerifyPaymentSerializer(data=request.data, context={'request': request})
+		serializer.is_valid(raise_exception=True)
+		payment = serializer.save()
+
+		return Response(PaymentSerializer(payment).data, status=status.HTTP_200_OK)
+
+
+class PaymentStatusAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def get(self, request, payment_id):
+		payment = Payment.objects.filter(pk=payment_id).first()
+		if payment is None:
+			return Response({'detail': 'Payment not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+		if payment.student_id != request.user.id and not _is_admin(request.user):
+			return Response({'detail': 'You do not have permission to view this payment.'}, status=status.HTTP_403_FORBIDDEN)
+
+		return Response(PaymentSerializer(payment).data, status=status.HTTP_200_OK)
+
+
+class MyPaymentsAPIView(generics.ListAPIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = PaymentSerializer
+
+	def get_queryset(self):
+		return Payment.objects.filter(student=self.request.user).select_related('course').order_by('-created_at')

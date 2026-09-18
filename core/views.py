@@ -4,8 +4,8 @@ from django.contrib.auth.decorators import login_required
 from django.shortcuts import redirect, render
 from django.utils import timezone
 
-from .forms import DistrictForm, GradeForm, MunicipalityForm, ProvinceForm, SchoolForm
-from .models import District, Grade, Municipality, Province, School, User, VerificationDocument
+from .forms import CourseForm, DistrictForm, GradeForm, MunicipalityForm, ProvinceForm, SchoolForm
+from .models import Course, District, Grade, Municipality, Province, School, User, VerificationDocument
 
 
 def login_view(request):
@@ -122,6 +122,26 @@ def review_verification(request, user_id):
 			messages.error(request, 'Invalid action.')
 
 	return redirect('verification_queue')
+
+
+@login_required
+def manage_courses(request):
+	if not is_admin(request.user):
+		messages.error(request, 'You do not have permission to manage courses.')
+		return redirect('dashboard')
+
+	form = CourseForm()
+	if request.method == 'POST':
+		form = CourseForm(request.POST)
+		if form.is_valid():
+			course = form.save()
+			messages.success(request, f'Course "{course.title}" added successfully.')
+			return redirect('manage_courses')
+
+	return render(request, 'admin/courses.html', {
+		'form': form,
+		'courses': Course.objects.select_related('instructor', 'subject', 'grade').order_by('-created_at'),
+	})
 
 
 def logout_view(request):

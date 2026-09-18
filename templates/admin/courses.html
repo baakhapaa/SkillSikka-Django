@@ -1,0 +1,58 @@
+{% extends 'base.html' %}
+{% block title %}Courses | SkillSikka{% endblock %}
+{% block content %}
+<style>
+.page-intro{color:var(--muted);max-width:620px;margin-bottom:28px}.management-card{background:var(--white);border:1px solid var(--line);padding:24px;border-radius:4px;box-shadow:var(--shadow);margin-bottom:24px}.management-card h2{margin-bottom:0}.count-label{color:var(--muted);font-size:13px}.management-card .form-stack{margin:18px 0 24px}.form-stack select,.form-stack input[type=text],.form-stack input[type=number],.form-stack input[type=url],.form-stack textarea{width:100%;padding:15px 16px;border:1px solid #d7e1df;border-radius:3px;background:var(--white);font:inherit;color:var(--ink)}.form-error{color:#b64b45;font-size:12px}
+</style>
+<div class="app-shell">
+    <aside class="sidebar">
+        <div class="brand"><span class="brand-mark small">SS</span><strong>SkillSikka</strong></div>
+        <p class="sidebar-label">Workspace</p>
+        <nav>
+            <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
+            <a class="nav-item" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
+            <a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
+            <a class="nav-item active" href="{% url 'manage_courses' %}"><span>▣</span> Courses</a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="avatar">{{ request.user.name|slice:':1'|upper }}</div>
+            <div><strong>{{ request.user.name }}</strong><small>{{ request.user.role.name|default:'Administrator' }}</small></div>
+            <a class="logout" href="{% url 'logout' %}" aria-label="Log out">↗</a>
+        </div>
+    </aside>
+    <main class="dashboard-main">
+        <header class="topbar"><div><p class="eyebrow">Content management</p><h1>Courses</h1></div><div class="top-actions"><a class="outline-button" href="{% url 'dashboard' %}">Back to overview</a></div></header>
+        {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
+        <p class="page-intro">Add a course on behalf of any instructor. Instructors can also create their own courses directly through the app.</p>
+        <article class="management-card">
+            <div class="section-heading"><div><p class="eyebrow">Add</p><h2>New course</h2></div></div>
+            <form method="post" class="form-stack">
+                {% csrf_token %}
+                {% for field in form %}
+                    <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                    {{ field }}
+                    {% for error in field.errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                {% endfor %}
+                {% for error in form.non_field_errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                <button class="primary-button" type="submit">Add course</button>
+            </form>
+        </article>
+        <article class="management-card">
+            <div class="section-heading"><div><p class="eyebrow">All courses</p><h2>Courses</h2></div><span class="count-label">{{ courses|length }} total</span></div>
+            <div class="table-wrap"><table><thead><tr><th>Title</th><th>Instructor</th><th>Type</th><th>Price</th><th>Status</th></tr></thead><tbody>
+                {% for course in courses %}
+                <tr>
+                    <td>{{ course.title }}</td>
+                    <td>{{ course.instructor.name }}</td>
+                    <td>{{ course.get_course_type_display }}</td>
+                    <td>{% if course.is_paid %}{{ course.price }}{% else %}Free{% endif %}</td>
+                    <td><span class="pill {% if course.is_published %}verified{% else %}pending{% endif %}">{% if course.is_published %}Published{% else %}Draft{% endif %}</span></td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="5" class="empty-state">No courses yet.</td></tr>
+                {% endfor %}
+            </tbody></table></div>
+        </article>
+    </main>
+</div>
+{% endblock %}

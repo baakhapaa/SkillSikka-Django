@@ -10,7 +10,9 @@
         <p class="sidebar-label">Workspace</p>
         <nav>
             <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
+            <a class="nav-item" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
             <a class="nav-item active" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
+            <a class="nav-item" href="{% url 'manage_courses' %}"><span>▣</span> Courses</a>
         </nav>
         <div class="sidebar-footer">
             <div class="avatar">{{ request.user.name|slice:':1'|upper }}</div>
