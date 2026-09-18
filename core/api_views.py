@@ -1,9 +1,11 @@
-from django.db.models import Q, QuerySet
+﻿from django.db.models import Q, QuerySet
 from django.utils import timezone
+from django.db import transaction
+from decimal import Decimal
 
 from rest_framework import generics, status
 from rest_framework.authentication import SessionAuthentication
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, NotFound
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -24,7 +26,12 @@ from .models import (
 	Municipality,
 	Payment,
 	Province,
+	Question,
+	QuestionOption,
+	Quiz,
+	QuizAttempt,
 	School,
+	StudentAnswer,
 	Subject,
 	Topic,
 	User,
@@ -39,6 +46,7 @@ from .serializers import (
 	ForgotPasswordSerializer,
 	GradeSerializer,
 	InitiatePaymentSerializer,
+	InstructorQuizResultSerializer,
 	InstructorRegistrationSerializer,
 	LessonProgressSerializer,
 	LessonSerializer,
@@ -46,6 +54,12 @@ from .serializers import (
 	MunicipalitySerializer,
 	PaymentSerializer,
 	ProvinceSerializer,
+	QuestionManagementSerializer,
+	QuestionOptionManagementSerializer,
+	QuizAttemptSerializer,
+	QuizManagementSerializer,
+	QuizStudentSerializer,
+	QuizSubmitSerializer,
 	ResetPasswordSerializer,
 	SchoolSerializer,
 	StudentRegistrationSerializer,
@@ -1051,3 +1065,730 @@ class MyPaymentsAPIView(generics.ListAPIView):
 
 	def get_queryset(self):
 		return Payment.objects.filter(student=self.request.user).select_related('course').order_by('-created_at')
+
+
+# =========================================================
+# Quiz Management
+# =========================================================
+
+class QuizListCreateAPIView(generics.ListCreateAPIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = QuizManagementSerializer
+
+	def get_queryset(self):
+		user = self.request.user
+
+		queryset = Quiz.objects.select_related(
+			'course',
+			'course__instructor'
+		).prefetch_related(
+			'questions__options'
+		)
+
+		if _is_admin(user):
+			return queryset.order_by('-created_at')
+
+		if _is_instructor(user):
+			return queryset.filter(
+				course__instructor=user
+			).order_by('-created_at')
+
+		return queryset.none()
+
+	def perform_create(self, serializer):
+		course = serializer.validated_data['course']
+		user = self.request.user
+
+		if not (
+			_is_instructor(user)
+			or _is_admin(user)
+		):
+			raise PermissionDenied(
+				'Only instructors can create quizzes.'
+			)
+
+		if (
+			not _is_admin(user)
+			and course.instructor_id != user.id
+		):
+			raise PermissionDenied(
+				'You can only create quizzes '
+				'for your own courses.'
+			)
+
+		serializer.save(is_published=False)
+
+
+class QuizDetailAPIView(
+	generics.RetrieveUpdateDestroyAPIView
+):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = QuizManagementSerializer
+
+	def get_queryset(self):
+		user = self.request.user
+
+		queryset = Quiz.objects.select_related(
+			'course',
+			'course__instructor'
+		).prefetch_related(
+			'questions__options'
+		)
+
+		if _is_admin(user):
+			return queryset
+
+		if _is_instructor(user):
+			return queryset.filter(
+				course__instructor=user
+			)
+
+		return queryset.none()
+
+	def perform_update(self, serializer):
+		quiz = self.get_object()
+		user = self.request.user
+
+		if not (
+			_is_admin(user)
+			or quiz.course.instructor_id == user.id
+		):
+			raise PermissionDenied(
+				'You can only update quizzes '
+				'for your own courses.'
+			)
+
+		serializer.save()
+
+	def perform_destroy(self, instance):
+		user = self.request.user
+
+		if not (
+			_is_admin(user)
+			or instance.course.instructor_id == user.id
+		):
+			raise PermissionDenied(
+				'You can only delete quizzes '
+				'from your own courses.'
+			)
+
+		instance.delete()
+
+
+# =========================================================
+# Question Management
+# =========================================================
+
+class QuestionListCreateAPIView(
+	generics.ListCreateAPIView
+):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = QuestionManagementSerializer
+
+	def get_queryset(self):
+		user = self.request.user
+
+		queryset = Question.objects.select_related(
+			'quiz',
+			'quiz__course',
+			'quiz__course__instructor'
+		).prefetch_related(
+			'options'
+		)
+
+		if _is_admin(user):
+			return queryset
+
+		if _is_instructor(user):
+			return queryset.filter(
+				quiz__course__instructor=user
+			)
+
+		return queryset.none()
+
+	def perform_create(self, serializer):
+		quiz = serializer.validated_data['quiz']
+		user = self.request.user
+
+		if not (
+			_is_instructor(user)
+			or _is_admin(user)
+		):
+			raise PermissionDenied(
+				'Only instructors can create questions.'
+			)
+
+		if (
+			not _is_admin(user)
+			and quiz.course.instructor_id != user.id
+		):
+			raise PermissionDenied(
+				'You can only add questions to quizzes '
+				'from your own courses.'
+			)
+
+		serializer.save()
+
+
+class QuestionDetailAPIView(
+	generics.RetrieveUpdateDestroyAPIView
+):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = QuestionManagementSerializer
+
+	def get_queryset(self):
+		user = self.request.user
+
+		queryset = Question.objects.select_related(
+			'quiz',
+			'quiz__course',
+			'quiz__course__instructor'
+		).prefetch_related(
+			'options'
+		)
+
+		if _is_admin(user):
+			return queryset
+
+		if _is_instructor(user):
+			return queryset.filter(
+				quiz__course__instructor=user
+			)
+
+		return queryset.none()
+
+	def perform_update(self, serializer):
+		question = self.get_object()
+		user = self.request.user
+
+		if (
+			not _is_admin(user)
+			and question.quiz.course.instructor_id != user.id
+		):
+			raise PermissionDenied(
+				'You can only update questions '
+				'from your own quizzes.'
+			)
+
+		serializer.save()
+
+	def perform_destroy(self, instance):
+		user = self.request.user
+
+		if (
+			not _is_admin(user)
+			and instance.quiz.course.instructor_id != user.id
+		):
+			raise PermissionDenied(
+				'You can only delete questions '
+				'from your own quizzes.'
+			)
+
+		instance.delete()
+
+
+# =========================================================
+# Question Option Management
+# =========================================================
+
+class QuestionOptionListCreateAPIView(
+	generics.ListCreateAPIView
+):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = QuestionOptionManagementSerializer
+
+	def get_queryset(self):
+		user = self.request.user
+
+		queryset = QuestionOption.objects.select_related(
+			'question',
+			'question__quiz',
+			'question__quiz__course',
+			'question__quiz__course__instructor'
+		)
+
+		if _is_admin(user):
+			return queryset
+
+		if _is_instructor(user):
+			return queryset.filter(
+				question__quiz__course__instructor=user
+			)
+
+		return queryset.none()
+
+	def perform_create(self, serializer):
+		question = serializer.validated_data['question']
+		user = self.request.user
+
+		if not (
+			_is_instructor(user)
+			or _is_admin(user)
+		):
+			raise PermissionDenied(
+				'Only instructors can create question options.'
+			)
+
+		if (
+			not _is_admin(user)
+			and question.quiz.course.instructor_id != user.id
+		):
+			raise PermissionDenied(
+				'You can only add options to questions '
+				'from your own quizzes.'
+			)
+
+		serializer.save()
+
+
+class QuestionOptionDetailAPIView(
+	generics.RetrieveUpdateDestroyAPIView
+):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = QuestionOptionManagementSerializer
+
+	def get_queryset(self):
+		user = self.request.user
+
+		queryset = QuestionOption.objects.select_related(
+			'question',
+			'question__quiz',
+			'question__quiz__course',
+			'question__quiz__course__instructor'
+		)
+
+		if _is_admin(user):
+			return queryset
+
+		if _is_instructor(user):
+			return queryset.filter(
+				question__quiz__course__instructor=user
+			)
+
+		return queryset.none()
+
+	def perform_update(self, serializer):
+		option = self.get_object()
+		user = self.request.user
+
+		if (
+			not _is_admin(user)
+			and option.question.quiz.course.instructor_id != user.id
+		):
+			raise PermissionDenied(
+				'You can only update options '
+				'from your own quizzes.'
+			)
+
+		serializer.save()
+
+	def perform_destroy(self, instance):
+		user = self.request.user
+
+		if (
+			not _is_admin(user)
+			and instance.question.quiz.course.instructor_id != user.id
+		):
+			raise PermissionDenied(
+				'You can only delete options '
+				'from your own quizzes.'
+			)
+
+		instance.delete()
+
+
+# =========================================================
+# Student Quiz Access
+# =========================================================
+
+class StudentQuizDetailAPIView(
+	generics.RetrieveAPIView
+):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = QuizStudentSerializer
+
+	def get_queryset(self):
+		return Quiz.objects.filter(
+			is_published=True,
+			course__is_published=True
+		).select_related(
+			'course'
+		).prefetch_related(
+			'questions__options'
+		)
+
+	def get_object(self):
+		quiz = super().get_object()
+		user = self.request.user
+
+		enrollment = Enrollment.objects.filter(
+			student=user,
+			course=quiz.course,
+			status__in=['active', 'completed']
+		).first()
+
+		if not enrollment:
+			raise PermissionDenied(
+				'You must be enrolled in this course '
+				'to access this quiz.'
+			)
+
+		return quiz
+
+
+# =========================================================
+# Start Quiz Attempt
+# =========================================================
+
+class StartQuizAttemptAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def post(self, request, quiz_id):
+		student = request.user
+
+		quiz = Quiz.objects.filter(
+			id=quiz_id,
+			is_published=True,
+			course__is_published=True
+		).select_related(
+			'course'
+		).first()
+
+		if quiz is None:
+			return Response(
+				{'detail': 'Quiz not found or not published.'},
+				status=status.HTTP_404_NOT_FOUND,
+			)
+
+		enrollment = Enrollment.objects.filter(
+			student=student,
+			course=quiz.course,
+			status__in=['active', 'completed']
+		).first()
+
+		if enrollment is None:
+			return Response(
+				{
+					'detail': (
+						'You must be enrolled in this course '
+						'before attempting this quiz.'
+					)
+				},
+				status=status.HTTP_403_FORBIDDEN,
+			)
+
+		completed_attempts = QuizAttempt.objects.filter(
+			student=student,
+			quiz=quiz,
+			completed_at__isnull=False
+		).count()
+
+		if completed_attempts >= quiz.max_attempts:
+			return Response(
+				{
+					'detail': (
+						'Maximum quiz attempts reached.'
+					),
+					'max_attempts': quiz.max_attempts,
+					'attempts_used': completed_attempts,
+				},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+
+		existing_attempt = QuizAttempt.objects.filter(
+			student=student,
+			quiz=quiz,
+			completed_at__isnull=True
+		).first()
+
+		if existing_attempt:
+			return Response(
+				QuizAttemptSerializer(
+					existing_attempt
+				).data,
+				status=status.HTTP_200_OK,
+			)
+
+		attempt = QuizAttempt.objects.create(
+			student=student,
+			quiz=quiz,
+			enrollment=enrollment,
+		)
+
+		return Response(
+			QuizAttemptSerializer(attempt).data,
+			status=status.HTTP_201_CREATED,
+		)
+
+
+# =========================================================
+# Submit Quiz Attempt
+# =========================================================
+
+class SubmitQuizAttemptAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	@transaction.atomic
+	def post(self, request, attempt_id):
+		student = request.user
+
+		attempt = QuizAttempt.objects.select_related(
+			'quiz',
+			'enrollment',
+			'quiz__course'
+		).filter(
+			id=attempt_id,
+			student=student
+		).first()
+
+		if attempt is None:
+			return Response(
+				{'detail': 'Quiz attempt not found.'},
+				status=status.HTTP_404_NOT_FOUND,
+			)
+
+		if attempt.completed_at is not None:
+			return Response(
+				{'detail': 'This quiz attempt has already been submitted.'},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+
+		serializer = QuizSubmitSerializer(
+			data=request.data
+		)
+		serializer.is_valid(raise_exception=True)
+
+		submitted_answers = serializer.validated_data['answers']
+
+		questions = list(
+			attempt.quiz.questions.prefetch_related(
+				'options'
+			).all()
+		)
+
+		if not questions:
+			return Response(
+				{'detail': 'This quiz has no questions.'},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+
+		quiz_question_ids = {
+			question.id
+			for question in questions
+		}
+
+		submitted_question_ids = {
+			answer['question']
+			for answer in submitted_answers
+		}
+
+		if submitted_question_ids != quiz_question_ids:
+			return Response(
+				{
+					'detail': (
+						'You must answer every question '
+						'before submitting the quiz.'
+					)
+				},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+
+		total_marks = sum(
+			question.marks
+			for question in questions
+		)
+
+		if total_marks <= 0:
+			return Response(
+				{'detail': 'Quiz total marks must be greater than zero.'},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+
+		question_map = {
+			question.id: question
+			for question in questions
+		}
+
+		score = Decimal('0.00')
+
+		answers_to_create = []
+
+		for submitted_answer in submitted_answers:
+			question_id = submitted_answer['question']
+			option_id = submitted_answer['selected_option']
+
+			question = question_map.get(question_id)
+
+			if question is None:
+				return Response(
+					{
+						'detail': (
+							f'Question {question_id} does not '
+							'belong to this quiz.'
+						)
+					},
+					status=status.HTTP_400_BAD_REQUEST,
+				)
+
+			selected_option = next(
+				(
+					option
+					for option in question.options.all()
+					if option.id == option_id
+				),
+				None
+			)
+
+			if selected_option is None:
+				return Response(
+					{
+						'detail': (
+							f'Option {option_id} does not belong '
+							f'to question {question_id}.'
+						)
+					},
+					status=status.HTTP_400_BAD_REQUEST,
+				)
+
+			is_correct = selected_option.is_correct
+
+			marks_awarded = (
+				Decimal(str(question.marks))
+				if is_correct
+				else Decimal('0.00')
+			)
+
+			score += marks_awarded
+
+			answers_to_create.append(
+				StudentAnswer(
+					attempt=attempt,
+					question=question,
+					selected_option=selected_option,
+					is_correct=is_correct,
+					marks_awarded=marks_awarded,
+				)
+			)
+
+		percentage = (
+			score / Decimal(str(total_marks))
+		) * Decimal('100')
+
+		percentage = percentage.quantize(
+			Decimal('0.01')
+		)
+
+		is_passed = (
+			percentage >=
+			Decimal(str(attempt.quiz.pass_percentage))
+		)
+
+		StudentAnswer.objects.bulk_create(
+			answers_to_create
+		)
+
+		attempt.score = score
+		attempt.percentage = percentage
+		attempt.is_passed = is_passed
+		attempt.completed_at = timezone.now()
+
+		attempt.save(
+			update_fields=[
+				'score',
+				'percentage',
+				'is_passed',
+				'completed_at',
+			]
+		)
+
+		return Response(
+			{
+				'detail': 'Quiz submitted successfully.',
+				'attempt': QuizAttemptSerializer(
+					attempt
+				).data,
+			},
+			status=status.HTTP_200_OK,
+		)
+
+
+# =========================================================
+# Student Quiz Attempt History
+# =========================================================
+
+class StudentQuizAttemptHistoryAPIView(
+	generics.ListAPIView
+):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = QuizAttemptSerializer
+
+	def get_queryset(self):
+		return QuizAttempt.objects.filter(
+			student=self.request.user,
+			completed_at__isnull=False
+		).select_related(
+			'quiz',
+			'enrollment'
+		).order_by(
+			'-completed_at'
+		)
+
+
+# =========================================================
+# Instructor Quiz Results
+# =========================================================
+
+class InstructorQuizResultsAPIView(
+	generics.ListAPIView
+):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = InstructorQuizResultSerializer
+
+	def get_queryset(self):
+		user = self.request.user
+		quiz_id = self.kwargs['quiz_id']
+
+		quiz = Quiz.objects.select_related(
+			'course',
+			'course__instructor'
+		).filter(
+			id=quiz_id
+		).first()
+
+		if quiz is None:
+			raise NotFound(
+				'Quiz not found.'
+			)
+
+		if not _is_admin(user):
+			if not _is_instructor(user):
+				raise PermissionDenied(
+					'Only instructors or admins can view quiz results.'
+				)
+
+			if quiz.course.instructor_id != user.id:
+				raise PermissionDenied(
+					'You can only view results for your own course.'
+				)
+
+		return QuizAttempt.objects.filter(
+			quiz=quiz,
+			completed_at__isnull=False
+		).select_related(
+			'student',
+			'quiz',
+			'enrollment'
+		).order_by(
+			'-completed_at'
+		)

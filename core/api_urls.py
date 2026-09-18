@@ -15,6 +15,7 @@ from .api_views import (
 	ForgotPasswordAPIView,
 	GradeListAPIView,
 	InitiatePaymentAPIView,
+	InstructorQuizResultsAPIView,
 	InstructorRegistrationAPIView,
 	LessonDetailAPIView,
 	LessonListCreateAPIView,
@@ -25,12 +26,22 @@ from .api_views import (
 	MyPaymentsAPIView,
 	PaymentStatusAPIView,
 	ProvinceListAPIView,
+	QuestionDetailAPIView,
+	QuestionListCreateAPIView,
+	QuestionOptionDetailAPIView,
+	QuestionOptionListCreateAPIView,
+	QuizDetailAPIView,
+	QuizListCreateAPIView,
 	ResetPasswordAPIView,
 	RoleListAPIView,
 	SchoolListAPIView,
+	StartQuizAttemptAPIView,
+	StudentQuizAttemptHistoryAPIView,
+	StudentQuizDetailAPIView,
 	StudentRegistrationAPIView,
 	SubjectDetailAPIView,
 	SubjectListCreateAPIView,
+	SubmitQuizAttemptAPIView,
 	TopicDetailAPIView,
 	TopicListCreateAPIView,
 	VerifyPasswordResetOTPAPIView,
@@ -279,5 +290,87 @@ urlpatterns = [
 		'my-payments/',
 		MyPaymentsAPIView.as_view(),
 		name='api-my-payments'
+	),
+
+	# =========================
+	# Quiz Management
+	# =========================
+
+	path(
+		'quizzes/',
+		QuizListCreateAPIView.as_view(),
+		name='api-quiz-list-create'
+	),
+
+	path(
+		'quizzes/<int:pk>/',
+		QuizDetailAPIView.as_view(),
+		name='api-quiz-detail'
+	),
+
+	# =========================
+	# Question Management
+	# =========================
+
+	path(
+		'questions/',
+		QuestionListCreateAPIView.as_view(),
+		name='api-question-list-create'
+	),
+
+	path(
+		'questions/<int:pk>/',
+		QuestionDetailAPIView.as_view(),
+		name='api-question-detail'
+	),
+
+	# =========================
+	# Question Option Management
+	# =========================
+
+	path(
+		'question-options/',
+		QuestionOptionListCreateAPIView.as_view(),
+		name='api-question-option-list-create'
+	),
+
+	path(
+		'question-options/<int:pk>/',
+		QuestionOptionDetailAPIView.as_view(),
+		name='api-question-option-detail'
+	),
+
+	# =========================
+	# Student Quiz Access
+	# =========================
+
+	path(
+		'student/quizzes/<int:pk>/',
+		StudentQuizDetailAPIView.as_view(),
+		name='student-quiz-detail',
+	),
+
+	path(
+		'student/quizzes/<int:quiz_id>/start/',
+		StartQuizAttemptAPIView.as_view(),
+		name='start-quiz-attempt',
+	),
+
+	path(
+		'student/quiz-attempts/<int:attempt_id>/submit/',
+		SubmitQuizAttemptAPIView.as_view(),
+		name='submit-quiz-attempt',
+	),
+
+	path(
+		'student/quiz-attempts/history/',
+		StudentQuizAttemptHistoryAPIView.as_view(),
+		name='student-quiz-attempt-history',
+	),
+
+	path(
+		'instructor/quizzes/<int:quiz_id>/results/',
+		InstructorQuizResultsAPIView.as_view(),
+		name='instructor-quiz-results',
 	),
 ]

@@ -25,7 +25,12 @@ from .models import (
 	PasswordResetOTP,
 	Payment,
 	Province,
+	Question,
+	QuestionOption,
+	Quiz,
+	QuizAttempt,
 	School,
+	StudentAnswer,
 	StudentProfile,
 	Subject,
 	Topic,
@@ -128,13 +133,11 @@ class RegistrationSerializer(serializers.Serializer):
 		return value
 
 	def validate(self, attrs):
-		# Password validation
 		if attrs['password'] != attrs['confirm_password']:
 			raise serializers.ValidationError({
 				'confirm_password': 'Passwords do not match.'
 			})
 
-		# Location validation
 		province = attrs.get('province')
 		district = attrs.get('district')
 		municipality = attrs.get('municipality')
@@ -377,12 +380,10 @@ class ForgotPasswordSerializer(serializers.Serializer):
 		try:
 			user = User.objects.get(email__iexact=email)
 		except User.DoesNotExist:
-			# Do not reveal whether an account exists.
 			return
 
 		otp = str(secrets.randbelow(900000) + 100000)
 
-		# Disable previous unused OTPs.
 		PasswordResetOTP.objects.filter(
 			user=user,
 			is_used=False
@@ -720,15 +721,11 @@ class LessonSerializer(serializers.ModelSerializer):
 			getattr(self.instance, 'content_text', '')
 		)
 
-		# Every lesson must belong to a course.
 		if course is None:
 			raise serializers.ValidationError({
 				'course': 'A lesson must belong to a course.'
 			})
 
-		# Academic course:
-		# Topic is allowed, but if supplied it must belong
-		# to the same grade and subject as the course.
 		if course.course_type == 'academic':
 			if course.subject is None or course.grade is None:
 				raise serializers.ValidationError({
@@ -752,8 +749,6 @@ class LessonSerializer(serializers.ModelSerializer):
 						)
 					})
 
-		# Skill course:
-		# Topic/chapter academic structure is not used.
 		elif course.course_type == 'skill':
 			if topic is not None:
 				raise serializers.ValidationError({
@@ -763,7 +758,6 @@ class LessonSerializer(serializers.ModelSerializer):
 					)
 				})
 
-		# Text lessons require text content.
 		if content_type == 'text':
 			if not content_text:
 				raise serializers.ValidationError({
@@ -772,7 +766,6 @@ class LessonSerializer(serializers.ModelSerializer):
 					)
 				})
 
-		# Video/PDF/eBook lessons require URL.
 		else:
 			if not content_url:
 				raise serializers.ValidationError({
@@ -950,3 +943,345 @@ class VerifyPaymentSerializer(serializers.Serializer):
 				payment.save(update_fields=['status', 'verified_at'])
 
 		return payment
+
+
+class QuestionOptionManagementSerializer(serializers.ModelSerializer):
+	class Meta:
+		model = QuestionOption
+		fields = [
+			'id',
+			'question',
+			'text',
+			'is_correct',
+		]
+		read_only_fields = ['id']
+
+
+class QuestionManagementSerializer(serializers.ModelSerializer):
+	options = QuestionOptionManagementSerializer(
+		many=True,
+		read_only=True
+	)
+
+	class Meta:
+		model = Question
+		fields = [
+			'id',
+			'quiz',
+			'text',
+			'marks',
+			'order',
+			'options',
+		]
+		read_only_fields = ['id']
+
+	def validate_marks(self, value):
+		if value < 1:
+			raise serializers.ValidationError(
+				'Marks must be at least 1.'
+			)
+
+		return value
+
+
+class QuizManagementSerializer(serializers.ModelSerializer):
+	questions = QuestionManagementSerializer(
+		many=True,
+		read_only=True
+	)
+
+	course_title = serializers.CharField(
+		source='course.title',
+		read_only=True
+	)
+
+	class Meta:
+		model = Quiz
+		fields = [
+			'id',
+			'course',
+			'course_title',
+			'title',
+			'description',
+			'pass_percentage',
+			'max_attempts',
+			'is_published',
+			'questions',
+			'created_at',
+			'updated_at',
+		]
+		read_only_fields = [
+			'id',
+			'created_at',
+			'updated_at',
+		]
+
+	def validate_pass_percentage(self, value):
+		if value < 0 or value > 100:
+			raise serializers.ValidationError(
+				'Pass percentage must be '
+				'between 0 and 100.'
+			)
+
+		return value
+
+	def validate_max_attempts(self, value):
+		if value < 1:
+			raise serializers.ValidationError(
+				'Maximum attempts must be '
+				'at least 1.'
+			)
+
+		return value
+
+	def validate(self, attrs):
+		attrs = super().validate(attrs)
+
+		instance = self.instance
+
+		course = attrs.get(
+			'course',
+			instance.course if instance else None
+		)
+
+		is_published = attrs.get(
+			'is_published',
+			instance.is_published if instance else False
+		)
+
+		if not is_published:
+			return attrs
+
+		if not course.is_published:
+			raise serializers.ValidationError({
+				'is_published':
+					'The course must be published before its quiz can be published.'
+			})
+
+		if instance is None:
+			raise serializers.ValidationError({
+				'is_published':
+					'Create the quiz as draft, add questions and options, then publish it.'
+			})
+
+		questions = instance.questions.prefetch_related(
+			'options'
+		).all()
+
+		if not questions.exists():
+			raise serializers.ValidationError({
+				'is_published':
+					'A quiz must contain at least one question before publishing.'
+			})
+
+		for question in questions:
+			options = list(question.options.all())
+
+			if len(options) < 2:
+				raise serializers.ValidationError({
+					'is_published':
+						f'Question {question.id} must have at least two options.'
+				})
+
+			correct_count = sum(
+				1 for option in options
+				if option.is_correct
+			)
+
+			if correct_count != 1:
+				raise serializers.ValidationError({
+					'is_published':
+						f'Question {question.id} must have exactly one correct option.'
+				})
+
+		request = self.context.get('request')
+
+		if request:
+			user = request.user
+
+			role_name = getattr(
+				getattr(user, 'role', None),
+				'name',
+				''
+			)
+
+			is_admin = (
+				user.is_superuser
+				or role_name == 'super_admin'
+			)
+
+			if (
+				not is_admin
+				and user.verification_status != 'verified'
+			):
+				raise serializers.ValidationError({
+					'is_published':
+						'Only verified instructors can publish quizzes.'
+				})
+
+		return attrs
+
+
+# =========================================================
+# Student Quiz Serializers
+# =========================================================
+
+class QuestionOptionStudentSerializer(serializers.ModelSerializer):
+	class Meta:
+		model = QuestionOption
+		fields = [
+			'id',
+			'text',
+		]
+
+
+class QuestionStudentSerializer(serializers.ModelSerializer):
+	options = QuestionOptionStudentSerializer(
+		many=True,
+		read_only=True
+	)
+
+	class Meta:
+		model = Question
+		fields = [
+			'id',
+			'text',
+			'marks',
+			'order',
+			'options',
+		]
+
+
+class QuizStudentSerializer(serializers.ModelSerializer):
+	questions = QuestionStudentSerializer(
+		many=True,
+		read_only=True
+	)
+
+	course_title = serializers.CharField(
+		source='course.title',
+		read_only=True
+	)
+
+	class Meta:
+		model = Quiz
+		fields = [
+			'id',
+			'course',
+			'course_title',
+			'title',
+			'description',
+			'pass_percentage',
+			'max_attempts',
+			'questions',
+		]
+
+
+# =========================================================
+# Quiz Attempt Serializers
+# =========================================================
+
+class QuizAttemptSerializer(serializers.ModelSerializer):
+	quiz_title = serializers.CharField(
+		source='quiz.title',
+		read_only=True
+	)
+
+	class Meta:
+		model = QuizAttempt
+		fields = [
+			'id',
+			'quiz',
+			'quiz_title',
+			'enrollment',
+			'score',
+			'percentage',
+			'is_passed',
+			'started_at',
+			'completed_at',
+		]
+		read_only_fields = [
+			'id',
+			'quiz',
+			'quiz_title',
+			'enrollment',
+			'score',
+			'percentage',
+			'is_passed',
+			'started_at',
+			'completed_at',
+		]
+
+
+# =========================================================
+# Quiz Submission Serializers
+# =========================================================
+
+class StudentAnswerSubmitSerializer(serializers.Serializer):
+	question = serializers.IntegerField()
+	selected_option = serializers.IntegerField()
+
+
+class QuizSubmitSerializer(serializers.Serializer):
+	answers = StudentAnswerSubmitSerializer(many=True)
+
+	def validate_answers(self, value):
+		if not value:
+			raise serializers.ValidationError(
+				'At least one answer is required.'
+			)
+
+		question_ids = [
+			answer['question']
+			for answer in value
+		]
+
+		if len(question_ids) != len(set(question_ids)):
+			raise serializers.ValidationError(
+				'Each question can only be answered once.'
+			)
+
+		return value
+
+
+# =========================================================
+# Instructor Quiz Result Serializer
+# =========================================================
+
+class InstructorQuizResultSerializer(serializers.ModelSerializer):
+	student_id = serializers.IntegerField(
+		source='student.id',
+		read_only=True
+	)
+
+	student_name = serializers.CharField(
+		source='student.name',
+		read_only=True
+	)
+
+	student_email = serializers.EmailField(
+		source='student.email',
+		read_only=True
+	)
+
+	quiz_title = serializers.CharField(
+		source='quiz.title',
+		read_only=True
+	)
+
+	class Meta:
+		model = QuizAttempt
+		fields = [
+			'id',
+			'student_id',
+			'student_name',
+			'student_email',
+			'quiz',
+			'quiz_title',
+			'score',
+			'percentage',
+			'is_passed',
+			'started_at',
+			'completed_at',
+		]
+		read_only_fields = fields
