@@ -42,6 +42,7 @@ from .api_views import (
 	SubmitQuizAttemptAPIView,
 	StudentQuizAttemptHistoryAPIView,
 	InstructorQuizResultsAPIView,
+	StudentPointsAPIView,
 	
 )
 
@@ -331,5 +332,10 @@ path(
     'instructor/quizzes/<int:quiz_id>/results/',
     InstructorQuizResultsAPIView.as_view(),
     name='instructor-quiz-results',
+),
+path(
+    'student/points/',
+    StudentPointsAPIView.as_view(),
+    name='student-points',
 ),
 ]

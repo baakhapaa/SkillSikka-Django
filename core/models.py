@@ -578,7 +578,6 @@ class Quiz(models.Model):
     def __str__(self):
         return self.title
 
-
 class Question(models.Model):
     quiz = models.ForeignKey(
         Quiz,
@@ -587,12 +586,12 @@ class Question(models.Model):
     )
     text = models.TextField()
     marks = models.PositiveSmallIntegerField(default=1)
+    points = models.PositiveIntegerField(default=0)
     order = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
         db_table = 'questions'
         ordering = ['order']
-
     def __str__(self):
         return self.text
 
@@ -684,3 +683,69 @@ class StudentAnswer(models.Model):
 
     def __str__(self):
         return f'{self.attempt_id} - {self.question_id}'
+
+class PointTransaction(models.Model):
+    EVENT_TYPES = [
+        ('quiz_correct_answer', 'Quiz Correct Answer'),
+        ('quiz_first_time_correct', 'Quiz First-Time Correct'),
+        ('quiz_completion', 'Quiz Completion'),
+        ('course_completion', 'Course Completion'),
+        ('challenge_completion', 'Challenge Completion'),
+        ('manual_adjustment', 'Manual Adjustment'),
+    ]
+
+    student = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='point_transactions'
+    )
+    points = models.IntegerField()
+    event_type = models.CharField(
+        max_length=50,
+        choices=EVENT_TYPES
+    )
+
+    quiz_attempt = models.ForeignKey(
+        QuizAttempt,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='point_transactions'
+    )
+
+    question = models.ForeignKey(
+        Question,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='point_transactions'
+    )
+
+    description = models.CharField(
+        max_length=255,
+        blank=True
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'point_transactions'
+        ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=[
+                    'student',
+                    'event_type',
+                    'quiz_attempt',
+                    'question'
+                ],
+                name='unique_point_event_per_question_attempt'
+            )
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.student.email} - "
+            f"{self.points} points - "
+            f"{self.event_type}"
+        )

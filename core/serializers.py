@@ -1132,14 +1132,12 @@ class QuestionOptionManagementSerializer(
 ):
     class Meta:
         model = QuestionOption
-
         fields = [
             'id',
             'question',
             'text',
             'is_correct',
         ]
-
         read_only_fields = ['id']
 
 
@@ -1159,6 +1157,7 @@ class QuestionManagementSerializer(
             'quiz',
             'text',
             'marks',
+            'points',
             'order',
             'options',
         ]
@@ -1169,6 +1168,14 @@ class QuestionManagementSerializer(
         if value < 1:
             raise serializers.ValidationError(
                 'Marks must be at least 1.'
+            )
+
+        return value
+
+    def validate_points(self, value):
+        if value < 0:
+            raise serializers.ValidationError(
+                'Points cannot be negative.'
             )
 
         return value
@@ -1227,6 +1234,7 @@ class QuizManagementSerializer(
             )
 
         return value
+
     def validate(self, attrs):
         attrs = super().validate(attrs)
 
