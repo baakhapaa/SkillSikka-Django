@@ -1227,4 +1227,260 @@ class QuizManagementSerializer(
             )
 
         return value
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+
+        instance = self.instance
+
+        course = attrs.get(
+            'course',
+            instance.course if instance else None
+        )
+
+        is_published = attrs.get(
+            'is_published',
+            instance.is_published if instance else False
+        )
+
+        if not is_published:
+            return attrs
+
+        if not course.is_published:
+            raise serializers.ValidationError({
+                'is_published':
+                    'The course must be published before its quiz can be published.'
+            })
+
+        if instance is None:
+            raise serializers.ValidationError({
+                'is_published':
+                    'Create the quiz as draft, add questions and options, then publish it.'
+            })
+
+        questions = instance.questions.prefetch_related(
+            'options'
+        ).all()
+
+        if not questions.exists():
+            raise serializers.ValidationError({
+                'is_published':
+                    'A quiz must contain at least one question before publishing.'
+            })
+
+        for question in questions:
+            options = list(question.options.all())
+
+            if len(options) < 2:
+                raise serializers.ValidationError({
+                    'is_published':
+                        f'Question {question.id} must have at least two options.'
+                })
+
+            correct_count = sum(
+                1 for option in options
+                if option.is_correct
+            )
+
+            if correct_count != 1:
+                raise serializers.ValidationError({
+                    'is_published':
+                        f'Question {question.id} must have exactly one correct option.'
+                })
+
+        request = self.context.get('request')
+
+        if request:
+            user = request.user
+
+            role_name = getattr(
+                getattr(user, 'role', None),
+                'name',
+                ''
+            )
+
+            is_admin = (
+                user.is_superuser
+                or role_name == 'super_admin'
+            )
+
+            if (
+                not is_admin
+                and user.verification_status != 'verified'
+            ):
+                raise serializers.ValidationError({
+                    'is_published':
+                        'Only verified instructors can publish quizzes.'
+                })
+
+        return attrs
+    # =========================================================
+# Student Quiz Serializers
+# =========================================================
+
+class QuestionOptionStudentSerializer(
+    serializers.ModelSerializer
+):
+    class Meta:
+        model = QuestionOption
+
+        fields = [
+            'id',
+            'text',
+        ]
+
+
+class QuestionStudentSerializer(
+    serializers.ModelSerializer
+):
+    options = QuestionOptionStudentSerializer(
+        many=True,
+        read_only=True
+    )
+
+    class Meta:
+        model = Question
+
+        fields = [
+            'id',
+            'text',
+            'marks',
+            'order',
+            'options',
+        ]
+
+
+class QuizStudentSerializer(
+    serializers.ModelSerializer
+):
+    questions = QuestionStudentSerializer(
+        many=True,
+        read_only=True
+    )
+
+    course_title = serializers.CharField(
+        source='course.title',
+        read_only=True
+    )
+
+    class Meta:
+        model = Quiz
+
+        fields = [
+            'id',
+            'course',
+            'course_title',
+            'title',
+            'description',
+            'pass_percentage',
+            'max_attempts',
+            'questions',
+        ]
+# =========================================================
+# Quiz Attempt Serializers
+# =========================================================
+
+class QuizAttemptSerializer(serializers.ModelSerializer):
+    quiz_title = serializers.CharField(
+        source='quiz.title',
+        read_only=True
+    )
+
+    class Meta:
+        model = QuizAttempt
+        fields = [
+            'id',
+            'quiz',
+            'quiz_title',
+            'enrollment',
+            'score',
+            'percentage',
+            'is_passed',
+            'started_at',
+            'completed_at',
+        ]
+
+        read_only_fields = [
+            'id',
+            'quiz',
+            'quiz_title',
+            'enrollment',
+            'score',
+            'percentage',
+            'is_passed',
+            'started_at',
+            'completed_at',
+        ]
+# =========================================================
+# Quiz Submission Serializers
+# =========================================================
+
+class StudentAnswerSubmitSerializer(serializers.Serializer):
+    question = serializers.IntegerField()
+    selected_option = serializers.IntegerField()
+
+
+class QuizSubmitSerializer(serializers.Serializer):
+    answers = StudentAnswerSubmitSerializer(
+        many=True
+    )
+
+    def validate_answers(self, value):
+        if not value:
+            raise serializers.ValidationError(
+                'At least one answer is required.'
+            )
+
+        question_ids = [
+            answer['question']
+            for answer in value
+        ]
+
+        if len(question_ids) != len(set(question_ids)):
+            raise serializers.ValidationError(
+                'Each question can only be answered once.'
+            )
+
+        return value
+    # =========================================================
+# Instructor Quiz Result Serializer
+# =========================================================
+
+class InstructorQuizResultSerializer(serializers.ModelSerializer):
+    student_id = serializers.IntegerField(
+        source='student.id',
+        read_only=True
+    )
+
+    student_name = serializers.CharField(
+        source='student.name',
+        read_only=True
+    )
+
+    student_email = serializers.EmailField(
+        source='student.email',
+        read_only=True
+    )
+
+    quiz_title = serializers.CharField(
+        source='quiz.title',
+        read_only=True
+    )
+
+    class Meta:
+        model = QuizAttempt
+        fields = [
+            'id',
+            'student_id',
+            'student_name',
+            'student_email',
+            'quiz',
+            'quiz_title',
+            'score',
+            'percentage',
+            'is_passed',
+            'started_at',
+            'completed_at',
+        ]
+
+        read_only_fields = fields
 		

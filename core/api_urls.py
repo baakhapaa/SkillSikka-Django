@@ -37,11 +37,17 @@ from .api_views import (
     QuestionListCreateAPIView,
 	QuestionOptionDetailAPIView,
     QuestionOptionListCreateAPIView,
+	StudentQuizDetailAPIView,
+	StartQuizAttemptAPIView,
+	SubmitQuizAttemptAPIView,
+	StudentQuizAttemptHistoryAPIView,
+	InstructorQuizResultsAPIView,
+	
 )
 
 
 urlpatterns = [
-	# =========================
+	# =========================v  
 	# Roles
 	# =========================
 
@@ -300,4 +306,30 @@ urlpatterns = [
                 QuestionOptionDetailAPIView.as_view(),
                 name='api-question-option-detail'
         ),
+		path(
+    'student/quizzes/<int:pk>/',
+    StudentQuizDetailAPIView.as_view(),
+    name='student-quiz-detail',
+),
+path(
+    'student/quizzes/<int:quiz_id>/start/',
+    StartQuizAttemptAPIView.as_view(),
+    name='start-quiz-attempt',
+),
+
+path(
+    'student/quiz-attempts/<int:attempt_id>/submit/',
+    SubmitQuizAttemptAPIView.as_view(),
+    name='submit-quiz-attempt',
+),
+path(
+    'student/quiz-attempts/history/',
+    StudentQuizAttemptHistoryAPIView.as_view(),
+    name='student-quiz-attempt-history',
+),
+path(
+    'instructor/quizzes/<int:quiz_id>/results/',
+    InstructorQuizResultsAPIView.as_view(),
+    name='instructor-quiz-results',
+),
 ]
