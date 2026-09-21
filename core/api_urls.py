@@ -3,6 +3,8 @@ from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 
 from .api_views import (
+	BadgeDetailAPIView,
+	BadgeListCreateAPIView,
 	ChapterDetailAPIView,
 	ChapterListCreateAPIView,
 	CheckCourseCertificateAPIView,
@@ -24,6 +26,7 @@ from .api_views import (
 	LoginAPIView,
 	LogoutAPIView,
 	MunicipalityListAPIView,
+	MyBadgesAPIView,
 	MyCertificatesAPIView,
 	MyEnrollmentsAPIView,
 	MyPaymentsAPIView,
@@ -334,6 +337,28 @@ urlpatterns = [
 		'my-certificates/',
 		MyCertificatesAPIView.as_view(),
 		name='api-my-certificates'
+	),
+
+	# =========================
+	# Badges
+	# =========================
+
+	path(
+		'badges/',
+		BadgeListCreateAPIView.as_view(),
+		name='api-badge-list-create'
+	),
+
+	path(
+		'badges/<int:pk>/',
+		BadgeDetailAPIView.as_view(),
+		name='api-badge-detail'
+	),
+
+	path(
+		'my-badges/',
+		MyBadgesAPIView.as_view(),
+		name='api-my-badges'
 	),
 
 	# =========================

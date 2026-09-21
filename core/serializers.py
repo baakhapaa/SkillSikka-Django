@@ -13,6 +13,7 @@ from django.utils.text import slugify
 from rest_framework import serializers
 
 from .models import (
+	Badge,
 	Certificate,
 	CertificateCriteria,
 	Chapter,
@@ -34,6 +35,7 @@ from .models import (
 	QuizAttempt,
 	School,
 	StudentAnswer,
+	StudentBadge,
 	StudentProfile,
 	Subject,
 	Topic,
@@ -1302,3 +1304,46 @@ class CertificateCriteriaSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = CertificateCriteria
 		fields = ['skill_course_requires_quiz_pass', 'academic_grade_min_completion_percentage']
+
+
+class BadgeSerializer(serializers.ModelSerializer):
+	class Meta:
+		model = Badge
+		fields = [
+			'id',
+			'name',
+			'description',
+			'icon_url',
+			'criteria_type',
+			'criteria_value',
+			'is_active',
+		]
+		read_only_fields = ['id']
+
+	def validate_criteria_value(self, value):
+		if value < 1:
+			raise serializers.ValidationError(
+				'Criteria value must be at least 1.'
+			)
+
+		return value
+
+
+class StudentBadgeSerializer(serializers.ModelSerializer):
+	badge_id = serializers.IntegerField(source='badge.id', read_only=True)
+	name = serializers.CharField(source='badge.name', read_only=True)
+	description = serializers.CharField(source='badge.description', read_only=True)
+	icon_url = serializers.CharField(source='badge.icon_url', read_only=True)
+	criteria_type = serializers.CharField(source='badge.criteria_type', read_only=True)
+
+	class Meta:
+		model = StudentBadge
+		fields = [
+			'id',
+			'badge_id',
+			'name',
+			'description',
+			'icon_url',
+			'criteria_type',
+			'awarded_at',
+		]

@@ -16,6 +16,7 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import (
+	Badge,
 	Certificate,
 	CertificateCriteria,
 	Chapter,
@@ -38,12 +39,14 @@ from .models import (
 	StreakHistory,
 	StreakSettings,
 	StudentAnswer,
+	StudentBadge,
 	Subject,
 	Topic,
 	User,
 )
 
 from .serializers import (
+	BadgeSerializer,
 	CertificateSerializer,
 	ChapterSerializer,
 	CourseSerializer,
@@ -71,6 +74,7 @@ from .serializers import (
 	QuizSubmitSerializer,
 	ResetPasswordSerializer,
 	SchoolSerializer,
+	StudentBadgeSerializer,
 	StudentRegistrationSerializer,
 	SubjectSerializer,
 	TopicSerializer,
@@ -455,6 +459,89 @@ def _check_grade_certificate_eligibility(student, grade):
 
 	average_percentage = total_percentage / course_count
 	return average_percentage >= criteria.academic_grade_min_completion_percentage
+
+
+# =========================================================
+# Badge Helpers
+# =========================================================
+
+def _count_perfect_quizzes(student):
+	return QuizAttempt.objects.filter(
+		student=student,
+		completed_at__isnull=False,
+		percentage__gte=Decimal('100'),
+	).order_by().values('quiz_id').distinct().count()
+
+
+def _count_completed_courses(student):
+	course_ids = LessonProgress.objects.filter(
+		student=student,
+		is_completed=True,
+		lesson__course__isnull=False,
+	).order_by().values_list('lesson__course_id', flat=True).distinct()
+
+	completed_courses = 0
+
+	for course_id in course_ids:
+		total_lessons = Lesson.objects.filter(course_id=course_id).count()
+		completed_lessons = LessonProgress.objects.filter(
+			student=student,
+			lesson__course_id=course_id,
+			is_completed=True,
+		).count()
+
+		if total_lessons > 0 and completed_lessons == total_lessons:
+			completed_courses += 1
+
+	return completed_courses
+
+
+def _check_and_award_badges(student):
+	already_earned = StudentBadge.objects.filter(
+		student=student
+	).values_list('badge_id', flat=True)
+
+	pending_badges = list(
+		Badge.objects.filter(
+			is_active=True
+		).exclude(
+			id__in=already_earned
+		)
+	)
+
+	if not pending_badges:
+		return []
+
+	progress = {}
+	awarded = []
+
+	for badge in pending_badges:
+		criteria_type = badge.criteria_type
+
+		if criteria_type not in progress:
+			if criteria_type == 'quiz_perfect_score':
+				progress[criteria_type] = _count_perfect_quizzes(student)
+
+			elif criteria_type == 'streak_milestone':
+				streak = LearningStreak.objects.filter(student=student).first()
+				progress[criteria_type] = streak.longest_streak if streak else 0
+
+			elif criteria_type == 'course_completion_count':
+				progress[criteria_type] = _count_completed_courses(student)
+
+			else:
+				progress[criteria_type] = 0
+
+		if progress[criteria_type] >= badge.criteria_value:
+			_, created = StudentBadge.objects.get_or_create(
+				student=student,
+				badge=badge,
+			)
+
+			if created:
+				awarded.append(badge)
+
+	return awarded
 
 
 # =========================================================
@@ -1050,6 +1137,7 @@ class CompleteLessonAPIView(APIView):
 		)
 
 		_update_streak(student)
+		_check_and_award_badges(student)
 
 		return Response(LessonProgressSerializer(progress).data, status=status.HTTP_200_OK)
 
@@ -1245,6 +1333,85 @@ class MyCertificatesAPIView(generics.ListAPIView):
 
 	def get_queryset(self):
 		return Certificate.objects.filter(student=self.request.user).select_related('course', 'grade').order_by('-issued_at')
+
+
+# =========================================================
+# Badges
+# =========================================================
+
+class BadgeListCreateAPIView(generics.ListCreateAPIView):
+	serializer_class = BadgeSerializer
+	authentication_classes = [
+		JWTAuthentication,
+		SessionAuthentication,
+	]
+	permission_classes = [IsAuthenticated]
+
+	def get_queryset(self):
+		queryset = Badge.objects.all()
+
+		if not _is_admin(self.request.user):
+			queryset = queryset.filter(
+				is_active=True
+			)
+
+		return queryset.order_by('name')
+
+	def perform_create(self, serializer):
+		if not _is_admin(self.request.user):
+			raise PermissionDenied(
+				'Only administrators can create badges.'
+			)
+
+		serializer.save()
+
+
+class BadgeDetailAPIView(
+	generics.RetrieveUpdateDestroyAPIView
+):
+	serializer_class = BadgeSerializer
+	authentication_classes = [
+		JWTAuthentication,
+		SessionAuthentication,
+	]
+	permission_classes = [IsAuthenticated]
+
+	def get_queryset(self):
+		queryset = Badge.objects.all()
+
+		if not _is_admin(self.request.user):
+			queryset = queryset.filter(
+				is_active=True
+			)
+
+		return queryset
+
+	def perform_update(self, serializer):
+		if not _is_admin(self.request.user):
+			raise PermissionDenied(
+				'Only administrators can update badges.'
+			)
+
+		serializer.save()
+
+	def perform_destroy(self, instance):
+		if not _is_admin(self.request.user):
+			raise PermissionDenied(
+				'Only administrators can delete badges.'
+			)
+
+		instance.delete()
+
+
+class MyBadgesAPIView(generics.ListAPIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = StudentBadgeSerializer
+
+	def get_queryset(self):
+		return StudentBadge.objects.filter(
+			student=self.request.user
+		).select_related('badge').order_by('-awarded_at')
 
 
 # =========================================================
@@ -1800,6 +1967,8 @@ class SubmitQuizAttemptAPIView(APIView):
 		attempt.is_passed = is_passed
 		attempt.completed_at = timezone.now()
 		attempt.save(update_fields=['score', 'percentage', 'is_passed', 'completed_at'])
+
+		_check_and_award_badges(student)
 
 		return Response({
 			'detail': 'Quiz submitted successfully.',
