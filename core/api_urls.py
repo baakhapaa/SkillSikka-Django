@@ -53,6 +53,12 @@ from .api_views import (
 	VerifyPasswordResetOTPAPIView,
 	VerifyPaymentAPIView,
 	PointsLeaderboardAPIView,
+	RecordShortViewAPIView,
+    ShortCommentDetailAPIView,
+    ShortCommentListCreateAPIView,
+    ShortDetailAPIView,
+    ShortListCreateAPIView,
+    ToggleShortLikeAPIView,
 )
 
 
@@ -447,4 +453,44 @@ urlpatterns = [
 		StudentPointsAPIView.as_view(),
 		name='student-points',
 	),
+
+	# =========================
+# Shorts
+# =========================
+
+path(
+    'shorts/',
+    ShortListCreateAPIView.as_view(),
+    name='api-short-list-create',
+),
+
+path(
+    'shorts/<int:pk>/',
+    ShortDetailAPIView.as_view(),
+    name='api-short-detail',
+),
+
+path(
+    'student/shorts/<int:short_id>/view/',
+    RecordShortViewAPIView.as_view(),
+    name='student-short-view',
+),
+
+path(
+    'student/shorts/<int:short_id>/like/',
+    ToggleShortLikeAPIView.as_view(),
+    name='student-short-like',
+),
+
+path(
+    'student/shorts/<int:short_id>/comments/',
+    ShortCommentListCreateAPIView.as_view(),
+    name='student-short-comments',
+),
+
+path(
+    'shorts/comments/<int:pk>/',
+    ShortCommentDetailAPIView.as_view(),
+    name='short-comment-detail',
+),
 ]

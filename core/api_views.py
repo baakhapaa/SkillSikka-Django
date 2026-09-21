@@ -11,6 +11,8 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework import serializers
+
 
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import TokenError
@@ -42,6 +44,10 @@ from .models import (
 	Topic,
 	User,
 	PointTransaction,
+	Short,
+    ShortComment,
+    ShortLike,
+    ShortView,
 )
 
 from .serializers import (
@@ -79,6 +85,10 @@ from .serializers import (
 	VerifyPaymentSerializer,
 	PointsLeaderboardEntrySerializer,
     PointTransactionSerializer,
+	ShortCommentSerializer,
+    ShortLikeSerializer,
+    ShortSerializer,
+    ShortViewSerializer,
 )
 
 
@@ -2160,3 +2170,351 @@ class StudentPointsAPIView(APIView):
             },
             status=status.HTTP_200_OK
         )
+# =========================================================
+# Shorts
+# =========================================================
+
+class ShortListCreateAPIView(generics.ListCreateAPIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    serializer_class = ShortSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+
+        queryset = Short.objects.select_related(
+            'instructor'
+        ).prefetch_related(
+            'likes',
+            'comments'
+        )
+
+        if _is_admin(user):
+            return queryset.order_by('-created_at')
+
+        if _is_instructor(user):
+            return queryset.filter(
+                Q(is_published=True) |
+                Q(instructor=user)
+            ).order_by('-created_at')
+
+        return queryset.filter(
+            is_published=True
+        ).order_by('-created_at')
+
+    def perform_create(self, serializer):
+        user = self.request.user
+
+        if not _is_verified_instructor(user):
+            raise PermissionDenied(
+                'Only verified instructors can create Shorts.'
+            )
+
+        serializer.save(
+            instructor=user,
+            is_published=False
+        )
+
+
+class ShortDetailAPIView(
+    generics.RetrieveUpdateDestroyAPIView
+):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    serializer_class = ShortSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+
+        queryset = Short.objects.select_related(
+            'instructor'
+        ).prefetch_related(
+            'likes',
+            'comments'
+        )
+
+        if _is_admin(user):
+            return queryset
+
+        if _is_instructor(user):
+            return queryset.filter(
+                Q(is_published=True) |
+                Q(instructor=user)
+            )
+
+        return queryset.filter(
+            is_published=True
+        )
+
+    def _check_owner_or_admin(self, short):
+        user = self.request.user
+
+        if not (
+            _is_admin(user)
+            or short.instructor_id == user.id
+        ):
+            raise PermissionDenied(
+                'Only the Short owner or administrator '
+                'can modify this Short.'
+            )
+
+    def perform_update(self, serializer):
+        short = self.get_object()
+        user = self.request.user
+
+        self._check_owner_or_admin(short)
+
+        requested_publish = serializer.validated_data.get(
+            'is_published',
+            short.is_published
+        )
+
+        if (
+            requested_publish
+            and not short.is_published
+            and not _is_admin(user)
+            and not _is_verified_instructor(user)
+        ):
+            raise PermissionDenied(
+                'Only verified instructors can publish Shorts.'
+            )
+
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        self._check_owner_or_admin(instance)
+        instance.delete()
+
+
+# =========================================================
+# Student Short View
+# =========================================================
+
+class RecordShortViewAPIView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, short_id):
+        user = request.user
+
+        if _role_name(user) != 'student':
+            return Response(
+                {
+                    'detail':
+                        'Only students can record Short views.'
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        short = Short.objects.select_for_update().filter(
+            id=short_id,
+            is_published=True
+        ).first()
+
+        if short is None:
+            return Response(
+                {
+                    'detail':
+                        'Short not found or not published.'
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        short_view, created = ShortView.objects.get_or_create(
+            student=user,
+            short=short
+        )
+
+        if created:
+            short.view_count += 1
+            short.save(
+                update_fields=['view_count']
+            )
+
+        return Response(
+            {
+                'detail': (
+                    'Short view recorded.'
+                    if created
+                    else 'Short was already viewed.'
+                ),
+                'new_view': created,
+                'view_count': short.view_count,
+                'view': ShortViewSerializer(
+                    short_view
+                ).data,
+            },
+            status=(
+                status.HTTP_201_CREATED
+                if created
+                else status.HTTP_200_OK
+            )
+        )
+
+
+# =========================================================
+# Short Like / Unlike
+# =========================================================
+
+class ToggleShortLikeAPIView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, short_id):
+        user = request.user
+
+        if _role_name(user) != 'student':
+            return Response(
+                {
+                    'detail':
+                        'Only students can like Shorts.'
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        short = Short.objects.filter(
+            id=short_id,
+            is_published=True
+        ).first()
+
+        if short is None:
+            return Response(
+                {
+                    'detail':
+                        'Short not found or not published.'
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        existing_like = ShortLike.objects.filter(
+            student=user,
+            short=short
+        ).first()
+
+        if existing_like:
+            existing_like.delete()
+
+            return Response(
+                {
+                    'detail': 'Short unliked successfully.',
+                    'is_liked': False,
+                    'like_count': short.likes.count(),
+                },
+                status=status.HTTP_200_OK
+            )
+
+        short_like = ShortLike.objects.create(
+            student=user,
+            short=short
+        )
+
+        return Response(
+            {
+                'detail': 'Short liked successfully.',
+                'is_liked': True,
+                'like_count': short.likes.count(),
+                'like': ShortLikeSerializer(
+                    short_like
+                ).data,
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+
+# =========================================================
+# Short Comments
+# =========================================================
+
+class ShortCommentListCreateAPIView(
+    generics.ListCreateAPIView
+):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    serializer_class = ShortCommentSerializer
+
+    def get_queryset(self):
+        short_id = self.kwargs['short_id']
+
+        short = Short.objects.filter(
+            id=short_id,
+            is_published=True
+        ).first()
+
+        if short is None:
+            raise NotFound(
+                'Short not found or not published.'
+            )
+
+        return ShortComment.objects.filter(
+            short=short
+        ).select_related(
+            'student',
+            'short'
+        ).order_by(
+            '-created_at'
+        )
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        short_id = self.kwargs['short_id']
+
+        if _role_name(user) != 'student':
+            raise PermissionDenied(
+                'Only students can comment on Shorts.'
+            )
+
+        short = Short.objects.filter(
+            id=short_id,
+            is_published=True
+        ).first()
+
+        if short is None:
+            raise NotFound(
+                'Short not found or not published.'
+            )
+
+        text = serializer.validated_data.get(
+            'text',
+            ''
+        ).strip()
+
+        if not text:
+            raise serializers.ValidationError({
+                'text': 'Comment cannot be empty.'
+            })
+
+        serializer.save(
+            student=user,
+            short=short,
+            text=text
+        )
+
+
+class ShortCommentDetailAPIView(
+    generics.RetrieveDestroyAPIView
+):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    serializer_class = ShortCommentSerializer
+
+    queryset = ShortComment.objects.select_related(
+        'student',
+        'short'
+    )
+
+    def perform_destroy(self, instance):
+        user = self.request.user
+
+        if not (
+            _is_admin(user)
+            or instance.student_id == user.id
+            or instance.short.instructor_id == user.id
+        ):
+            raise PermissionDenied(
+                'You do not have permission '
+                'to delete this comment.'
+            )
+
+        instance.delete()
