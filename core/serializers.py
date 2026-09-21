@@ -16,6 +16,8 @@ from .models import (
 	Badge,
 	Certificate,
 	CertificateCriteria,
+	Challenge,
+	ChallengeParticipant,
 	Chapter,
 	Course,
 	District,
@@ -1347,3 +1349,198 @@ class StudentBadgeSerializer(serializers.ModelSerializer):
 			'criteria_type',
 			'awarded_at',
 		]
+
+
+class ChallengeSerializer(serializers.ModelSerializer):
+	subject_name = serializers.CharField(
+		source='subject.name',
+		read_only=True,
+		allow_null=True
+	)
+	grade_name = serializers.CharField(
+		source='grade.name',
+		read_only=True,
+		allow_null=True
+	)
+	created_by_name = serializers.CharField(
+		source='created_by.name',
+		read_only=True
+	)
+	participant_count = serializers.SerializerMethodField()
+	is_ended = serializers.SerializerMethodField()
+	winners = serializers.SerializerMethodField()
+	my_status = serializers.SerializerMethodField()
+
+	class Meta:
+		model = Challenge
+		fields = [
+			'id',
+			'title',
+			'description',
+			'subject',
+			'subject_name',
+			'grade',
+			'grade_name',
+			'points',
+			'end_at',
+			'is_ended',
+			'is_published',
+			'created_by',
+			'created_by_name',
+			'participant_count',
+			'winners',
+			'my_status',
+			'created_at',
+			'updated_at',
+		]
+		read_only_fields = [
+			'id',
+			'created_by',
+			'created_at',
+			'updated_at',
+		]
+
+	def get_participant_count(self, obj):
+		count = getattr(obj, 'participant_count', None)
+
+		if count is None:
+			count = obj.participants.count()
+
+		return count
+
+	def get_is_ended(self, obj):
+		return obj.end_at <= timezone.now()
+
+	def get_winners(self, obj):
+		winners = getattr(obj, 'winner_participants', None)
+
+		if winners is None:
+			winners = list(
+				obj.participants.filter(
+					is_winner=True
+				).select_related('student')
+			)
+
+		return [
+			{
+				'participant_id': winner.id,
+				'student_id': winner.student_id,
+				'student_name': winner.student.name,
+			}
+			for winner in winners
+		]
+
+	def get_my_status(self, obj):
+		statuses = self.context.get('my_statuses')
+
+		if statuses is None:
+			return None
+
+		return statuses.get(obj.pk)
+
+	def validate_end_at(self, value):
+		now = timezone.now()
+
+		if self.instance is not None:
+			if value == self.instance.end_at:
+				return value
+
+			if self.instance.end_at <= now:
+				raise serializers.ValidationError(
+					'The end time cannot be changed after the challenge has ended.'
+				)
+
+		if value <= now:
+			raise serializers.ValidationError(
+				'The end time must be in the future.'
+			)
+
+		return value
+
+
+class ChallengeParticipantSerializer(serializers.ModelSerializer):
+	challenge_title = serializers.CharField(
+		source='challenge.title',
+		read_only=True
+	)
+	challenge_end_at = serializers.DateTimeField(
+		source='challenge.end_at',
+		read_only=True
+	)
+	student_id = serializers.IntegerField(
+		source='student.id',
+		read_only=True
+	)
+	student_name = serializers.CharField(
+		source='student.name',
+		read_only=True
+	)
+	student_email = serializers.EmailField(
+		source='student.email',
+		read_only=True
+	)
+	reviewed_by_name = serializers.CharField(
+		source='reviewed_by.name',
+		read_only=True,
+		allow_null=True
+	)
+
+	class Meta:
+		model = ChallengeParticipant
+		fields = [
+			'id',
+			'challenge',
+			'challenge_title',
+			'challenge_end_at',
+			'student_id',
+			'student_name',
+			'student_email',
+			'status',
+			'submission_text',
+			'submission_url',
+			'submitted_at',
+			'reviewed_by_name',
+			'reviewed_at',
+			'points_awarded',
+			'is_winner',
+			'joined_at',
+		]
+		read_only_fields = fields
+
+
+class ChallengeSubmitSerializer(serializers.Serializer):
+	submission_text = serializers.CharField(
+		required=False,
+		allow_blank=True,
+		max_length=2000
+	)
+	submission_url = serializers.URLField(
+		required=False,
+		allow_blank=True,
+		max_length=500
+	)
+
+	def validate(self, attrs):
+		text = attrs.get('submission_text', '').strip()
+		url = attrs.get('submission_url', '').strip()
+
+		if not text and not url:
+			raise serializers.ValidationError({
+				'detail': 'Provide a text answer or a link.'
+			})
+
+		attrs['submission_text'] = text
+		attrs['submission_url'] = url
+
+		return attrs
+
+
+class ChallengeReviewSerializer(serializers.Serializer):
+	action = serializers.ChoiceField(choices=['approve', 'reject'])
+
+
+class ChallengeWinnersSerializer(serializers.Serializer):
+	participants = serializers.ListField(
+		child=serializers.IntegerField(),
+		allow_empty=True
+	)

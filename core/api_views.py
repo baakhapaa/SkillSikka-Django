@@ -1,11 +1,11 @@
-﻿from django.db.models import Q, QuerySet
+﻿from django.db.models import Count, Prefetch, Q, QuerySet
 from django.utils import timezone
 from django.db import transaction
 from decimal import Decimal
 
 from rest_framework import generics, status
 from rest_framework.authentication import SessionAuthentication
-from rest_framework.exceptions import PermissionDenied, NotFound
+from rest_framework.exceptions import PermissionDenied, NotFound, ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -19,6 +19,8 @@ from .models import (
 	Badge,
 	Certificate,
 	CertificateCriteria,
+	Challenge,
+	ChallengeParticipant,
 	Chapter,
 	Course,
 	District,
@@ -48,6 +50,11 @@ from .models import (
 from .serializers import (
 	BadgeSerializer,
 	CertificateSerializer,
+	ChallengeParticipantSerializer,
+	ChallengeReviewSerializer,
+	ChallengeSerializer,
+	ChallengeSubmitSerializer,
+	ChallengeWinnersSerializer,
 	ChapterSerializer,
 	CourseSerializer,
 	DistrictSerializer,
@@ -377,6 +384,10 @@ def _is_admin(user):
 
 def _is_instructor(user):
 	return _role_name(user) == 'instructor'
+
+
+def _is_student(user):
+	return _role_name(user) == 'student'
 
 
 def _is_verified_instructor(user):
@@ -1412,6 +1423,517 @@ class MyBadgesAPIView(generics.ListAPIView):
 		return StudentBadge.objects.filter(
 			student=self.request.user
 		).select_related('badge').order_by('-awarded_at')
+
+
+# =========================================================
+# Challenges
+# =========================================================
+
+def _my_challenge_statuses(user):
+	return dict(
+		ChallengeParticipant.objects.filter(
+			student=user
+		).values_list('challenge_id', 'status')
+	)
+
+
+def _can_manage_challenge(user, challenge):
+	return (
+		_is_admin(user)
+		or challenge.created_by_id == user.id
+	)
+
+
+class ChallengeAccessMixin:
+	def get_challenge_queryset(self):
+		user = self.request.user
+
+		queryset = Challenge.objects.select_related(
+			'subject',
+			'grade',
+			'created_by',
+		).annotate(
+			participant_count=Count('participants', distinct=True)
+		).prefetch_related(
+			Prefetch(
+				'participants',
+				queryset=ChallengeParticipant.objects.filter(
+					is_winner=True
+				).select_related('student'),
+				to_attr='winner_participants',
+			)
+		)
+
+		if _is_admin(user):
+			return queryset
+
+		if _is_instructor(user):
+			return queryset.filter(
+				Q(is_published=True)
+				| Q(created_by=user)
+			)
+
+		return queryset.filter(
+			is_published=True
+		)
+
+	def get_serializer_context(self):
+		context = super().get_serializer_context()
+		context['my_statuses'] = _my_challenge_statuses(self.request.user)
+		return context
+
+
+class ChallengeListCreateAPIView(
+	ChallengeAccessMixin,
+	generics.ListCreateAPIView
+):
+	serializer_class = ChallengeSerializer
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def get_queryset(self):
+		queryset = self.get_challenge_queryset()
+		params = self.request.query_params
+
+		subject_id = params.get('subject')
+		grade_id = params.get('grade')
+		ended = params.get('ended')
+
+		if subject_id:
+			queryset = queryset.filter(
+				subject_id=subject_id
+			)
+
+		if grade_id:
+			queryset = queryset.filter(
+				grade_id=grade_id
+			)
+
+		if ended is not None:
+			now = timezone.now()
+
+			if ended.lower() == 'true':
+				queryset = queryset.filter(
+					end_at__lte=now
+				)
+
+			elif ended.lower() == 'false':
+				queryset = queryset.filter(
+					end_at__gt=now
+				)
+
+		return queryset.order_by('-created_at')
+
+	def perform_create(self, serializer):
+		user = self.request.user
+
+		if not (
+			_is_instructor(user)
+			or _is_admin(user)
+		):
+			raise PermissionDenied(
+				'Only instructors or administrators can create challenges.'
+			)
+
+		serializer.save(
+			created_by=user,
+			is_published=False,
+		)
+
+
+class ChallengeDetailAPIView(
+	ChallengeAccessMixin,
+	generics.RetrieveUpdateDestroyAPIView
+):
+	serializer_class = ChallengeSerializer
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def get_queryset(self):
+		return self.get_challenge_queryset()
+
+	def perform_update(self, serializer):
+		challenge = serializer.instance
+		user = self.request.user
+
+		if not _can_manage_challenge(user, challenge):
+			raise PermissionDenied(
+				'Only the challenge creator or an administrator '
+				'can modify this challenge.'
+			)
+
+		requested_publish = serializer.validated_data.get(
+			'is_published',
+			challenge.is_published,
+		)
+
+		if (
+			requested_publish
+			and not challenge.is_published
+			and not _is_admin(user)
+			and not _is_verified_instructor(user)
+		):
+			raise PermissionDenied(
+				'Only verified instructors can publish challenges.'
+			)
+
+		serializer.save()
+
+	def perform_destroy(self, instance):
+		if not _can_manage_challenge(self.request.user, instance):
+			raise PermissionDenied(
+				'Only the challenge creator or an administrator '
+				'can delete this challenge.'
+			)
+
+		if instance.participants.exists():
+			raise ValidationError({
+				'detail': (
+					'This challenge has participants and cannot be deleted. '
+					'Unpublish it instead.'
+				)
+			})
+
+		instance.delete()
+
+
+class JoinChallengeAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def post(self, request, challenge_id):
+		user = request.user
+
+		if not _is_student(user):
+			return Response(
+				{'detail': 'Only students can join challenges.'},
+				status=status.HTTP_403_FORBIDDEN,
+			)
+
+		challenge = Challenge.objects.filter(
+			pk=challenge_id,
+			is_published=True,
+		).first()
+
+		if challenge is None:
+			return Response(
+				{'detail': 'Challenge not found.'},
+				status=status.HTTP_404_NOT_FOUND,
+			)
+
+		if challenge.end_at <= timezone.now():
+			return Response(
+				{'detail': 'This challenge has ended.'},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+
+		participant, created = ChallengeParticipant.objects.get_or_create(
+			challenge=challenge,
+			student=user,
+		)
+
+		return Response(
+			ChallengeParticipantSerializer(participant).data,
+			status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+		)
+
+
+class SubmitChallengeAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def post(self, request, challenge_id):
+		user = request.user
+
+		if not _is_student(user):
+			return Response(
+				{'detail': 'Only students can submit challenge work.'},
+				status=status.HTTP_403_FORBIDDEN,
+			)
+
+		participant = ChallengeParticipant.objects.select_related(
+			'challenge'
+		).filter(
+			challenge_id=challenge_id,
+			student=user,
+		).first()
+
+		if participant is None:
+			return Response(
+				{'detail': 'You have not joined this challenge.'},
+				status=status.HTTP_404_NOT_FOUND,
+			)
+
+		challenge = participant.challenge
+
+		if not challenge.is_published:
+			return Response(
+				{'detail': 'This challenge is not available.'},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+
+		if challenge.end_at <= timezone.now():
+			return Response(
+				{'detail': 'This challenge has ended.'},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+
+		if participant.status == 'approved':
+			return Response(
+				{'detail': 'Your submission has already been approved.'},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+
+		serializer = ChallengeSubmitSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+
+		updated = ChallengeParticipant.objects.filter(
+			pk=participant.pk,
+		).exclude(
+			status='approved',
+		).update(
+			submission_text=serializer.validated_data['submission_text'],
+			submission_url=serializer.validated_data['submission_url'],
+			status='submitted',
+			submitted_at=timezone.now(),
+			reviewed_by=None,
+			reviewed_at=None,
+		)
+
+		if not updated:
+			return Response(
+				{'detail': 'Your submission has already been approved.'},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+
+		participant = ChallengeParticipant.objects.select_related(
+			'challenge',
+			'student',
+			'reviewed_by',
+		).get(pk=participant.pk)
+
+		return Response(
+			ChallengeParticipantSerializer(participant).data,
+			status=status.HTTP_200_OK,
+		)
+
+
+class ChallengeParticipantListAPIView(generics.ListAPIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = ChallengeParticipantSerializer
+
+	def get_queryset(self):
+		challenge = Challenge.objects.filter(
+			pk=self.kwargs['challenge_id']
+		).first()
+
+		if challenge is None:
+			raise NotFound(
+				'Challenge not found.'
+			)
+
+		if not _can_manage_challenge(self.request.user, challenge):
+			raise PermissionDenied(
+				'Only the challenge creator or an administrator '
+				'can view its participants.'
+			)
+
+		queryset = challenge.participants.select_related(
+			'challenge',
+			'student',
+			'reviewed_by',
+		)
+
+		status_filter = self.request.query_params.get('status')
+
+		if status_filter:
+			queryset = queryset.filter(
+				status=status_filter
+			)
+
+		return queryset.order_by('-joined_at')
+
+
+class ReviewChallengeSubmissionAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	@transaction.atomic
+	def post(self, request, participant_id):
+		user = request.user
+
+		participant = ChallengeParticipant.objects.select_related(
+			'challenge',
+			'student',
+		).filter(
+			pk=participant_id,
+		).first()
+
+		if participant is None:
+			return Response(
+				{'detail': 'Participant not found.'},
+				status=status.HTTP_404_NOT_FOUND,
+			)
+
+		challenge = participant.challenge
+
+		if not _can_manage_challenge(user, challenge):
+			raise PermissionDenied(
+				'Only the challenge creator or an administrator '
+				'can review submissions.'
+			)
+
+		serializer = ChallengeReviewSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		action = serializer.validated_data['action']
+
+		if participant.status != 'submitted':
+			return Response(
+				{'detail': 'Only submitted work can be reviewed.'},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+
+		if action == 'approve':
+			points = challenge.points
+
+			updated = ChallengeParticipant.objects.filter(
+				pk=participant.pk,
+				status='submitted',
+			).update(
+				status='approved',
+				reviewed_by=user,
+				reviewed_at=timezone.now(),
+				points_awarded=points,
+			)
+
+			if not updated:
+				return Response(
+					{'detail': 'This submission has already been reviewed.'},
+					status=status.HTTP_400_BAD_REQUEST,
+				)
+
+			if points > 0:
+				PointTransaction.objects.create(
+					student=participant.student,
+					points=points,
+					event_type='challenge_completion',
+					description=f'Challenge completed: {challenge.title}',
+				)
+
+		else:
+			updated = ChallengeParticipant.objects.filter(
+				pk=participant.pk,
+				status='submitted',
+			).update(
+				status='rejected',
+				reviewed_by=user,
+				reviewed_at=timezone.now(),
+				points_awarded=0,
+			)
+
+			if not updated:
+				return Response(
+					{'detail': 'This submission has already been reviewed.'},
+					status=status.HTTP_400_BAD_REQUEST,
+				)
+
+		participant = ChallengeParticipant.objects.select_related(
+			'challenge',
+			'student',
+			'reviewed_by',
+		).get(pk=participant.pk)
+
+		return Response(
+			ChallengeParticipantSerializer(participant).data,
+			status=status.HTTP_200_OK,
+		)
+
+
+class SetChallengeWinnersAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	@transaction.atomic
+	def post(self, request, challenge_id):
+		challenge = Challenge.objects.filter(pk=challenge_id).first()
+
+		if challenge is None:
+			return Response(
+				{'detail': 'Challenge not found.'},
+				status=status.HTTP_404_NOT_FOUND,
+			)
+
+		if not _can_manage_challenge(request.user, challenge):
+			raise PermissionDenied(
+				'Only the challenge creator or an administrator '
+				'can set winners.'
+			)
+
+		if challenge.end_at > timezone.now():
+			return Response(
+				{'detail': 'Winners can only be set after the challenge has ended.'},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+
+		serializer = ChallengeWinnersSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+
+		requested_ids = set(serializer.validated_data['participants'])
+
+		valid_ids = set(
+			ChallengeParticipant.objects.filter(
+				challenge=challenge,
+				status='approved',
+				pk__in=requested_ids,
+			).values_list('pk', flat=True)
+		)
+
+		invalid_ids = sorted(requested_ids - valid_ids)
+
+		if invalid_ids:
+			return Response(
+				{
+					'detail': 'Winners must be approved participants of this challenge.',
+					'invalid_participants': invalid_ids,
+				},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+
+		challenge.participants.update(is_winner=False)
+
+		if valid_ids:
+			challenge.participants.filter(
+				pk__in=valid_ids
+			).update(is_winner=True)
+
+		winners = challenge.participants.filter(
+			is_winner=True
+		).select_related(
+			'challenge',
+			'student',
+			'reviewed_by',
+		)
+
+		return Response(
+			ChallengeParticipantSerializer(winners, many=True).data,
+			status=status.HTTP_200_OK,
+		)
+
+
+class MyChallengesAPIView(generics.ListAPIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = ChallengeParticipantSerializer
+
+	def get_queryset(self):
+		return ChallengeParticipant.objects.filter(
+			student=self.request.user
+		).select_related(
+			'challenge',
+			'student',
+			'reviewed_by',
+		).order_by('-joined_at')
 
 
 # =========================================================

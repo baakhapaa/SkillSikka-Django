@@ -926,3 +926,54 @@ class AdminAuditLog(models.Model):
 
 	def __str__(self):
 		return f'{self.get_action_display()} - {self.created_at:%Y-%m-%d %H:%M}'
+	
+
+class Challenge(models.Model):
+	title = models.CharField(max_length=200)
+	description = models.TextField()
+	subject = models.ForeignKey(Subject, on_delete=models.SET_NULL, null=True, blank=True, related_name='challenges')
+	grade = models.ForeignKey(Grade, on_delete=models.SET_NULL, null=True, blank=True, related_name='challenges')
+	points = models.PositiveIntegerField(default=0)
+	end_at = models.DateTimeField()
+	created_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name='created_challenges')
+	is_published = models.BooleanField(default=False)
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'challenges'
+		ordering = ['-created_at']
+
+	def __str__(self):
+		return self.title
+
+
+class ChallengeParticipant(models.Model):
+	STATUS_CHOICES = (
+		('joined', 'Joined'),
+		('submitted', 'Submitted'),
+		('approved', 'Approved'),
+		('rejected', 'Rejected'),
+	)
+
+	challenge = models.ForeignKey(Challenge, on_delete=models.CASCADE, related_name='participants')
+	student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='challenge_participations')
+	status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='joined')
+	submission_text = models.TextField(blank=True)
+	submission_url = models.URLField(max_length=500, blank=True)
+	submitted_at = models.DateTimeField(null=True, blank=True)
+	reviewed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_challenge_submissions')
+	reviewed_at = models.DateTimeField(null=True, blank=True)
+	points_awarded = models.PositiveIntegerField(default=0)
+	is_winner = models.BooleanField(default=False)
+	joined_at = models.DateTimeField(auto_now_add=True)
+
+	class Meta:
+		db_table = 'challenge_participants'
+		ordering = ['-joined_at']
+		constraints = [
+			models.UniqueConstraint(fields=['challenge', 'student'], name='unique_participant_per_challenge'),
+		]
+
+	def __str__(self):
+		return f'{self.student.name} - {self.challenge.title}'

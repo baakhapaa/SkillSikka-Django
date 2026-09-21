@@ -5,6 +5,9 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from .api_views import (
 	BadgeDetailAPIView,
 	BadgeListCreateAPIView,
+	ChallengeDetailAPIView,
+	ChallengeListCreateAPIView,
+	ChallengeParticipantListAPIView,
 	ChapterDetailAPIView,
 	ChapterListCreateAPIView,
 	CheckCourseCertificateAPIView,
@@ -21,6 +24,7 @@ from .api_views import (
 	InitiatePaymentAPIView,
 	InstructorQuizResultsAPIView,
 	InstructorRegistrationAPIView,
+	JoinChallengeAPIView,
 	LessonDetailAPIView,
 	LessonListCreateAPIView,
 	LoginAPIView,
@@ -28,6 +32,7 @@ from .api_views import (
 	MunicipalityListAPIView,
 	MyBadgesAPIView,
 	MyCertificatesAPIView,
+	MyChallengesAPIView,
 	MyEnrollmentsAPIView,
 	MyPaymentsAPIView,
 	MyStreakAPIView,
@@ -40,8 +45,10 @@ from .api_views import (
 	QuizDetailAPIView,
 	QuizListCreateAPIView,
 	ResetPasswordAPIView,
+	ReviewChallengeSubmissionAPIView,
 	RoleListAPIView,
 	SchoolListAPIView,
+	SetChallengeWinnersAPIView,
 	StartQuizAttemptAPIView,
 	StreakLeaderboardAPIView,
 	StudentPointsAPIView,
@@ -50,6 +57,7 @@ from .api_views import (
 	StudentRegistrationAPIView,
 	SubjectDetailAPIView,
 	SubjectListCreateAPIView,
+	SubmitChallengeAPIView,
 	SubmitQuizAttemptAPIView,
 	TopicDetailAPIView,
 	TopicListCreateAPIView,
@@ -359,6 +367,58 @@ urlpatterns = [
 		'my-badges/',
 		MyBadgesAPIView.as_view(),
 		name='api-my-badges'
+	),
+
+	# =========================
+	# Challenges
+	# =========================
+
+	path(
+		'challenges/',
+		ChallengeListCreateAPIView.as_view(),
+		name='api-challenge-list-create'
+	),
+
+	path(
+		'challenges/<int:pk>/',
+		ChallengeDetailAPIView.as_view(),
+		name='api-challenge-detail'
+	),
+
+	path(
+		'challenges/<int:challenge_id>/join/',
+		JoinChallengeAPIView.as_view(),
+		name='api-challenge-join'
+	),
+
+	path(
+		'challenges/<int:challenge_id>/submit/',
+		SubmitChallengeAPIView.as_view(),
+		name='api-challenge-submit'
+	),
+
+	path(
+		'challenges/<int:challenge_id>/participants/',
+		ChallengeParticipantListAPIView.as_view(),
+		name='api-challenge-participants'
+	),
+
+	path(
+		'challenges/<int:challenge_id>/winners/',
+		SetChallengeWinnersAPIView.as_view(),
+		name='api-challenge-winners'
+	),
+
+	path(
+		'challenge-participants/<int:participant_id>/review/',
+		ReviewChallengeSubmissionAPIView.as_view(),
+		name='api-challenge-review'
+	),
+
+	path(
+		'my-challenges/',
+		MyChallengesAPIView.as_view(),
+		name='api-my-challenges'
 	),
 
 	# =========================
