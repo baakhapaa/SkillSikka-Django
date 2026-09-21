@@ -973,6 +973,7 @@ class QuestionManagementSerializer(serializers.ModelSerializer):
 			'quiz',
 			'text',
 			'marks',
+			'points',
 			'order',
 			'options',
 		]

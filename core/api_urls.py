@@ -41,6 +41,7 @@ from .api_views import (
 	SchoolListAPIView,
 	StartQuizAttemptAPIView,
 	StreakLeaderboardAPIView,
+	StudentPointsAPIView,
 	StudentQuizAttemptHistoryAPIView,
 	StudentQuizDetailAPIView,
 	StudentRegistrationAPIView,
@@ -415,5 +416,15 @@ urlpatterns = [
 		'instructor/quizzes/<int:quiz_id>/results/',
 		InstructorQuizResultsAPIView.as_view(),
 		name='instructor-quiz-results',
+	),
+
+	# =========================
+	# Student Points
+	# =========================
+
+	path(
+		'student/points/',
+		StudentPointsAPIView.as_view(),
+		name='student-points',
 	),
 ]
