@@ -27,6 +27,7 @@ from .models import (
 	Municipality,
 	PasswordResetOTP,
 	Payment,
+	PointTransaction,
 	Province,
 	Question,
 	QuestionOption,
@@ -1287,6 +1288,28 @@ class LeaderboardEntrySerializer(serializers.Serializer):
 	student_name = serializers.CharField()
 	current_streak = serializers.IntegerField()
 	longest_streak = serializers.IntegerField()
+
+
+class PointTransactionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PointTransaction
+        fields = [
+            'id',
+            'points',
+            'event_type',
+            'quiz_attempt',
+            'question',
+            'description',
+            'created_at',
+        ]
+        read_only_fields = fields
+
+
+class PointsLeaderboardEntrySerializer(serializers.Serializer):
+    rank = serializers.IntegerField()
+    student_id = serializers.IntegerField()
+    student_name = serializers.CharField()
+    total_points = serializers.IntegerField()
 
 
 class CertificateSerializer(serializers.ModelSerializer):
