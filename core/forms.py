@@ -1,6 +1,16 @@
 from django import forms
 
-from .models import Course, District, Grade, Municipality, Province, School, StreakSettings, User,CertificateCriteria
+from .models import (
+	CertificateCriteria,
+	Course,
+	District,
+	Grade,
+	Municipality,
+	Province,
+	School,
+	StreakSettings,
+	User,
+)
 
 
 class ProvinceForm(forms.ModelForm):
@@ -70,7 +80,18 @@ class StreakSettingsForm(forms.ModelForm):
 	class Meta:
 		model = StreakSettings
 		fields = ['grace_period_days']
+
+
 class CertificateCriteriaForm(forms.ModelForm):
 	class Meta:
 		model = CertificateCriteria
-		fields = ['skill_course_requires_quiz_pass', 'academic_grade_min_completion_percentage']		
+		fields = ['skill_course_requires_quiz_pass', 'academic_grade_min_completion_percentage']
+
+
+class UserAdminForm(forms.ModelForm):
+	class Meta:
+		model = User
+		fields = ['name', 'phone_country_code', 'phone_number', 'gender', 'dob', 'location']
+		widgets = {
+			'dob': forms.DateInput(attrs={'type': 'date'}, format='%Y-%m-%d'),
+		}

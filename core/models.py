@@ -903,3 +903,26 @@ class StudentBadge(models.Model):
 
 	def __str__(self):
 		return f'{self.student.name} - {self.badge.name}'
+	
+
+class AdminAuditLog(models.Model):
+	ACTION_CHOICES = (
+		('user_updated', 'User details updated'),
+		('user_deactivated', 'User deactivated'),
+		('user_reactivated', 'User reactivated'),
+		('verification_approved', 'Verification approved'),
+		('verification_rejected', 'Verification rejected'),
+	)
+
+	admin = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='admin_actions')
+	action = models.CharField(max_length=40, choices=ACTION_CHOICES)
+	target_user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='audit_entries')
+	details = models.TextField(blank=True)
+	created_at = models.DateTimeField(auto_now_add=True)
+
+	class Meta:
+		db_table = 'admin_audit_logs'
+		ordering = ['-created_at']
+
+	def __str__(self):
+		return f'{self.get_action_display()} - {self.created_at:%Y-%m-%d %H:%M}'

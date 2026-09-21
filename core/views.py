@@ -1,8 +1,12 @@
 from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
+from django.core.paginator import Paginator
+from django.db.models import Q
 from django.shortcuts import redirect, render
 from django.utils import timezone
+from django.utils.http import url_has_allowed_host_and_scheme
+from django.views.decorators.http import require_POST
 
 from .forms import (
 	CertificateCriteriaForm,
@@ -13,14 +17,17 @@ from .forms import (
 	ProvinceForm,
 	SchoolForm,
 	StreakSettingsForm,
+	UserAdminForm,
 )
 from .models import (
+	AdminAuditLog,
 	CertificateCriteria,
 	Course,
 	District,
 	Grade,
 	Municipality,
 	Province,
+	Role,
 	School,
 	StreakSettings,
 	User,
@@ -36,7 +43,11 @@ def login_view(request):
 		password = request.POST.get('password', '')
 		user = authenticate(request, username=email, password=password)
 		if user is None:
-			messages.error(request, 'The email or password is incorrect.')
+			inactive_user = User.objects.filter(email__iexact=email, is_active=False).first()
+			if inactive_user is not None and inactive_user.check_password(password):
+				messages.error(request, 'This account is inactive. Contact an administrator.')
+			else:
+				messages.error(request, 'The email or password is incorrect.')
 		elif not user.onboarding_completed:
 			messages.warning(request, 'Complete onboarding before signing in.')
 		elif not user.is_active:
@@ -98,6 +109,25 @@ def is_admin(user):
 	return user.is_superuser or getattr(user.role, 'name', '') == 'super_admin'
 
 
+def _log_admin_action(admin, action, target_user, details=''):
+	AdminAuditLog.objects.create(
+		admin=admin,
+		action=action,
+		target_user=target_user,
+		details=details,
+	)
+
+
+def _other_active_admin_exists(target):
+	return User.objects.filter(
+		is_active=True,
+	).filter(
+		Q(is_superuser=True) | Q(role__name='super_admin')
+	).exclude(
+		pk=target.pk
+	).exists()
+
+
 @login_required
 def verification_queue(request):
 	if not is_admin(request.user):
@@ -131,17 +161,154 @@ def review_verification(request, user_id):
 			user.verified_by = request.user
 			user.verified_at = timezone.now()
 			user.save(update_fields=['verification_status', 'verified_by', 'verified_at'])
+			_log_admin_action(request.user, 'verification_approved', user)
 			messages.success(request, f'{user.name} has been verified.')
 		elif action == 'reject':
 			user.verification_status = 'rejected'
 			user.verified_by = request.user
 			user.verified_at = timezone.now()
 			user.save(update_fields=['verification_status', 'verified_by', 'verified_at'])
+			_log_admin_action(request.user, 'verification_rejected', user)
 			messages.warning(request, f'{user.name} has been rejected.')
 		else:
 			messages.error(request, 'Invalid action.')
 
 	return redirect('verification_queue')
+
+
+@login_required
+def manage_users(request):
+	if not is_admin(request.user):
+		messages.error(request, 'You do not have permission to manage users.')
+		return redirect('dashboard')
+
+	query = request.GET.get('q', '').strip()
+	role_filter = request.GET.get('role', '').strip()
+	status_filter = request.GET.get('status', '').strip()
+	verification_filter = request.GET.get('verification', '').strip()
+
+	users = User.objects.select_related('role').order_by('-created_at')
+
+	if query:
+		users = users.filter(Q(name__icontains=query) | Q(email__icontains=query))
+
+	if role_filter:
+		users = users.filter(role__name=role_filter)
+
+	if status_filter == 'active':
+		users = users.filter(is_active=True)
+	elif status_filter == 'inactive':
+		users = users.filter(is_active=False)
+
+	if verification_filter in dict(User.VERIFICATION_CHOICES):
+		users = users.filter(verification_status=verification_filter)
+
+	page = Paginator(users, 20).get_page(request.GET.get('page'))
+
+	params = request.GET.copy()
+	params.pop('page', None)
+
+	return render(request, 'admin/users.html', {
+		'page': page,
+		'roles': Role.objects.order_by('name'),
+		'verification_choices': User.VERIFICATION_CHOICES,
+		'filters': {
+			'q': query,
+			'role': role_filter,
+			'status': status_filter,
+			'verification': verification_filter,
+		},
+		'query_string': params.urlencode(),
+	})
+
+
+@login_required
+def edit_user(request, user_id):
+	if not is_admin(request.user):
+		messages.error(request, 'You do not have permission to manage users.')
+		return redirect('dashboard')
+
+	target = User.objects.select_related('role').filter(pk=user_id).first()
+	if target is None:
+		messages.error(request, 'User not found.')
+		return redirect('manage_users')
+
+	target_name = target.name
+
+	if request.method == 'POST':
+		form = UserAdminForm(request.POST, instance=target)
+		if form.is_valid():
+			if form.has_changed():
+				form.save()
+				_log_admin_action(
+					request.user,
+					'user_updated',
+					target,
+					'Updated fields: ' + ', '.join(form.changed_data),
+				)
+				messages.success(request, f'{target.name} has been updated.')
+			else:
+				messages.info(request, 'No changes to save.')
+			return redirect('edit_user', user_id=target.pk)
+	else:
+		form = UserAdminForm(instance=target)
+
+	return render(request, 'admin/user_edit.html', {
+		'form': form,
+		'target': target,
+		'target_name': target_name,
+		'audit_entries': target.audit_entries.select_related('admin')[:10],
+	})
+
+
+@login_required
+@require_POST
+def toggle_user_active(request, user_id):
+	if not is_admin(request.user):
+		messages.error(request, 'You do not have permission to manage users.')
+		return redirect('dashboard')
+
+	target = User.objects.select_related('role').filter(pk=user_id).first()
+	if target is None:
+		messages.error(request, 'User not found.')
+		return redirect('manage_users')
+
+	action = request.POST.get('action')
+
+	if action == 'deactivate':
+		if target.pk == request.user.pk:
+			messages.error(request, 'You cannot deactivate your own account.')
+		elif is_admin(target) and not _other_active_admin_exists(target):
+			messages.error(request, 'You cannot deactivate the last active administrator.')
+		elif not target.is_active:
+			messages.info(request, f'{target.name} is already inactive.')
+		else:
+			target.is_active = False
+			target.save(update_fields=['is_active', 'updated_at'])
+			_log_admin_action(request.user, 'user_deactivated', target)
+			messages.warning(request, f'{target.name} has been deactivated.')
+
+	elif action == 'reactivate':
+		if target.is_active:
+			messages.info(request, f'{target.name} is already active.')
+		else:
+			target.is_active = True
+			target.save(update_fields=['is_active', 'updated_at'])
+			_log_admin_action(request.user, 'user_reactivated', target)
+			messages.success(request, f'{target.name} has been reactivated.')
+
+	else:
+		messages.error(request, 'Invalid action.')
+
+	next_url = request.POST.get('next', '')
+	if next_url and url_has_allowed_host_and_scheme(
+		next_url,
+		allowed_hosts={request.get_host()},
+		require_https=request.is_secure(),
+	):
+		return redirect(next_url)
+
+	return redirect('manage_users')
 
 
 @login_required

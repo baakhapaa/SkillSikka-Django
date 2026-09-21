@@ -7,9 +7,9 @@
         <p class="sidebar-label">Workspace</p>
         <nav>
             <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
-            <a class="nav-item" href="#users"><span>◎</span> Users</a>
             <a class="nav-item active" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
             {% if request.user.is_superuser or request.user.role.name == 'super_admin' %}
+            <a class="nav-item" href="{% url 'manage_users' %}"><span>◎</span> Users</a>
             <a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
             <a class="nav-item" href="{% url 'manage_courses' %}"><span>▣</span> Courses</a>
             <a class="nav-item" href="{% url 'manage_streak_settings' %}"><span>◈</span> Streak settings</a>
@@ -18,8 +18,7 @@
         </nav>
         <div class="sidebar-footer">
             <div class="avatar">{{ request.user.name|slice:':1'|upper }}</div>
-            <div><strong>{{ request.user.name }}</strong><small>{{ request.user.role.name|default:'Administrator'
-                    }}</small></div>
+            <div><strong>{{ request.user.name }}</strong><small>{{ request.user.role.name|default:'Administrator' }}</small></div>
             <a class="logout" href="{% url 'logout' %}" aria-label="Log out">↗</a>
         </div>
     </aside>
@@ -53,9 +52,7 @@
                         {% for user in pending_users %}
                         <tr>
                             <td>
-                                <div class="person"><span class="table-avatar">{{ user.name|slice:':1'|upper
-                                        }}</span><span><strong>{{ user.name }}</strong><small>{{ user.email
-                                            }}</small></span></div>
+                                <div class="person"><span class="table-avatar">{{ user.name|slice:':1'|upper }}</span><span><strong>{{ user.name }}</strong><small>{{ user.email }}</small></span></div>
                             </td>
                             <td>{{ user.role.name|default:'Unassigned'|title }}</td>
                             <td>
@@ -72,20 +69,16 @@
                             </td>
                             <td>
                                 {% for doc in user.verification_documents.all %}
-                                <a href="{{ doc.file_url }}" target="_blank" rel="noopener">{{
-                                    doc.get_document_type_display }}</a><br>
+                                <a href="{{ doc.file_url }}" target="_blank" rel="noopener">{{ doc.get_document_type_display }}</a><br>
                                 {% empty %}
                                 <small>No documents uploaded</small>
                                 {% endfor %}
                             </td>
                             <td>
-                                <form method="post" action="{% url 'review_verification' user.id %}"
-                                    class="inline-form">
+                                <form method="post" action="{% url 'review_verification' user.id %}" class="inline-form">
                                     {% csrf_token %}
-                                    <button type="submit" name="action" value="approve"
-                                        class="outline-button">Approve</button>
-                                    <button type="submit" name="action" value="reject"
-                                        class="outline-button danger">Reject</button>
+                                    <button type="submit" name="action" value="approve" class="outline-button">Approve</button>
+                                    <button type="submit" name="action" value="reject" class="outline-button danger">Reject</button>
                                 </form>
                             </td>
                         </tr>

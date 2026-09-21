@@ -1,0 +1,141 @@
+{% extends 'base.html' %}
+{% block title %}Users | SkillSikka{% endblock %}
+{% block content %}
+<style>
+.management-card{background:var(--white);border:1px solid var(--line);padding:24px;border-radius:4px;box-shadow:var(--shadow);margin-bottom:24px}
+.um-filters{display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:12px;align-items:end;margin-bottom:20px}
+.um-filters label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
+.um-filters input,.um-filters select{width:100%;padding:12px 14px;border:1px solid #d7e1df;border-radius:3px;background:var(--white);font:inherit;color:var(--ink)}
+.um-filter-actions{display:flex;gap:8px;align-items:center}
+.um-table-wrap{overflow-x:auto}
+.um-table{width:100%;border-collapse:collapse;font-size:14px}
+.um-table th{text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+.um-table td{padding:12px;border-bottom:1px solid var(--line);vertical-align:middle}
+.um-muted{color:var(--muted);font-size:13px}
+.um-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;background:#e6f1ef;color:var(--ink)}
+.um-badge.off{background:#f6e3e1;color:#b64b45}
+.um-actions{display:flex;gap:8px;align-items:center}
+.um-actions form{margin:0}
+.um-btn{display:inline-block;padding:7px 12px;border:1px solid #d7e1df;border-radius:3px;background:var(--white);color:var(--ink);font:inherit;font-size:13px;cursor:pointer;text-decoration:none}
+.um-btn.danger{color:#b64b45;border-color:#e5c3c0}
+.um-pager{display:flex;align-items:center;justify-content:space-between;margin-top:16px;color:var(--muted);font-size:13px}
+.um-pager-links{display:flex;gap:8px}
+@media (max-width:900px){.um-filters{grid-template-columns:1fr 1fr}}
+</style>
+<div class="app-shell">
+    <aside class="sidebar">
+        <div class="brand"><span class="brand-mark small">SS</span><strong>SkillSikka</strong></div>
+        <p class="sidebar-label">Workspace</p>
+        <nav>
+            <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
+            <a class="nav-item" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
+            <a class="nav-item active" href="{% url 'manage_users' %}"><span>◎</span> Users</a>
+            <a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
+            <a class="nav-item" href="{% url 'manage_courses' %}"><span>▣</span> Courses</a>
+            <a class="nav-item" href="{% url 'manage_streak_settings' %}"><span>◈</span> Streak settings</a>
+            <a class="nav-item" href="{% url 'manage_certificate_criteria' %}"><span>⚑</span> Certificate criteria</a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="avatar">{{ request.user.name|slice:':1'|upper }}</div>
+            <div><strong>{{ request.user.name }}</strong><small>{{ request.user.role.name|default:'Administrator' }}</small></div>
+            <a class="logout" href="{% url 'logout' %}" aria-label="Log out">↗</a>
+        </div>
+    </aside>
+    <main class="dashboard-main">
+        <header class="topbar"><div><p class="eyebrow">Administration</p><h1>Users</h1></div><div class="top-actions"><a class="outline-button" href="{% url 'dashboard' %}">Back to overview</a></div></header>
+        {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
+        <article class="management-card">
+            <form method="get" class="um-filters">
+                <div>
+                    <label for="q">Search name or email</label>
+                    <input type="text" id="q" name="q" value="{{ filters.q }}" placeholder="e.g. Ram or ram@example.com">
+                </div>
+                <div>
+                    <label for="role">Role</label>
+                    <select id="role" name="role">
+                        <option value="">All roles</option>
+                        {% for r in roles %}<option value="{{ r.name }}" {% if filters.role == r.name %}selected{% endif %}>{{ r.name }}</option>{% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label for="status">Account status</label>
+                    <select id="status" name="status">
+                        <option value="">All</option>
+                        <option value="active" {% if filters.status == 'active' %}selected{% endif %}>Active</option>
+                        <option value="inactive" {% if filters.status == 'inactive' %}selected{% endif %}>Inactive</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="verification">Verification</label>
+                    <select id="verification" name="verification">
+                        <option value="">All</option>
+                        {% for value, label in verification_choices %}<option value="{{ value }}" {% if filters.verification == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+                    </select>
+                </div>
+                <div class="um-filter-actions">
+                    <button class="um-btn" type="submit">Filter</button>
+                    <a class="um-btn" href="{% url 'manage_users' %}">Clear</a>
+                </div>
+            </form>
+
+            <div class="um-table-wrap">
+                <table class="um-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Email</th>
+                            <th>Role</th>
+                            <th>Verification</th>
+                            <th>Status</th>
+                            <th>Joined</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for u in page %}
+                        <tr>
+                            <td>{{ u.name }}</td>
+                            <td class="um-muted">{{ u.email }}</td>
+                            <td>{{ u.role.name }}</td>
+                            <td>{{ u.get_verification_status_display }}</td>
+                            <td>{% if u.is_active %}<span class="um-badge">Active</span>{% else %}<span class="um-badge off">Inactive</span>{% endif %}</td>
+                            <td class="um-muted">{{ u.created_at|date:"Y-m-d" }}</td>
+                            <td>
+                                <div class="um-actions">
+                                    <a class="um-btn" href="{% url 'edit_user' u.pk %}">Edit</a>
+                                    {% if u.pk == request.user.pk %}
+                                        <span class="um-muted">(you)</span>
+                                    {% else %}
+                                        <form method="post" action="{% url 'toggle_user_active' u.pk %}">
+                                            {% csrf_token %}
+                                            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                                            {% if u.is_active %}
+                                                <input type="hidden" name="action" value="deactivate">
+                                                <button class="um-btn danger" type="submit">Deactivate</button>
+                                            {% else %}
+                                                <input type="hidden" name="action" value="reactivate">
+                                                <button class="um-btn" type="submit">Reactivate</button>
+                                            {% endif %}
+                                        </form>
+                                    {% endif %}
+                                </div>
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr><td colspan="7" class="um-muted">No users match these filters.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="um-pager">
+                <span>{{ page.paginator.count }} user{{ page.paginator.count|pluralize }} · page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+                <span class="um-pager-links">
+                    {% if page.has_previous %}<a class="um-btn" href="?{% if query_string %}{{ query_string }}&{% endif %}page={{ page.previous_page_number }}">Previous</a>{% endif %}
+                    {% if page.has_next %}<a class="um-btn" href="?{% if query_string %}{{ query_string }}&{% endif %}page={{ page.next_page_number }}">Next</a>{% endif %}
+                </span>
+            </div>
+        </article>
+    </main>
+</div>
+{% endblock %}

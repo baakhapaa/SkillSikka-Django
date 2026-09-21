@@ -2,7 +2,7 @@
 {% block title %}Certificate Criteria | SkillSikka{% endblock %}
 {% block content %}
 <style>
-.management-card{background:var(--white);border:1px solid var(--line);padding:24px;border-radius:4px;box-shadow:var(--shadow);margin-bottom:24px}.form-stack input[type=number]{width:100%;padding:15px 16px;border:1px solid #d7e1df;border-radius:3px;background:var(--white);font:inherit;color:var(--ink)}.form-error{color:#b64b45;font-size:12px}.page-intro{color:var(--muted);max-width:620px;margin-bottom:28px}.checkbox-row{display:flex;align-items:center;gap:10px;margin:12px 0}
+.management-card{background:var(--white);border:1px solid var(--line);padding:24px;border-radius:4px;box-shadow:var(--shadow);margin-bottom:24px}.form-stack input[type=number]{width:100%;padding:15px 16px;border:1px solid #d7e1df;border-radius:3px;background:var(--white);font:inherit;color:var(--ink)}.form-error{color:#b64b45;font-size:12px}.page-intro{color:var(--muted);max-width:620px;margin-bottom:28px}.checkbox-row{display:flex;align-items:center;gap:10px;margin:12px 0}.form-stack .checkbox-row input[type=checkbox]{width:18px;height:18px;flex:0 0 auto;padding:0;margin:0}
 </style>
 <div class="app-shell">
     <aside class="sidebar">
@@ -11,6 +11,7 @@
         <nav>
             <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
             <a class="nav-item" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
+            <a class="nav-item" href="{% url 'manage_users' %}"><span>◎</span> Users</a>
             <a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
             <a class="nav-item" href="{% url 'manage_courses' %}"><span>▣</span> Courses</a>
             <a class="nav-item" href="{% url 'manage_streak_settings' %}"><span>◈</span> Streak settings</a>

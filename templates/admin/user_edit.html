@@ -1,0 +1,83 @@
+{% extends 'base.html' %}
+{% block title %}Edit user | SkillSikka{% endblock %}
+{% block content %}
+<style>
+.management-card{background:var(--white);border:1px solid var(--line);padding:24px;border-radius:4px;box-shadow:var(--shadow);margin-bottom:24px}
+.ue-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px 24px;margin-bottom:8px}
+.ue-item small{display:block;color:var(--muted);font-size:12px;margin-bottom:2px}
+.ue-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;background:#e6f1ef;color:var(--ink)}
+.ue-badge.off{background:#f6e3e1;color:#b64b45}
+.ue-field{margin-bottom:16px}
+.ue-field label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
+.ue-field input{width:100%;padding:14px 16px;border:1px solid #d7e1df;border-radius:3px;background:var(--white);font:inherit;color:var(--ink)}
+.form-error{color:#b64b45;font-size:12px}
+.ue-log{list-style:none;padding:0;margin:0}
+.ue-log li{padding:10px 0;border-bottom:1px solid var(--line);font-size:14px}
+.ue-log small{color:var(--muted)}
+</style>
+<div class="app-shell">
+    <aside class="sidebar">
+        <div class="brand"><span class="brand-mark small">SS</span><strong>SkillSikka</strong></div>
+        <p class="sidebar-label">Workspace</p>
+        <nav>
+            <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
+            <a class="nav-item" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
+            <a class="nav-item active" href="{% url 'manage_users' %}"><span>◎</span> Users</a>
+            <a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
+            <a class="nav-item" href="{% url 'manage_courses' %}"><span>▣</span> Courses</a>
+            <a class="nav-item" href="{% url 'manage_streak_settings' %}"><span>◈</span> Streak settings</a>
+            <a class="nav-item" href="{% url 'manage_certificate_criteria' %}"><span>⚑</span> Certificate criteria</a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="avatar">{{ request.user.name|slice:':1'|upper }}</div>
+            <div><strong>{{ request.user.name }}</strong><small>{{ request.user.role.name|default:'Administrator' }}</small></div>
+            <a class="logout" href="{% url 'logout' %}" aria-label="Log out">↗</a>
+        </div>
+    </aside>
+    <main class="dashboard-main">
+        <header class="topbar"><div><p class="eyebrow">Administration</p><h1>Edit user</h1></div><div class="top-actions"><a class="outline-button" href="{% url 'manage_users' %}">Back to users</a></div></header>
+        {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
+
+        <article class="management-card">
+            <div class="section-heading"><div><p class="eyebrow">Account</p><h2>{{ target_name }}</h2></div></div>
+            <div class="ue-grid">
+                <div class="ue-item"><small>Email</small>{{ target.email }}</div>
+                <div class="ue-item"><small>Role</small>{{ target.role.name }}</div>
+                <div class="ue-item"><small>Verification</small>{{ target.get_verification_status_display }}</div>
+                <div class="ue-item"><small>Status</small>{% if target.is_active %}<span class="ue-badge">Active</span>{% else %}<span class="ue-badge off">Inactive</span>{% endif %}</div>
+            </div>
+        </article>
+
+        <article class="management-card">
+            <div class="section-heading"><div><p class="eyebrow">Profile</p><h2>Details</h2></div></div>
+            <form method="post">
+                {% csrf_token %}
+                {% for error in form.non_field_errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                {% for field in form %}
+                <div class="ue-field">
+                    <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                    {{ field }}
+                    {% for error in field.errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                </div>
+                {% endfor %}
+                <button class="primary-button" type="submit" style="margin-top:8px;">Save changes</button>
+            </form>
+        </article>
+
+        <article class="management-card">
+            <div class="section-heading"><div><p class="eyebrow">Audit</p><h2>Recent admin activity</h2></div></div>
+            <ul class="ue-log">
+                {% for entry in audit_entries %}
+                <li>
+                    {{ entry.get_action_display }}
+                    <small>· {{ entry.created_at|date:"Y-m-d H:i" }} · by {{ entry.admin.name|default:"(removed admin)" }}</small>
+                    {% if entry.details %}<br><small>{{ entry.details }}</small>{% endif %}
+                </li>
+                {% empty %}
+                <li><small>No admin activity recorded for this user yet.</small></li>
+                {% endfor %}
+            </ul>
+        </article>
+    </main>
+</div>
+{% endblock %}
