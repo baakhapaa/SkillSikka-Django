@@ -39,6 +39,7 @@ from .models import (
 	Topic,
 	User,
 	VerificationDocument,
+	PointTransaction,
 )
 
 
@@ -1301,3 +1302,26 @@ class CertificateCriteriaSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = CertificateCriteria
 		fields = ['skill_course_requires_quiz_pass', 'academic_grade_min_completion_percentage']
+
+class PointsLeaderboardEntrySerializer(serializers.Serializer):
+    rank = serializers.IntegerField()
+    student_id = serializers.IntegerField()
+    student_name = serializers.CharField()
+    total_points = serializers.IntegerField()
+class PointTransactionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PointTransaction
+        fields = [
+            'id',
+            'points',
+            'event_type',
+            'quiz_attempt',
+            'question',
+            'description',
+            'created_at',
+        ]
+
+        read_only_fields = [
+            'id',
+            'created_at',
+        ]

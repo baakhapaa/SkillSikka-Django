@@ -51,6 +51,8 @@ from .api_views import (
 	TopicListCreateAPIView,
 	VerifyPasswordResetOTPAPIView,
 	VerifyPaymentAPIView,
+	MyPointsAPIView,
+    PointsLeaderboardAPIView,
 )
 
 
@@ -416,4 +418,15 @@ urlpatterns = [
 		InstructorQuizResultsAPIView.as_view(),
 		name='instructor-quiz-results',
 	),
+path(
+    'my-points/',
+    MyPointsAPIView.as_view(),
+    name='api-my-points'
+),
+
+path(
+    'points-leaderboard/',
+    PointsLeaderboardAPIView.as_view(),
+    name='api-points-leaderboard'
+),
 ]

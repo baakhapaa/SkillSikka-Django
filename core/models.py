@@ -654,112 +654,170 @@ class Quiz(models.Model):
 
 
 class Question(models.Model):
-	quiz = models.ForeignKey(
-		Quiz,
-		on_delete=models.CASCADE,
-		related_name='questions'
-	)
-	text = models.TextField()
-	marks = models.PositiveSmallIntegerField(default=1)
-	order = models.PositiveSmallIntegerField(default=0)
+    quiz = models.ForeignKey(
+        Quiz,
+        on_delete=models.CASCADE,
+        related_name='questions'
+    )
+    text = models.TextField()
+    marks = models.PositiveSmallIntegerField(default=1)
+    points = models.PositiveIntegerField(default=0)
+    order = models.PositiveSmallIntegerField(default=0)
 
-	class Meta:
-		db_table = 'questions'
-		ordering = ['order']
+    class Meta:
+        db_table = 'questions'
+        ordering = ['order']
 
-	def __str__(self):
-		return self.text
+    def __str__(self):
+        return self.text
 
 
 class QuestionOption(models.Model):
-	question = models.ForeignKey(
-		Question,
-		on_delete=models.CASCADE,
-		related_name='options'
-	)
-	text = models.CharField(max_length=500)
-	is_correct = models.BooleanField(default=False)
+    question = models.ForeignKey(
+        Question,
+        on_delete=models.CASCADE,
+        related_name='options'
+    )
+    text = models.CharField(max_length=500)
+    is_correct = models.BooleanField(default=False)
 
-	class Meta:
-		db_table = 'question_options'
+    class Meta:
+        db_table = 'question_options'
 
-	def __str__(self):
-		return self.text
+    def __str__(self):
+        return self.text
 
 
 class QuizAttempt(models.Model):
-	student = models.ForeignKey(
-		User,
-		on_delete=models.CASCADE,
-		related_name='quiz_attempts'
-	)
-	quiz = models.ForeignKey(
-		Quiz,
-		on_delete=models.CASCADE,
-		related_name='attempts'
-	)
-	enrollment = models.ForeignKey(
-		Enrollment,
-		on_delete=models.CASCADE,
-		related_name='quiz_attempts'
-	)
-	score = models.DecimalField(
-		max_digits=8,
-		decimal_places=2,
-		default=0
-	)
-	percentage = models.DecimalField(
-		max_digits=5,
-		decimal_places=2,
-		default=0
-	)
-	is_passed = models.BooleanField(default=False)
-	started_at = models.DateTimeField(auto_now_add=True)
-	completed_at = models.DateTimeField(null=True, blank=True)
+    student = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='quiz_attempts'
+    )
+    quiz = models.ForeignKey(
+        Quiz,
+        on_delete=models.CASCADE,
+        related_name='attempts'
+    )
+    enrollment = models.ForeignKey(
+        Enrollment,
+        on_delete=models.CASCADE,
+        related_name='quiz_attempts'
+    )
+    score = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        default=0
+    )
+    percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0
+    )
+    is_passed = models.BooleanField(default=False)
+    started_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(
+        null=True,
+        blank=True
+    )
 
-	class Meta:
-		db_table = 'quiz_attempts'
+    class Meta:
+        db_table = 'quiz_attempts'
 
-	def __str__(self):
-		return f'{self.student.name} - {self.quiz.title}'
+    def __str__(self):
+        return f'{self.student.name} - {self.quiz.title}'
 
 
 class StudentAnswer(models.Model):
-	attempt = models.ForeignKey(
-		QuizAttempt,
-		on_delete=models.CASCADE,
-		related_name='answers'
-	)
-	question = models.ForeignKey(
-		Question,
-		on_delete=models.CASCADE,
-		related_name='student_answers'
-	)
-	selected_option = models.ForeignKey(
-		QuestionOption,
-		on_delete=models.PROTECT,
-		related_name='student_answers'
-	)
-	is_correct = models.BooleanField(default=False)
-	marks_awarded = models.DecimalField(
-		max_digits=8,
-		decimal_places=2,
-		default=0
-	)
+    attempt = models.ForeignKey(
+        QuizAttempt,
+        on_delete=models.CASCADE,
+        related_name='answers'
+    )
+    question = models.ForeignKey(
+        Question,
+        on_delete=models.CASCADE,
+        related_name='student_answers'
+    )
+    selected_option = models.ForeignKey(
+        QuestionOption,
+        on_delete=models.PROTECT,
+        related_name='student_answers'
+    )
+    is_correct = models.BooleanField(default=False)
+    marks_awarded = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        default=0
+    )
 
-	class Meta:
-		db_table = 'student_answers'
-		constraints = [
-			models.UniqueConstraint(
-				fields=['attempt', 'question'],
-				name='unique_answer_per_attempt_question'
-			)
-		]
+    class Meta:
+        db_table = 'student_answers'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['attempt', 'question'],
+                name='unique_answer_per_attempt_question'
+            )
+        ]
 
-	def __str__(self):
-		return f'{self.attempt_id} - {self.question_id}'
+    def __str__(self):
+        return f'{self.attempt_id} - {self.question_id}'
 
-	
+
+class PointTransaction(models.Model):
+    EVENT_TYPES = [
+        ('quiz_correct_answer', 'Quiz Correct Answer'),
+        ('quiz_first_time_correct', 'Quiz First-Time Correct'),
+        ('quiz_completion', 'Quiz Completion'),
+        ('course_completion', 'Course Completion'),
+        ('challenge_completion', 'Challenge Completion'),
+        ('manual_adjustment', 'Manual Adjustment'),
+    ]
+
+    student = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='point_transactions'
+    )
+
+    points = models.IntegerField()
+
+    event_type = models.CharField(
+        max_length=50,
+        choices=EVENT_TYPES
+    )
+
+    quiz_attempt = models.ForeignKey(
+        QuizAttempt,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='point_transactions'
+    )
+
+    question = models.ForeignKey(
+        Question,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='point_transactions'
+    )
+
+    description = models.CharField(
+        max_length=255,
+        blank=True
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True
+    )
+
+    class Meta:
+        db_table = 'point_transactions'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.student.name} - {self.points} points'
 
 class CertificateCriteria(models.Model):
 	skill_course_requires_quiz_pass = models.BooleanField(default=True)

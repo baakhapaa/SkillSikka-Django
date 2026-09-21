@@ -2,6 +2,7 @@
 from django.utils import timezone
 from django.db import transaction
 from decimal import Decimal
+from django.db.models import Sum
 
 from rest_framework import generics, status
 from rest_framework.authentication import SessionAuthentication
@@ -40,6 +41,7 @@ from .models import (
 	Subject,
 	Topic,
 	User,
+	PointTransaction,
 )
 
 from .serializers import (
@@ -75,6 +77,8 @@ from .serializers import (
 	TopicSerializer,
 	VerifyPasswordResetOTPSerializer,
 	VerifyPaymentSerializer,
+	PointsLeaderboardEntrySerializer,
+    PointTransactionSerializer,
 )
 
 
@@ -1708,198 +1712,268 @@ class StartQuizAttemptAPIView(APIView):
 		)
 
 
-# =========================================================
-# Submit Quiz Attempt
-# =========================================================
-
 class SubmitQuizAttemptAPIView(APIView):
-	authentication_classes = [JWTAuthentication]
-	permission_classes = [IsAuthenticated]
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
 
-	@transaction.atomic
-	def post(self, request, attempt_id):
-		student = request.user
+    @transaction.atomic
+    def post(self, request, attempt_id):
+        student = request.user
 
-		attempt = QuizAttempt.objects.select_related(
-			'quiz',
-			'enrollment',
-			'quiz__course'
-		).filter(
-			id=attempt_id,
-			student=student
-		).first()
+        attempt = QuizAttempt.objects.select_related(
+            'quiz',
+            'enrollment',
+            'quiz__course'
+        ).filter(
+            id=attempt_id,
+            student=student
+        ).first()
 
-		if attempt is None:
-			return Response(
-				{'detail': 'Quiz attempt not found.'},
-				status=status.HTTP_404_NOT_FOUND,
-			)
+        if attempt is None:
+            return Response(
+                {'detail': 'Quiz attempt not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
-		if attempt.completed_at is not None:
-			return Response(
-				{'detail': 'This quiz attempt has already been submitted.'},
-				status=status.HTTP_400_BAD_REQUEST,
-			)
+        if attempt.completed_at is not None:
+            return Response(
+                {
+                    'detail':
+                        'This quiz attempt has already been submitted.'
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-		serializer = QuizSubmitSerializer(
-			data=request.data
-		)
-		serializer.is_valid(raise_exception=True)
+        serializer = QuizSubmitSerializer(
+            data=request.data
+        )
+        serializer.is_valid(raise_exception=True)
 
-		submitted_answers = serializer.validated_data['answers']
+        submitted_answers = serializer.validated_data['answers']
 
-		questions = list(
-			attempt.quiz.questions.prefetch_related(
-				'options'
-			).all()
-		)
+        questions = list(
+            attempt.quiz.questions.prefetch_related(
+                'options'
+            ).all()
+        )
 
-		if not questions:
-			return Response(
-				{'detail': 'This quiz has no questions.'},
-				status=status.HTTP_400_BAD_REQUEST,
-			)
+        if not questions:
+            return Response(
+                {
+                    'detail':
+                        'This quiz has no questions.'
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-		quiz_question_ids = {
-			question.id
-			for question in questions
-		}
+        quiz_question_ids = {
+            question.id
+            for question in questions
+        }
 
-		submitted_question_ids = {
-			answer['question']
-			for answer in submitted_answers
-		}
+        submitted_question_ids = {
+            answer['question']
+            for answer in submitted_answers
+        }
 
-		if submitted_question_ids != quiz_question_ids:
-			return Response(
-				{
-					'detail': (
-						'You must answer every question '
-						'before submitting the quiz.'
-					)
-				},
-				status=status.HTTP_400_BAD_REQUEST,
-			)
+        if submitted_question_ids != quiz_question_ids:
+            return Response(
+                {
+                    'detail': (
+                        'You must answer every question '
+                        'before submitting the quiz.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-		total_marks = sum(
-			question.marks
-			for question in questions
-		)
+        total_marks = sum(
+            question.marks
+            for question in questions
+        )
 
-		if total_marks <= 0:
-			return Response(
-				{'detail': 'Quiz total marks must be greater than zero.'},
-				status=status.HTTP_400_BAD_REQUEST,
-			)
+        if total_marks <= 0:
+            return Response(
+                {
+                    'detail':
+                        'Quiz total marks must be greater than zero.'
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-		question_map = {
-			question.id: question
-			for question in questions
-		}
+        question_map = {
+            question.id: question
+            for question in questions
+        }
 
-		score = Decimal('0.00')
+        score = Decimal('0.00')
 
-		answers_to_create = []
+        answers_to_create = []
 
-		for submitted_answer in submitted_answers:
-			question_id = submitted_answer['question']
-			option_id = submitted_answer['selected_option']
+        # -----------------------------------------
+        # Points earned in this submission
+        # -----------------------------------------
+        points_earned = 0
 
-			question = question_map.get(question_id)
+        # Keep questions that should award points.
+        point_awards = []
 
-			if question is None:
-				return Response(
-					{
-						'detail': (
-							f'Question {question_id} does not '
-							'belong to this quiz.'
-						)
-					},
-					status=status.HTTP_400_BAD_REQUEST,
-				)
+        for submitted_answer in submitted_answers:
+            question_id = submitted_answer['question']
+            option_id = submitted_answer['selected_option']
 
-			selected_option = next(
-				(
-					option
-					for option in question.options.all()
-					if option.id == option_id
-				),
-				None
-			)
+            question = question_map.get(question_id)
 
-			if selected_option is None:
-				return Response(
-					{
-						'detail': (
-							f'Option {option_id} does not belong '
-							f'to question {question_id}.'
-						)
-					},
-					status=status.HTTP_400_BAD_REQUEST,
-				)
+            if question is None:
+                return Response(
+                    {
+                        'detail': (
+                            f'Question {question_id} does not '
+                            'belong to this quiz.'
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-			is_correct = selected_option.is_correct
+            selected_option = next(
+                (
+                    option
+                    for option in question.options.all()
+                    if option.id == option_id
+                ),
+                None
+            )
 
-			marks_awarded = (
-				Decimal(str(question.marks))
-				if is_correct
-				else Decimal('0.00')
-			)
+            if selected_option is None:
+                return Response(
+                    {
+                        'detail': (
+                            f'Option {option_id} does not belong '
+                            f'to question {question_id}.'
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-			score += marks_awarded
+            is_correct = selected_option.is_correct
 
-			answers_to_create.append(
-				StudentAnswer(
-					attempt=attempt,
-					question=question,
-					selected_option=selected_option,
-					is_correct=is_correct,
-					marks_awarded=marks_awarded,
-				)
-			)
+            marks_awarded = (
+                Decimal(str(question.marks))
+                if is_correct
+                else Decimal('0.00')
+            )
 
-		percentage = (
-			score / Decimal(str(total_marks))
-		) * Decimal('100')
+            score += marks_awarded
 
-		percentage = percentage.quantize(
-			Decimal('0.01')
-		)
+            answers_to_create.append(
+                StudentAnswer(
+                    attempt=attempt,
+                    question=question,
+                    selected_option=selected_option,
+                    is_correct=is_correct,
+                    marks_awarded=marks_awarded,
+                )
+            )
 
-		is_passed = (
-			percentage >=
-			Decimal(str(attempt.quiz.pass_percentage))
-		)
+            # -----------------------------------------
+            # Gamification points
+            # -----------------------------------------
+            if is_correct and question.points > 0:
 
-		StudentAnswer.objects.bulk_create(
-			answers_to_create
-		)
+                already_awarded = (
+                    PointTransaction.objects.filter(
+                        student=student,
+                        question=question,
+                        event_type='quiz_correct_answer'
+                    ).exists()
+                )
 
-		attempt.score = score
-		attempt.percentage = percentage
-		attempt.is_passed = is_passed
-		attempt.completed_at = timezone.now()
+                if not already_awarded:
+                    points_earned += question.points
+                    point_awards.append(question)
 
-		attempt.save(
-			update_fields=[
-				'score',
-				'percentage',
-				'is_passed',
-				'completed_at',
-			]
-		)
+        percentage = (
+            score / Decimal(str(total_marks))
+        ) * Decimal('100')
 
-		return Response(
-			{
-				'detail': 'Quiz submitted successfully.',
-				'attempt': QuizAttemptSerializer(
-					attempt
-				).data,
-			},
-			status=status.HTTP_200_OK,
-		)
+        percentage = percentage.quantize(
+            Decimal('0.01')
+        )
 
+        is_passed = (
+            percentage >=
+            Decimal(
+                str(attempt.quiz.pass_percentage)
+            )
+        )
 
+        # -----------------------------------------
+        # Save answers
+        # -----------------------------------------
+        StudentAnswer.objects.bulk_create(
+            answers_to_create
+        )
+
+        # -----------------------------------------
+        # Complete quiz attempt
+        # -----------------------------------------
+        attempt.score = score
+        attempt.percentage = percentage
+        attempt.is_passed = is_passed
+        attempt.completed_at = timezone.now()
+
+        attempt.save(
+            update_fields=[
+                'score',
+                'percentage',
+                'is_passed',
+                'completed_at',
+            ]
+        )
+
+        # -----------------------------------------
+        # Create point transactions
+        # -----------------------------------------
+        point_transactions = []
+
+        for question in point_awards:
+            point_transactions.append(
+                PointTransaction(
+                    student=student,
+                    points=question.points,
+                    event_type='quiz_correct_answer',
+                    quiz_attempt=attempt,
+                    question=question,
+                    description=(
+                        f'Correct answer in quiz: '
+                        f'{attempt.quiz.title}'
+                    ),
+                )
+            )
+
+        if point_transactions:
+            PointTransaction.objects.bulk_create(
+                point_transactions
+            )
+
+        # -----------------------------------------
+        # Response
+        # -----------------------------------------
+        return Response(
+            {
+                'detail':
+                    'Quiz submitted successfully.',
+
+                'attempt':
+                    QuizAttemptSerializer(
+                        attempt
+                    ).data,
+
+                'points_earned':
+                    points_earned,
+            },
+            status=status.HTTP_200_OK,
+        )
 # =========================================================
 # Student Quiz Attempt History
 # =========================================================
@@ -1971,3 +2045,116 @@ class InstructorQuizResultsAPIView(
 		).order_by(
 			'-completed_at'
 		)
+# =========================================================
+# Points Leaderboard
+# =========================================================
+
+
+class PointsLeaderboardAPIView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            limit = int(
+                request.query_params.get(
+                    'limit',
+                    20
+                )
+            )
+        except (TypeError, ValueError):
+            limit = 20
+
+        limit = max(1, min(limit, 100))
+
+        students = (
+            User.objects
+            .filter(
+                role__name='student',
+                point_transactions__isnull=False
+            )
+            .annotate(
+                total_points=Sum(
+                    'point_transactions__points'
+                )
+            )
+            .order_by(
+                '-total_points',
+                'id'
+            )[:limit]
+        )
+
+        data = [
+            {
+                'rank': index + 1,
+                'student_id': student.id,
+                'student_name': student.name,
+                'total_points': student.total_points or 0,
+            }
+            for index, student in enumerate(
+                students
+            )
+        ]
+
+        serializer = PointsLeaderboardEntrySerializer(
+            data,
+            many=True
+        )
+
+        return Response(
+            serializer.data,
+            status=status.HTTP_200_OK
+        )
+
+
+# =========================================================
+# Student Points
+# =========================================================
+
+
+class MyPointsAPIView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        if _role_name(user) != 'student':
+            return Response(
+                {
+                    'detail':
+                        'Only students can access points.'
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        transactions = (
+            PointTransaction.objects
+            .filter(student=user)
+            .select_related(
+                'quiz_attempt',
+                'question'
+            )
+            .order_by('-created_at')
+        )
+
+        total_points = (
+            transactions.aggregate(
+                total=Sum('points')
+            )['total']
+            or 0
+        )
+
+        return Response(
+            {
+                'student_id': user.id,
+                'student_name': user.name,
+                'total_points': total_points,
+                'transactions':
+                    PointTransactionSerializer(
+                        transactions,
+                        many=True
+                    ).data,
+            },
+            status=status.HTTP_200_OK
+        )
