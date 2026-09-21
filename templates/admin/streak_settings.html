@@ -1,0 +1,40 @@
+{% extends 'base.html' %}
+{% block title %}Streak Settings | SkillSikka{% endblock %}
+{% block content %}
+<style>
+.management-card{background:var(--white);border:1px solid var(--line);padding:24px;border-radius:4px;box-shadow:var(--shadow);margin-bottom:24px}.form-stack input[type=number]{width:100%;padding:15px 16px;border:1px solid #d7e1df;border-radius:3px;background:var(--white);font:inherit;color:var(--ink)}.form-error{color:#b64b45;font-size:12px}.page-intro{color:var(--muted);max-width:620px;margin-bottom:28px}
+</style>
+<div class="app-shell">
+    <aside class="sidebar">
+        <div class="brand"><span class="brand-mark small">SS</span><strong>SkillSikka</strong></div>
+        <p class="sidebar-label">Workspace</p>
+        <nav>
+            <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
+            <a class="nav-item" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
+            <a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
+            <a class="nav-item" href="{% url 'manage_courses' %}"><span>▣</span> Courses</a>
+            <a class="nav-item active" href="{% url 'manage_streak_settings' %}"><span>◈</span> Streak settings</a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="avatar">{{ request.user.name|slice:':1'|upper }}</div>
+            <div><strong>{{ request.user.name }}</strong><small>{{ request.user.role.name|default:'Administrator' }}</small></div>
+            <a class="logout" href="{% url 'logout' %}" aria-label="Log out">↗</a>
+        </div>
+    </aside>
+    <main class="dashboard-main">
+        <header class="topbar"><div><p class="eyebrow">Gamification</p><h1>Streak Settings</h1></div><div class="top-actions"><a class="outline-button" href="{% url 'dashboard' %}">Back to overview</a></div></header>
+        {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
+        <article class="management-card">
+            <div class="section-heading"><div><p class="eyebrow">Rule</p><h2>Grace period</h2></div></div>
+            <p class="page-intro">Set how many consecutive missed days a student can have before their streak resets to zero. A value of 0 means students must be active every single day.</p>
+            <form method="post" class="form-stack">
+                {% csrf_token %}
+                <label for="{{ form.grace_period_days.id_for_label }}">Grace period (days)</label>
+                {{ form.grace_period_days }}
+                {% for error in form.grace_period_days.errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                <button class="primary-button" type="submit" style="margin-top:16px;">Save settings</button>
+            </form>
+        </article>
+    </main>
+</div>
+{% endblock %}

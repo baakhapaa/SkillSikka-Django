@@ -758,3 +758,45 @@ class StudentAnswer(models.Model):
 
 	def __str__(self):
 		return f'{self.attempt_id} - {self.question_id}'
+
+	
+
+class CertificateCriteria(models.Model):
+	skill_course_requires_quiz_pass = models.BooleanField(default=True)
+	academic_grade_min_completion_percentage = models.PositiveSmallIntegerField(default=80)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'certificate_criteria'
+
+	def __str__(self):
+		return 'Certificate criteria'
+
+	@classmethod
+	def get_solo(cls):
+		obj, _ = cls.objects.get_or_create(pk=1)
+		return obj
+
+
+class Certificate(models.Model):
+	CERTIFICATE_TYPE_CHOICES = (
+		('course', 'Course Completion'),
+		('grade', 'Grade Completion'),
+	)
+
+	student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='certificates')
+	certificate_type = models.CharField(max_length=10, choices=CERTIFICATE_TYPE_CHOICES)
+	course = models.ForeignKey(Course, on_delete=models.CASCADE, null=True, blank=True, related_name='certificates')
+	grade = models.ForeignKey(Grade, on_delete=models.CASCADE, null=True, blank=True, related_name='certificates')
+	issued_at = models.DateTimeField(auto_now_add=True)
+
+	class Meta:
+		db_table = 'certificates'
+		constraints = [
+			models.UniqueConstraint(fields=['student', 'course'], name='unique_course_certificate_per_student'),
+			models.UniqueConstraint(fields=['student', 'grade'], name='unique_grade_certificate_per_student'),
+		]
+
+	def __str__(self):
+		target = self.course.title if self.course else (self.grade.name if self.grade else '')
+		return f'{self.student.name} - {target}'

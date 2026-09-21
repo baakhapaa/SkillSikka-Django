@@ -16,6 +16,8 @@ Including another URLconf
 """
 from django.urls import include, path
 
+from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
+
 from core.api_views import InstructorRegistrationAPIView, StudentRegistrationAPIView
 
 urlpatterns = [
@@ -23,4 +25,6 @@ urlpatterns = [
     path('api/register/student/', StudentRegistrationAPIView.as_view(), name='api-register-student-unversioned'),
     path('api/register/instructor/', InstructorRegistrationAPIView.as_view(), name='api-register-instructor-unversioned'),
     path('api/v1/', include('core.api_urls')),
+    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
+    path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
 ]

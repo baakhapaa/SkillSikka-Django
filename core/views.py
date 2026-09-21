@@ -4,8 +4,8 @@ from django.contrib.auth.decorators import login_required
 from django.shortcuts import redirect, render
 from django.utils import timezone
 
-from .forms import CourseForm, DistrictForm, GradeForm, MunicipalityForm, ProvinceForm, SchoolForm
-from .models import Course, District, Grade, Municipality, Province, School, User, VerificationDocument
+from .forms import CourseForm, DistrictForm, GradeForm, MunicipalityForm, ProvinceForm, SchoolForm, StreakSettingsForm
+from .models import Course, District, Grade, Municipality, Province, School, StreakSettings, User, VerificationDocument
 
 
 def login_view(request):
@@ -144,6 +144,44 @@ def manage_courses(request):
 	})
 
 
+@login_required
+def manage_streak_settings(request):
+	if not is_admin(request.user):
+		messages.error(request, 'You do not have permission to manage streak settings.')
+		return redirect('dashboard')
+
+	settings_row = StreakSettings.get_solo()
+
+	if request.method == 'POST':
+		form = StreakSettingsForm(request.POST, instance=settings_row)
+		if form.is_valid():
+			form.save()
+			messages.success(request, 'Streak settings updated successfully.')
+			return redirect('manage_streak_settings')
+	else:
+		form = StreakSettingsForm(instance=settings_row)
+
+	return render(request, 'admin/streak_settings.html', {'form': form, 'settings': settings_row})
+
+
 def logout_view(request):
 	logout(request)
 	return redirect('login')
+@login_required
+def manage_certificate_criteria(request):
+	if not is_admin(request.user):
+		messages.error(request, 'You do not have permission to manage certificate criteria.')
+		return redirect('dashboard')
+
+	criteria = CertificateCriteria.get_solo()
+
+	if request.method == 'POST':
+		form = CertificateCriteriaForm(request.POST, instance=criteria)
+		if form.is_valid():
+			form.save()
+			messages.success(request, 'Certificate criteria updated successfully.')
+			return redirect('manage_certificate_criteria')
+	else:
+		form = CertificateCriteriaForm(instance=criteria)
+
+	return render(request, 'admin/certificate_criteria.html', {'form': form})

@@ -13,6 +13,8 @@
             <a class="nav-item" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
             <a class="nav-item active" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
             <a class="nav-item" href="{% url 'manage_courses' %}"><span>▣</span> Courses</a>
+            <a class="nav-item" href="{% url 'manage_streak_settings' %}"><span>◈</span> Streak settings</a>
+            <a class="nav-item" href="{% url 'manage_certificate_criteria' %}"><span>⚑</span> Certificate criteria</a>
         </nav>
         <div class="sidebar-footer">
             <div class="avatar">{{ request.user.name|slice:':1'|upper }}</div>

@@ -1,6 +1,6 @@
 from django import forms
 
-from .models import Course, District, Grade, Municipality, Province, School, User
+from .models import Course, District, Grade, Municipality, Province, School, StreakSettings, User
 
 
 class ProvinceForm(forms.ModelForm):
@@ -64,3 +64,13 @@ class CourseForm(forms.ModelForm):
 			'title': forms.TextInput(attrs={'placeholder': 'e.g. Intro to Python'}),
 			'thumbnail_url': forms.URLInput(attrs={'placeholder': 'https://example.com/thumbnail.png'}),
 		}
+
+
+class StreakSettingsForm(forms.ModelForm):
+	class Meta:
+		model = StreakSettings
+		fields = ['grace_period_days']
+class CertificateCriteriaForm(forms.ModelForm):
+	class Meta:
+		model = CertificateCriteria
+		fields = ['skill_course_requires_quiz_pass', 'academic_grade_min_completion_percentage']		

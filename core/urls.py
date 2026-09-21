@@ -6,6 +6,7 @@ from .views import (
 	logout_view,
 	manage_courses,
 	manage_geography,
+	manage_streak_settings,
 	review_verification,
 	verification_queue,
 )
@@ -19,4 +20,5 @@ urlpatterns = [
 	path('admin/verifications', verification_queue, name='verification_queue'),
 	path('admin/verifications/<int:user_id>/review', review_verification, name='review_verification'),
 	path('admin/courses', manage_courses, name='manage_courses'),
+	path('admin/streak-settings', manage_streak_settings, name='manage_streak_settings'),
 ]

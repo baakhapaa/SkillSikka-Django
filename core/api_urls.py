@@ -5,6 +5,8 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from .api_views import (
 	ChapterDetailAPIView,
 	ChapterListCreateAPIView,
+	CheckCourseCertificateAPIView,
+	CheckGradeCertificateAPIView,
 	CompleteLessonAPIView,
 	CourseDetailAPIView,
 	CourseListCreateAPIView,
@@ -22,8 +24,10 @@ from .api_views import (
 	LoginAPIView,
 	LogoutAPIView,
 	MunicipalityListAPIView,
+	MyCertificatesAPIView,
 	MyEnrollmentsAPIView,
 	MyPaymentsAPIView,
+	MyStreakAPIView,
 	PaymentStatusAPIView,
 	ProvinceListAPIView,
 	QuestionDetailAPIView,
@@ -36,6 +40,7 @@ from .api_views import (
 	RoleListAPIView,
 	SchoolListAPIView,
 	StartQuizAttemptAPIView,
+	StreakLeaderboardAPIView,
 	StudentQuizAttemptHistoryAPIView,
 	StudentQuizDetailAPIView,
 	StudentRegistrationAPIView,
@@ -290,6 +295,44 @@ urlpatterns = [
 		'my-payments/',
 		MyPaymentsAPIView.as_view(),
 		name='api-my-payments'
+	),
+
+	# =========================
+	# Streak
+	# =========================
+
+	path(
+		'my-streak/',
+		MyStreakAPIView.as_view(),
+		name='api-my-streak'
+	),
+
+	path(
+		'streak-leaderboard/',
+		StreakLeaderboardAPIView.as_view(),
+		name='api-streak-leaderboard'
+	),
+
+	# =========================
+	# Certificate
+	# =========================
+
+	path(
+		'courses/<int:course_id>/certificate/',
+		CheckCourseCertificateAPIView.as_view(),
+		name='api-check-course-certificate'
+	),
+
+	path(
+		'grade-certificate/',
+		CheckGradeCertificateAPIView.as_view(),
+		name='api-check-grade-certificate'
+	),
+
+	path(
+		'my-certificates/',
+		MyCertificatesAPIView.as_view(),
+		name='api-my-certificates'
 	),
 
 	# =========================

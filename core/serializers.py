@@ -13,12 +13,15 @@ from django.utils.text import slugify
 from rest_framework import serializers
 
 from .models import (
+	Certificate,
+	CertificateCriteria,
 	Chapter,
 	Course,
 	District,
 	Enrollment,
 	Grade,
 	InstructorProfile,
+	LearningStreak,
 	Lesson,
 	LessonProgress,
 	Municipality,
@@ -1122,10 +1125,6 @@ class QuizManagementSerializer(serializers.ModelSerializer):
 		return attrs
 
 
-# =========================================================
-# Student Quiz Serializers
-# =========================================================
-
 class QuestionOptionStudentSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = QuestionOption
@@ -1177,10 +1176,6 @@ class QuizStudentSerializer(serializers.ModelSerializer):
 		]
 
 
-# =========================================================
-# Quiz Attempt Serializers
-# =========================================================
-
 class QuizAttemptSerializer(serializers.ModelSerializer):
 	quiz_title = serializers.CharField(
 		source='quiz.title',
@@ -1213,10 +1208,6 @@ class QuizAttemptSerializer(serializers.ModelSerializer):
 		]
 
 
-# =========================================================
-# Quiz Submission Serializers
-# =========================================================
-
 class StudentAnswerSubmitSerializer(serializers.Serializer):
 	question = serializers.IntegerField()
 	selected_option = serializers.IntegerField()
@@ -1243,10 +1234,6 @@ class QuizSubmitSerializer(serializers.Serializer):
 
 		return value
 
-
-# =========================================================
-# Instructor Quiz Result Serializer
-# =========================================================
 
 class InstructorQuizResultSerializer(serializers.ModelSerializer):
 	student_id = serializers.IntegerField(
@@ -1285,3 +1272,32 @@ class InstructorQuizResultSerializer(serializers.ModelSerializer):
 			'completed_at',
 		]
 		read_only_fields = fields
+
+
+class LearningStreakSerializer(serializers.ModelSerializer):
+	class Meta:
+		model = LearningStreak
+		fields = ['current_streak', 'longest_streak', 'last_active_date']
+
+
+class LeaderboardEntrySerializer(serializers.Serializer):
+	rank = serializers.IntegerField()
+	student_id = serializers.IntegerField()
+	student_name = serializers.CharField()
+	current_streak = serializers.IntegerField()
+	longest_streak = serializers.IntegerField()
+
+
+class CertificateSerializer(serializers.ModelSerializer):
+	course_title = serializers.CharField(source='course.title', read_only=True)
+	grade_name = serializers.CharField(source='grade.name', read_only=True)
+
+	class Meta:
+		model = Certificate
+		fields = ['id', 'certificate_type', 'course', 'course_title', 'grade', 'grade_name', 'issued_at']
+
+
+class CertificateCriteriaSerializer(serializers.ModelSerializer):
+	class Meta:
+		model = CertificateCriteria
+		fields = ['skill_course_requires_quiz_pass', 'academic_grade_min_completion_percentage']

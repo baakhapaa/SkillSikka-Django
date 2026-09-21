@@ -16,11 +16,14 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import (
+	Certificate,
+	CertificateCriteria,
 	Chapter,
 	Course,
 	District,
 	Enrollment,
 	Grade,
+	LearningStreak,
 	Lesson,
 	LessonProgress,
 	Municipality,
@@ -31,6 +34,8 @@ from .models import (
 	Quiz,
 	QuizAttempt,
 	School,
+	StreakHistory,
+	StreakSettings,
 	StudentAnswer,
 	Subject,
 	Topic,
@@ -38,6 +43,7 @@ from .models import (
 )
 
 from .serializers import (
+	CertificateSerializer,
 	ChapterSerializer,
 	CourseSerializer,
 	DistrictSerializer,
@@ -48,6 +54,8 @@ from .serializers import (
 	InitiatePaymentSerializer,
 	InstructorQuizResultSerializer,
 	InstructorRegistrationSerializer,
+	LeaderboardEntrySerializer,
+	LearningStreakSerializer,
 	LessonProgressSerializer,
 	LessonSerializer,
 	LoginSerializer,
@@ -371,6 +379,81 @@ def _is_verified_instructor(user):
 		_is_instructor(user)
 		and user.verification_status == 'verified'
 	)
+
+
+# =========================================================
+# Streak Helper
+# =========================================================
+
+def _update_streak(student):
+	today = timezone.now().date()
+
+	_, created_today = StreakHistory.objects.get_or_create(student=student, date=today)
+	if not created_today:
+		return
+
+	streak, _ = LearningStreak.objects.get_or_create(student=student)
+	settings_row = StreakSettings.get_solo()
+	grace = settings_row.grace_period_days
+
+	if streak.last_active_date is None:
+		streak.current_streak = 1
+	else:
+		gap = (today - streak.last_active_date).days
+		if gap <= 1 + grace:
+			streak.current_streak += 1
+		else:
+			streak.current_streak = 1
+
+	streak.longest_streak = max(streak.longest_streak, streak.current_streak)
+	streak.last_active_date = today
+	streak.save(update_fields=['current_streak', 'longest_streak', 'last_active_date'])
+
+
+# =========================================================
+# Certificate Eligibility Helpers
+# =========================================================
+
+def _check_course_certificate_eligibility(student, course):
+	enrollment = Enrollment.objects.filter(student=student, course=course, status='completed').first()
+	if enrollment is None:
+		return False
+
+	criteria = CertificateCriteria.get_solo()
+	if criteria.skill_course_requires_quiz_pass:
+		course_quizzes = Quiz.objects.filter(course=course, is_published=True)
+		for quiz in course_quizzes:
+			has_passed = QuizAttempt.objects.filter(student=student, quiz=quiz, is_passed=True).exists()
+			if not has_passed:
+				return False
+
+	return True
+
+
+def _check_grade_certificate_eligibility(student, grade):
+	academic_courses = Course.objects.filter(course_type='academic', grade=grade, is_published=True)
+	if not academic_courses.exists():
+		return False
+
+	criteria = CertificateCriteria.get_solo()
+	total_percentage = 0
+	course_count = 0
+
+	for course in academic_courses:
+		total_lessons = Lesson.objects.filter(course=course).count()
+		if total_lessons == 0:
+			continue
+		completed_lessons = LessonProgress.objects.filter(
+			student=student, lesson__course=course, is_completed=True,
+		).count()
+		total_percentage += (completed_lessons / total_lessons) * 100
+		course_count += 1
+
+	if course_count == 0:
+		return False
+
+	average_percentage = total_percentage / course_count
+	return average_percentage >= criteria.academic_grade_min_completion_percentage
 
 
 # =========================================================
@@ -965,6 +1048,8 @@ class CompleteLessonAPIView(APIView):
 			},
 		)
 
+		_update_streak(student)
+
 		return Response(LessonProgressSerializer(progress).data, status=status.HTTP_200_OK)
 
 
@@ -1065,6 +1150,100 @@ class MyPaymentsAPIView(generics.ListAPIView):
 
 	def get_queryset(self):
 		return Payment.objects.filter(student=self.request.user).select_related('course').order_by('-created_at')
+
+
+# =========================================================
+# Streak
+# =========================================================
+
+class MyStreakAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def get(self, request):
+		streak, _ = LearningStreak.objects.get_or_create(student=request.user)
+		return Response(LearningStreakSerializer(streak).data, status=status.HTTP_200_OK)
+
+
+class StreakLeaderboardAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def get(self, request):
+		limit = int(request.query_params.get('limit', 20))
+		top_streaks = LearningStreak.objects.select_related('student').filter(
+			current_streak__gt=0
+		).order_by('-current_streak', '-longest_streak')[:limit]
+
+		data = [
+			{
+				'rank': index + 1,
+				'student_id': streak.student_id,
+				'student_name': streak.student.name,
+				'current_streak': streak.current_streak,
+				'longest_streak': streak.longest_streak,
+			}
+			for index, streak in enumerate(top_streaks)
+		]
+
+		return Response(LeaderboardEntrySerializer(data, many=True).data, status=status.HTTP_200_OK)
+
+
+# =========================================================
+# Certificate
+# =========================================================
+
+class CheckCourseCertificateAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def post(self, request, course_id):
+		course = Course.objects.filter(pk=course_id, course_type='skill').first()
+		if course is None:
+			return Response({'detail': 'Skill course not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+		student = request.user
+
+		existing = Certificate.objects.filter(student=student, course=course).first()
+		if existing is not None:
+			return Response(CertificateSerializer(existing).data, status=status.HTTP_200_OK)
+
+		if not _check_course_certificate_eligibility(student, course):
+			return Response({'detail': 'You have not yet met the criteria for this certificate.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		certificate = Certificate.objects.create(student=student, certificate_type='course', course=course)
+		return Response(CertificateSerializer(certificate).data, status=status.HTTP_201_CREATED)
+
+
+class CheckGradeCertificateAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def post(self, request):
+		student = request.user
+		student_grade = getattr(getattr(student, 'student_profile', None), 'grade', None)
+
+		if student_grade is None:
+			return Response({'detail': 'You do not have a grade set on your profile.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		existing = Certificate.objects.filter(student=student, grade=student_grade).first()
+		if existing is not None:
+			return Response(CertificateSerializer(existing).data, status=status.HTTP_200_OK)
+
+		if not _check_grade_certificate_eligibility(student, student_grade):
+			return Response({'detail': 'You have not yet met the criteria for this certificate.'}, status=status.HTTP_400_BAD_REQUEST)
+
+		certificate = Certificate.objects.create(student=student, certificate_type='grade', grade=student_grade)
+		return Response(CertificateSerializer(certificate).data, status=status.HTTP_201_CREATED)
+
+
+class MyCertificatesAPIView(generics.ListAPIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = CertificateSerializer
+
+	def get_queryset(self):
+		return Certificate.objects.filter(student=self.request.user).select_related('course', 'grade').order_by('-issued_at')
 
 
 # =========================================================
