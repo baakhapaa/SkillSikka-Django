@@ -800,3 +800,39 @@ class Certificate(models.Model):
 	def __str__(self):
 		target = self.course.title if self.course else (self.grade.name if self.grade else '')
 		return f'{self.student.name} - {target}'
+	
+
+class Badge(models.Model):
+	CRITERIA_TYPE_CHOICES = (
+		('quiz_perfect_score', 'Perfect Quiz Score'),
+		('streak_milestone', 'Streak Milestone'),
+		('course_completion_count', 'Number of Courses Completed'),
+	)
+
+	name = models.CharField(max_length=150, unique=True)
+	description = models.TextField(blank=True)
+	icon_url = models.URLField(blank=True)
+	criteria_type = models.CharField(max_length=30, choices=CRITERIA_TYPE_CHOICES)
+	criteria_value = models.PositiveIntegerField(help_text='e.g. streak days needed, or number of courses')
+	is_active = models.BooleanField(default=True)
+
+	class Meta:
+		db_table = 'badges'
+
+	def __str__(self):
+		return self.name
+
+
+class StudentBadge(models.Model):
+	student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='badges')
+	badge = models.ForeignKey(Badge, on_delete=models.CASCADE, related_name='awarded_to')
+	awarded_at = models.DateTimeField(auto_now_add=True)
+
+	class Meta:
+		db_table = 'student_badges'
+		constraints = [
+			models.UniqueConstraint(fields=['student', 'badge'], name='unique_badge_per_student'),
+		]
+
+	def __str__(self):
+		return f'{self.student.name} - {self.badge.name}'

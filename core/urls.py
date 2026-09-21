@@ -4,6 +4,7 @@ from .views import (
 	dashboard,
 	login_view,
 	logout_view,
+	manage_certificate_criteria,
 	manage_courses,
 	manage_geography,
 	manage_streak_settings,
@@ -21,4 +22,5 @@ urlpatterns = [
 	path('admin/verifications/<int:user_id>/review', review_verification, name='review_verification'),
 	path('admin/courses', manage_courses, name='manage_courses'),
 	path('admin/streak-settings', manage_streak_settings, name='manage_streak_settings'),
+	path('admin/certificate-criteria', manage_certificate_criteria, name='manage_certificate_criteria'),
 ]
