@@ -4,8 +4,28 @@ from django.contrib.auth.decorators import login_required
 from django.shortcuts import redirect, render
 from django.utils import timezone
 
-from .forms import CourseForm, DistrictForm, GradeForm, MunicipalityForm, ProvinceForm, SchoolForm, StreakSettingsForm
-from .models import Course, District, Grade, Municipality, Province, School, StreakSettings, User, VerificationDocument
+from .forms import (
+	CertificateCriteriaForm,
+	CourseForm,
+	DistrictForm,
+	GradeForm,
+	MunicipalityForm,
+	ProvinceForm,
+	SchoolForm,
+	StreakSettingsForm,
+)
+from .models import (
+	CertificateCriteria,
+	Course,
+	District,
+	Grade,
+	Municipality,
+	Province,
+	School,
+	StreakSettings,
+	User,
+	VerificationDocument,
+)
 
 
 def login_view(request):
@@ -164,9 +184,6 @@ def manage_streak_settings(request):
 	return render(request, 'admin/streak_settings.html', {'form': form, 'settings': settings_row})
 
 
-def logout_view(request):
-	logout(request)
-	return redirect('login')
 @login_required
 def manage_certificate_criteria(request):
 	if not is_admin(request.user):
@@ -185,3 +202,8 @@ def manage_certificate_criteria(request):
 		form = CertificateCriteriaForm(instance=criteria)
 
 	return render(request, 'admin/certificate_criteria.html', {'form': form})
+
+
+def logout_view(request):
+	logout(request)
+	return redirect('login')

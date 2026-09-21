@@ -1,6 +1,6 @@
 from django import forms
 
-from .models import Course, District, Grade, Municipality, Province, School, StreakSettings, User
+from .models import Course, District, Grade, Municipality, Province, School, StreakSettings, User,CertificateCriteria
 
 
 class ProvinceForm(forms.ModelForm):
