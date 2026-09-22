@@ -48,6 +48,7 @@ from .models import (
     ShortComment,
     ShortLike,
     ShortView,
+	Role,
 )
 
 from .serializers import (
@@ -2518,3 +2519,487 @@ class ShortCommentDetailAPIView(
             )
 
         instance.delete()
+# =========================================================
+# Super Admin - User Management
+# =========================================================
+
+class SuperAdminRequiredMixin:
+    """
+    Restricts access to Super Admin users only.
+    """
+
+    def check_super_admin(self, request):
+        user = request.user
+
+        if not (
+            user.is_superuser
+            or _role_name(user) == 'super_admin'
+        ):
+            raise PermissionDenied(
+                'Only Super Admin can perform this action.'
+            )
+
+
+class SuperAdminUserListAPIView(
+    SuperAdminRequiredMixin,
+    APIView
+):
+    """
+    List and filter platform users.
+
+    Query parameters:
+    - role
+    - verification_status
+    - is_active
+    - search
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        self.check_super_admin(request)
+
+        users = User.objects.select_related(
+            'role',
+            'verified_by'
+        ).all().order_by('-created_at')
+
+        role = request.query_params.get('role')
+        verification_status = request.query_params.get(
+            'verification_status'
+        )
+        is_active = request.query_params.get('is_active')
+        search = request.query_params.get('search')
+
+        if role:
+            users = users.filter(role__name=role)
+
+        if verification_status:
+            users = users.filter(
+                verification_status=verification_status
+            )
+
+        if is_active is not None:
+            value = is_active.lower()
+
+            if value in ['true', '1', 'yes']:
+                users = users.filter(is_active=True)
+
+            elif value in ['false', '0', 'no']:
+                users = users.filter(is_active=False)
+
+            else:
+                return Response(
+                    {
+                        'detail':
+                            'is_active must be true or false.'
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        if search:
+            users = users.filter(
+                Q(name__icontains=search)
+                | Q(email__icontains=search)
+                | Q(phone_number__icontains=search)
+            )
+
+        results = []
+
+        for user in users:
+            results.append({
+                'id': user.id,
+                'name': user.name,
+                'email': user.email,
+                'phone_country_code':
+                    user.phone_country_code,
+                'phone_number': user.phone_number,
+                'role': (
+                    user.role.name
+                    if user.role
+                    else None
+                ),
+                'verification_status':
+                    user.verification_status,
+                'is_active': user.is_active,
+                'is_staff': user.is_staff,
+                'is_superuser': user.is_superuser,
+                'onboarding_completed':
+                    user.onboarding_completed,
+                'verified_by': (
+                    {
+                        'id': user.verified_by.id,
+                        'name': user.verified_by.name,
+                        'email': user.verified_by.email,
+                    }
+                    if user.verified_by
+                    else None
+                ),
+                'verified_at': user.verified_at,
+                'created_at': user.created_at,
+                'updated_at': user.updated_at,
+            })
+
+        return Response(
+            {
+                'count': len(results),
+                'results': results,
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class SuperAdminUserDetailAPIView(
+    SuperAdminRequiredMixin,
+    APIView
+):
+    """
+    Retrieve an individual user's administrative details.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, user_id):
+        self.check_super_admin(request)
+
+        try:
+            user = User.objects.select_related(
+                'role',
+                'verified_by'
+            ).get(pk=user_id)
+
+        except User.DoesNotExist:
+            raise NotFound('User not found.')
+
+        data = {
+            'id': user.id,
+            'name': user.name,
+            'email': user.email,
+            'phone_country_code':
+                user.phone_country_code,
+            'phone_number': user.phone_number,
+            'gender': user.gender,
+            'dob': user.dob,
+            'location': user.location,
+            'profile_photo_url':
+                user.profile_photo_url,
+            'role': (
+                user.role.name
+                if user.role
+                else None
+            ),
+            'verification_status':
+                user.verification_status,
+            'is_active': user.is_active,
+            'is_staff': user.is_staff,
+            'is_superuser': user.is_superuser,
+            'onboarding_completed':
+                user.onboarding_completed,
+            'onboarding_step':
+                user.onboarding_step,
+            'verified_by': (
+                {
+                    'id': user.verified_by.id,
+                    'name': user.verified_by.name,
+                    'email': user.verified_by.email,
+                }
+                if user.verified_by
+                else None
+            ),
+            'verified_at': user.verified_at,
+            'last_login': user.last_login,
+            'created_at': user.created_at,
+            'updated_at': user.updated_at,
+        }
+
+        return Response(
+            data,
+            status=status.HTTP_200_OK
+        )
+
+
+class SuperAdminUserStatusAPIView(
+    SuperAdminRequiredMixin,
+    APIView
+):
+    """
+    Activate or deactivate a user account.
+
+    Body:
+    {
+        "is_active": true
+    }
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, user_id):
+        self.check_super_admin(request)
+
+        try:
+            target_user = User.objects.get(pk=user_id)
+
+        except User.DoesNotExist:
+            raise NotFound('User not found.')
+
+        if target_user.id == request.user.id:
+            return Response(
+                {
+                    'detail':
+                        'You cannot change the active status '
+                        'of your own Super Admin account.'
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if 'is_active' not in request.data:
+            return Response(
+                {
+                    'detail':
+                        'is_active is required.'
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        is_active = request.data.get('is_active')
+
+        if not isinstance(is_active, bool):
+            return Response(
+                {
+                    'detail':
+                        'is_active must be a boolean.'
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        target_user.is_active = is_active
+
+        target_user.save(
+            update_fields=[
+                'is_active',
+                'updated_at',
+            ]
+        )
+
+        return Response(
+            {
+                'detail': (
+                    'User activated successfully.'
+                    if is_active
+                    else 'User deactivated successfully.'
+                ),
+                'user': {
+                    'id': target_user.id,
+                    'name': target_user.name,
+                    'email': target_user.email,
+                    'is_active': target_user.is_active,
+                },
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class SuperAdminUserRoleAPIView(
+    SuperAdminRequiredMixin,
+    APIView
+):
+    """
+    Change a user's assigned role.
+
+    Body:
+    {
+        "role": "instructor"
+    }
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, user_id):
+        self.check_super_admin(request)
+
+        try:
+            target_user = User.objects.select_related(
+                'role'
+            ).get(pk=user_id)
+
+        except User.DoesNotExist:
+            raise NotFound('User not found.')
+
+        if target_user.id == request.user.id:
+            return Response(
+                {
+                    'detail':
+                        'You cannot change your own '
+                        'Super Admin role.'
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        role_name = request.data.get('role')
+
+        if not role_name:
+            return Response(
+                {
+                    'detail':
+                        'role is required.'
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            role = Role.objects.get(name=role_name)
+
+        except Role.DoesNotExist:
+            return Response(
+                {
+                    'detail': 'Invalid role.',
+                    'available_roles': list(
+                        Role.objects.values_list(
+                            'name',
+                            flat=True
+                        )
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        old_role = (
+            target_user.role.name
+            if target_user.role
+            else None
+        )
+
+        target_user.role = role
+        target_user.save(
+            update_fields=[
+                'role',
+                'updated_at',
+            ]
+        )
+
+        return Response(
+            {
+                'detail':
+                    'User role updated successfully.',
+                'user': {
+                    'id': target_user.id,
+                    'name': target_user.name,
+                    'email': target_user.email,
+                    'previous_role': old_role,
+                    'role': role.name,
+                },
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class SuperAdminInstructorVerificationAPIView(
+    SuperAdminRequiredMixin,
+    APIView
+):
+    """
+    Verify or reject an instructor account.
+
+    Body:
+    {
+        "verification_status": "verified"
+    }
+
+    Supported values:
+    - pending
+    - verified
+    - rejected
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, user_id):
+        self.check_super_admin(request)
+
+        try:
+            instructor = User.objects.select_related(
+                'role'
+            ).get(pk=user_id)
+
+        except User.DoesNotExist:
+            raise NotFound('User not found.')
+
+        if _role_name(instructor) != 'instructor':
+            return Response(
+                {
+                    'detail':
+                        'The selected user is not '
+                        'an instructor.'
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        verification_status = request.data.get(
+            'verification_status'
+        )
+
+        allowed_statuses = [
+            'pending',
+            'verified',
+            'rejected',
+        ]
+
+        if verification_status not in allowed_statuses:
+            return Response(
+                {
+                    'detail':
+                        'verification_status must be '
+                        'pending, verified, or rejected.'
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        instructor.verification_status = (
+            verification_status
+        )
+
+        if verification_status == 'verified':
+            instructor.verified_by = request.user
+            instructor.verified_at = timezone.now()
+
+        else:
+            instructor.verified_by = None
+            instructor.verified_at = None
+
+        instructor.save(
+            update_fields=[
+                'verification_status',
+                'verified_by',
+                'verified_at',
+                'updated_at',
+            ]
+        )
+
+        return Response(
+            {
+                'detail':
+                    'Instructor verification status '
+                    'updated successfully.',
+                'instructor': {
+                    'id': instructor.id,
+                    'name': instructor.name,
+                    'email': instructor.email,
+                    'verification_status':
+                        instructor.verification_status,
+                    'verified_by': (
+                        request.user.id
+                        if verification_status
+                        == 'verified'
+                        else None
+                    ),
+                    'verified_at':
+                        instructor.verified_at,
+                },
+            },
+            status=status.HTTP_200_OK
+        )

@@ -59,6 +59,11 @@ from .api_views import (
     ShortDetailAPIView,
     ShortListCreateAPIView,
     ToggleShortLikeAPIView,
+	SuperAdminUserListAPIView,
+    SuperAdminUserDetailAPIView,
+    SuperAdminUserStatusAPIView,
+    SuperAdminUserRoleAPIView,
+    SuperAdminInstructorVerificationAPIView, 
 )
 
 
@@ -492,5 +497,38 @@ path(
     'shorts/comments/<int:pk>/',
     ShortCommentDetailAPIView.as_view(),
     name='short-comment-detail',
+),
+# =========================================================
+# Super Admin - User Management
+# =========================================================
+
+path(
+    'admin/users/',
+    SuperAdminUserListAPIView.as_view(),
+    name='api-admin-users'
+),
+
+path(
+    'admin/users/<int:user_id>/',
+    SuperAdminUserDetailAPIView.as_view(),
+    name='api-admin-user-detail'
+),
+
+path(
+    'admin/users/<int:user_id>/status/',
+    SuperAdminUserStatusAPIView.as_view(),
+    name='api-admin-user-status'
+),
+
+path(
+    'admin/users/<int:user_id>/role/',
+    SuperAdminUserRoleAPIView.as_view(),
+    name='api-admin-user-role'
+),
+
+path(
+    'admin/instructors/<int:user_id>/verification/',
+    SuperAdminInstructorVerificationAPIView.as_view(),
+    name='api-admin-instructor-verification'
 ),
 ]
