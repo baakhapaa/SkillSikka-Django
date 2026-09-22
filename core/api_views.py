@@ -2,7 +2,7 @@
 from django.utils import timezone
 from django.db import transaction
 from decimal import Decimal
-from django.db.models import Sum
+from django.db.models import Sum, Count, Avg
 
 from rest_framework import generics, status
 from rest_framework.authentication import SessionAuthentication
@@ -2518,3 +2518,670 @@ class ShortCommentDetailAPIView(
             )
 
         instance.delete()
+# =========================================================
+# Ministry Dashboard
+# =========================================================
+
+class MinistryDashboardAPIView(APIView):
+    """
+    National-level aggregated educational dashboard.
+
+    Provides Ministry/Super Admin with aggregated statistics across:
+    - Provinces
+    - Districts
+    - Municipalities
+    - Students
+    - Schools
+    - Course participation
+    - Assessment performance
+    - Grade-wise performance
+    - Subject-wise performance
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        role_name = getattr(getattr(user, 'role', None), 'name', '')
+
+        # Until dedicated Ministry accounts are configured,
+        # Super Admin can access this dashboard for testing/admin purposes.
+        if not (user.is_superuser or role_name in ['super_admin', 'ministry']):
+            return Response(
+                {
+                    'detail': 'You do not have permission to access the Ministry dashboard.'
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # -------------------------------------------------
+        # Base querysets
+        # -------------------------------------------------
+
+        students = User.objects.filter(
+            role__name='student'
+        ).select_related(
+            'student_profile__province',
+            'student_profile__district',
+            'student_profile__municipality',
+            'student_profile__school',
+            'student_profile__grade',
+        )
+
+        enrollments = Enrollment.objects.filter(
+            student__role__name='student'
+        )
+
+        quiz_attempts = QuizAttempt.objects.filter(
+            student__role__name='student'
+        )
+
+        student_answers = StudentAnswer.objects.filter(
+            attempt__student__role__name='student'
+        )
+
+        # -------------------------------------------------
+        # National overview
+        # -------------------------------------------------
+
+        total_students = students.count()
+        total_schools = School.objects.count()
+        total_enrollments = enrollments.count()
+
+        active_enrollments = enrollments.filter(
+            status='active'
+        ).count()
+
+        completed_enrollments = enrollments.filter(
+            status='completed'
+        ).count()
+
+        completion_rate = (
+            round(
+                (completed_enrollments / total_enrollments) * 100,
+                2
+            )
+            if total_enrollments
+            else 0.0
+        )
+
+        # -------------------------------------------------
+        # Province-wise student statistics
+        # -------------------------------------------------
+
+        province_statistics = []
+
+        provinces = Province.objects.all().order_by('name')
+
+        for province in provinces:
+            province_students = students.filter(
+                student_profile__province=province
+            )
+
+            province_enrollments = enrollments.filter(
+                student__student_profile__province=province
+            )
+
+            province_attempts = quiz_attempts.filter(
+                student__student_profile__province=province
+            )
+
+            province_attempt_count = province_attempts.count()
+
+            province_average = province_attempts.aggregate(
+                average=Avg('percentage')
+            )['average']
+
+            province_passed = province_attempts.filter(
+                is_passed=True
+            ).count()
+
+            province_statistics.append({
+                'province_id': province.id,
+                'province_name': province.name,
+                'total_students': province_students.count(),
+                'total_schools': School.objects.filter(
+                    municipality__district__province=province
+                ).count(),
+                'total_enrollments': province_enrollments.count(),
+                'total_quiz_attempts': province_attempt_count,
+                'average_quiz_percentage': round(
+                    float(province_average or 0),
+                    2
+                ),
+                'quiz_pass_rate': (
+                    round(
+                        (province_passed / province_attempt_count) * 100,
+                        2
+                    )
+                    if province_attempt_count
+                    else 0.0
+                ),
+            })
+
+        # -------------------------------------------------
+        # District-wise student statistics
+        # -------------------------------------------------
+
+        district_statistics = list(
+            students.values(
+                'student_profile__district_id',
+                'student_profile__district__name',
+                'student_profile__district__province__name',
+            )
+            .annotate(total_students=Count('id'))
+            .order_by(
+                'student_profile__district__province__name',
+                'student_profile__district__name'
+            )
+        )
+
+        district_statistics = [
+            {
+                'district_id':
+                    item['student_profile__district_id'],
+
+                'district_name':
+                    item['student_profile__district__name']
+                    or 'Not specified',
+
+                'province_name':
+                    item[
+                        'student_profile__district__province__name'
+                    ] or 'Not specified',
+
+                'total_students':
+                    item['total_students'],
+            }
+            for item in district_statistics
+        ]
+
+        # -------------------------------------------------
+        # Municipality-wise statistics
+        # -------------------------------------------------
+
+        municipality_statistics = list(
+            students.values(
+                'student_profile__municipality_id',
+                'student_profile__municipality__name',
+                'student_profile__municipality__district__name',
+                'student_profile__municipality__district__province__name',
+            )
+            .annotate(total_students=Count('id'))
+            .order_by('-total_students')
+        )
+
+        municipality_statistics = [
+            {
+                'municipality_id':
+                    item['student_profile__municipality_id'],
+
+                'municipality_name':
+                    item['student_profile__municipality__name']
+                    or 'Not specified',
+
+                'district_name':
+                    item[
+                        'student_profile__municipality__district__name'
+                    ] or 'Not specified',
+
+                'province_name':
+                    item[
+                        'student_profile__municipality__district__province__name'
+                    ] or 'Not specified',
+
+                'total_students':
+                    item['total_students'],
+            }
+            for item in municipality_statistics
+        ]
+
+        # -------------------------------------------------
+        # Grade distribution
+        # -------------------------------------------------
+
+        grade_statistics = list(
+            students.values(
+                'student_profile__grade_id',
+                'student_profile__grade__name',
+            )
+            .annotate(total_students=Count('id'))
+            .order_by('student_profile__grade__name')
+        )
+
+        grade_statistics = [
+            {
+                'grade_id':
+                    item['student_profile__grade_id'],
+
+                'grade_name':
+                    item['student_profile__grade__name']
+                    or 'Not specified',
+
+                'total_students':
+                    item['total_students'],
+            }
+            for item in grade_statistics
+        ]
+
+        # -------------------------------------------------
+        # Gender distribution
+        # -------------------------------------------------
+
+        gender_statistics = list(
+            students.values('gender')
+            .annotate(total_students=Count('id'))
+            .order_by('gender')
+        )
+
+        gender_statistics = [
+            {
+                'gender':
+                    item['gender'] or 'Not specified',
+
+                'total_students':
+                    item['total_students'],
+            }
+            for item in gender_statistics
+        ]
+
+        # -------------------------------------------------
+        # Course participation
+        # -------------------------------------------------
+
+        cancelled_enrollments = enrollments.filter(
+            status='cancelled'
+        ).count()
+
+        pending_payment_enrollments = enrollments.filter(
+            status='pending_payment'
+        ).count()
+
+        popular_courses = list(
+            enrollments.values(
+                'course_id',
+                'course__title',
+                'course__subject_id',
+                'course__subject__name',
+            )
+            .annotate(
+                total_participants=Count('student', distinct=True),
+                completed_students=Count(
+                    'student',
+                    filter=Q(status='completed'),
+                    distinct=True,
+                ),
+            )
+            .order_by('-total_participants')[:10]
+        )
+
+        popular_courses = [
+            {
+                'course_id': item['course_id'],
+                'course_title': item['course__title'],
+                'subject_id': item['course__subject_id'],
+                'subject_name': item['course__subject__name'],
+                'total_participants': item['total_participants'],
+                'completed_students': item['completed_students'],
+            }
+            for item in popular_courses
+        ]
+
+        popular_subjects = list(
+            enrollments.exclude(
+                course__subject__isnull=True
+            )
+            .values(
+                'course__subject_id',
+                'course__subject__name',
+            )
+            .annotate(
+                total_participants=Count(
+                    'student',
+                    distinct=True
+                )
+            )
+            .order_by('-total_participants')[:10]
+        )
+
+        popular_subjects = [
+            {
+                'subject_id': item['course__subject_id'],
+                'subject_name': item['course__subject__name'],
+                'total_participants': item['total_participants'],
+            }
+            for item in popular_subjects
+        ]
+
+        # -------------------------------------------------
+        # Assessment statistics
+        # -------------------------------------------------
+
+        total_answers = student_answers.count()
+
+        correct_answers = student_answers.filter(
+            is_correct=True
+        ).count()
+
+        incorrect_answers = total_answers - correct_answers
+
+        correct_percentage = (
+            round(
+                (correct_answers / total_answers) * 100,
+                2
+            )
+            if total_answers
+            else 0.0
+        )
+
+        incorrect_percentage = (
+            round(
+                (incorrect_answers / total_answers) * 100,
+                2
+            )
+            if total_answers
+            else 0.0
+        )
+
+        total_quiz_attempts = quiz_attempts.count()
+
+        passed_quiz_attempts = quiz_attempts.filter(
+            is_passed=True
+        ).count()
+
+        failed_quiz_attempts = (
+            total_quiz_attempts - passed_quiz_attempts
+        )
+
+        average_quiz_percentage = quiz_attempts.aggregate(
+            average=Avg('percentage')
+        )['average']
+
+        quiz_pass_rate = (
+            round(
+                (
+                    passed_quiz_attempts
+                    / total_quiz_attempts
+                ) * 100,
+                2
+            )
+            if total_quiz_attempts
+            else 0.0
+        )
+
+        # -------------------------------------------------
+        # First-time-correct statistics
+        # -------------------------------------------------
+
+        completed_attempts = quiz_attempts.filter(
+            completed_at__isnull=False
+        ).order_by(
+            'student_id',
+            'quiz_id',
+            'started_at',
+            'id'
+        )
+
+        first_attempt_ids = []
+        seen_student_quizzes = set()
+
+        for attempt in completed_attempts:
+            key = (
+                attempt.student_id,
+                attempt.quiz_id,
+            )
+
+            if key not in seen_student_quizzes:
+                seen_student_quizzes.add(key)
+                first_attempt_ids.append(attempt.id)
+
+        first_attempt_answers = student_answers.filter(
+            attempt_id__in=first_attempt_ids
+        )
+
+        first_attempt_answer_count = (
+            first_attempt_answers.count()
+        )
+
+        first_time_correct_answers = (
+            first_attempt_answers.filter(
+                is_correct=True
+            ).count()
+        )
+
+        first_time_correct_percentage = (
+            round(
+                (
+                    first_time_correct_answers
+                    / first_attempt_answer_count
+                ) * 100,
+                2
+            )
+            if first_attempt_answer_count
+            else 0.0
+        )
+
+        # -------------------------------------------------
+        # Grade-wise performance
+        # -------------------------------------------------
+
+        grade_performance = list(
+            quiz_attempts.exclude(
+                student__student_profile__grade__isnull=True
+            )
+            .values(
+                'student__student_profile__grade_id',
+                'student__student_profile__grade__name',
+            )
+            .annotate(
+                total_attempts=Count('id'),
+                average_percentage=Avg('percentage'),
+                passed_attempts=Count(
+                    'id',
+                    filter=Q(is_passed=True)
+                ),
+            )
+            .order_by(
+                'student__student_profile__grade__name'
+            )
+        )
+
+        grade_performance_result = []
+
+        for item in grade_performance:
+            total = item['total_attempts']
+            passed = item['passed_attempts']
+
+            grade_performance_result.append({
+                'grade_id':
+                    item[
+                        'student__student_profile__grade_id'
+                    ],
+
+                'grade_name':
+                    item[
+                        'student__student_profile__grade__name'
+                    ],
+
+                'total_attempts':
+                    total,
+
+                'average_percentage':
+                    round(
+                        float(
+                            item['average_percentage'] or 0
+                        ),
+                        2
+                    ),
+
+                'passed_attempts':
+                    passed,
+
+                'pass_rate':
+                    (
+                        round(
+                            (passed / total) * 100,
+                            2
+                        )
+                        if total
+                        else 0.0
+                    ),
+            })
+
+        # -------------------------------------------------
+        # Subject-wise performance
+        # -------------------------------------------------
+
+        subject_performance = list(
+            quiz_attempts.exclude(
+                quiz__course__subject__isnull=True
+            )
+            .values(
+                'quiz__course__subject_id',
+                'quiz__course__subject__name',
+            )
+            .annotate(
+                total_attempts=Count('id'),
+                average_percentage=Avg('percentage'),
+                passed_attempts=Count(
+                    'id',
+                    filter=Q(is_passed=True)
+                ),
+            )
+            .order_by('-total_attempts')
+        )
+
+        subject_performance_result = []
+
+        for item in subject_performance:
+            total = item['total_attempts']
+            passed = item['passed_attempts']
+
+            subject_performance_result.append({
+                'subject_id':
+                    item['quiz__course__subject_id'],
+
+                'subject_name':
+                    item['quiz__course__subject__name'],
+
+                'total_attempts':
+                    total,
+
+                'average_percentage':
+                    round(
+                        float(
+                            item['average_percentage'] or 0
+                        ),
+                        2
+                    ),
+
+                'passed_attempts':
+                    passed,
+
+                'pass_rate':
+                    (
+                        round(
+                            (passed / total) * 100,
+                            2
+                        )
+                        if total
+                        else 0.0
+                    ),
+            })
+
+        # -------------------------------------------------
+        # Response
+        # -------------------------------------------------
+
+        return Response(
+            {
+                'overview': {
+                    'total_provinces': Province.objects.count(),
+                    'total_districts': District.objects.count(),
+                    'total_municipalities':
+                        Municipality.objects.count(),
+                    'total_schools': total_schools,
+                    'total_students': total_students,
+                    'total_enrollments': total_enrollments,
+                    'active_enrollments': active_enrollments,
+                    'completed_enrollments':
+                        completed_enrollments,
+                    'completion_rate': completion_rate,
+                },
+
+                'geographical_statistics': {
+                    'by_province': province_statistics,
+                    'by_district': district_statistics,
+                    'by_municipality':
+                        municipality_statistics,
+                },
+
+                'student_statistics': {
+                    'by_grade': grade_statistics,
+                    'by_gender': gender_statistics,
+                },
+
+                'course_statistics': {
+                    'total_participations':
+                        total_enrollments,
+                    'active': active_enrollments,
+                    'completed': completed_enrollments,
+                    'cancelled': cancelled_enrollments,
+                    'pending_payment':
+                        pending_payment_enrollments,
+                    'completion_rate': completion_rate,
+                    'popular_courses': popular_courses,
+                    'popular_subjects': popular_subjects,
+                },
+
+                'assessment_statistics': {
+                    'total_answers': total_answers,
+                    'correct_answers': correct_answers,
+                    'incorrect_answers': incorrect_answers,
+                    'correct_percentage':
+                        correct_percentage,
+                    'incorrect_percentage':
+                        incorrect_percentage,
+
+                    'first_attempt_answers':
+                        first_attempt_answer_count,
+                    'first_time_correct_answers':
+                        first_time_correct_answers,
+                    'first_time_correct_percentage':
+                        first_time_correct_percentage,
+
+                    'total_quiz_attempts':
+                        total_quiz_attempts,
+                    'passed_quiz_attempts':
+                        passed_quiz_attempts,
+                    'failed_quiz_attempts':
+                        failed_quiz_attempts,
+                    'average_quiz_percentage':
+                        round(
+                            float(
+                                average_quiz_percentage or 0
+                            ),
+                            2
+                        ),
+                    'quiz_pass_rate':
+                        quiz_pass_rate,
+                },
+
+                'performance_statistics': {
+                    'by_grade':
+                        grade_performance_result,
+                    'by_subject':
+                        subject_performance_result,
+                },
+
+                # Challenge work is being developed separately.
+                'challenge_statistics': {
+                    'available': False,
+                    'reason':
+                        'Challenge statistics will be integrated '
+                        'after the challenge feature is available.'
+                },
+            },
+            status=status.HTTP_200_OK
+        )
