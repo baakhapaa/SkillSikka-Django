@@ -30,6 +30,7 @@ from .models import (
 	Municipality,
 	PasswordResetOTP,
 	Payment,
+	PointTransaction,
 	Province,
 	Question,
 	QuestionOption,
@@ -43,6 +44,10 @@ from .models import (
 	Topic,
 	User,
 	VerificationDocument,
+	Short,
+	ShortComment,
+	ShortLike,
+	ShortView,
 )
 
 
@@ -1293,6 +1298,28 @@ class LeaderboardEntrySerializer(serializers.Serializer):
 	longest_streak = serializers.IntegerField()
 
 
+class PointTransactionSerializer(serializers.ModelSerializer):
+	class Meta:
+		model = PointTransaction
+		fields = [
+			'id',
+			'points',
+			'event_type',
+			'quiz_attempt',
+			'question',
+			'description',
+			'created_at',
+		]
+		read_only_fields = fields
+
+
+class PointsLeaderboardEntrySerializer(serializers.Serializer):
+	rank = serializers.IntegerField()
+	student_id = serializers.IntegerField()
+	student_name = serializers.CharField()
+	total_points = serializers.IntegerField()
+
+
 class CertificateSerializer(serializers.ModelSerializer):
 	course_title = serializers.CharField(source='course.title', read_only=True)
 	grade_name = serializers.CharField(source='grade.name', read_only=True)
@@ -1544,3 +1571,177 @@ class ChallengeWinnersSerializer(serializers.Serializer):
 		child=serializers.IntegerField(),
 		allow_empty=True
 	)
+
+
+class ShortCommentSerializer(serializers.ModelSerializer):
+	student_id = serializers.IntegerField(
+		source='student.id',
+		read_only=True
+	)
+
+	student_name = serializers.CharField(
+		source='student.name',
+		read_only=True
+	)
+
+	class Meta:
+		model = ShortComment
+		fields = [
+			'id',
+			'short',
+			'student_id',
+			'student_name',
+			'text',
+			'created_at',
+		]
+
+		read_only_fields = [
+			'id',
+			'short',
+			'student_id',
+			'student_name',
+			'created_at',
+		]
+
+
+class ShortSerializer(serializers.ModelSerializer):
+	instructor_id = serializers.IntegerField(
+		source='instructor.id',
+		read_only=True
+	)
+
+	instructor_name = serializers.CharField(
+		source='instructor.name',
+		read_only=True
+	)
+
+	like_count = serializers.SerializerMethodField()
+	comment_count = serializers.SerializerMethodField()
+	is_liked = serializers.SerializerMethodField()
+
+	class Meta:
+		model = Short
+
+		fields = [
+			'id',
+			'title',
+			'instructor_id',
+			'instructor_name',
+			'video_url',
+			'thumbnail_url',
+			'is_published',
+			'view_count',
+			'like_count',
+			'comment_count',
+			'is_liked',
+			'created_at',
+			'updated_at',
+		]
+
+		read_only_fields = [
+			'id',
+			'instructor_id',
+			'instructor_name',
+			'view_count',
+			'like_count',
+			'comment_count',
+			'is_liked',
+			'created_at',
+			'updated_at',
+		]
+
+	def get_like_count(self, obj):
+		return obj.likes.count()
+
+	def get_comment_count(self, obj):
+		return obj.comments.count()
+
+	def get_is_liked(self, obj):
+		request = self.context.get('request')
+
+		if not request:
+			return False
+
+		if not request.user.is_authenticated:
+			return False
+
+		return obj.likes.filter(
+			student=request.user
+		).exists()
+
+	def validate(self, attrs):
+		attrs = super().validate(attrs)
+
+		request = self.context.get('request')
+
+		if not request:
+			return attrs
+
+		user = request.user
+
+		role_name = getattr(
+			getattr(user, 'role', None),
+			'name',
+			''
+		)
+
+		is_admin = (
+			user.is_superuser
+			or role_name == 'super_admin'
+		)
+
+		if (
+			'is_published' in attrs
+			and attrs['is_published']
+			and not is_admin
+			and (
+				role_name != 'instructor'
+				or user.verification_status != 'verified'
+			)
+		):
+			raise serializers.ValidationError({
+				'is_published': (
+					'Only verified instructors '
+					'can publish Shorts.'
+				)
+			})
+
+		return attrs
+
+
+class ShortViewSerializer(serializers.ModelSerializer):
+	class Meta:
+		model = ShortView
+
+		fields = [
+			'id',
+			'student',
+			'short',
+			'viewed_at',
+		]
+
+		read_only_fields = [
+			'id',
+			'student',
+			'short',
+			'viewed_at',
+		]
+
+
+class ShortLikeSerializer(serializers.ModelSerializer):
+	class Meta:
+		model = ShortLike
+
+		fields = [
+			'id',
+			'student',
+			'short',
+			'created_at',
+		]
+
+		read_only_fields = [
+			'id',
+			'student',
+			'short',
+			'created_at',
+		]
