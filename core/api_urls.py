@@ -64,6 +64,9 @@ from .api_views import (
     SuperAdminUserStatusAPIView,
     SuperAdminUserRoleAPIView,
     SuperAdminInstructorVerificationAPIView, 
+	SuperAdminPermissionListAPIView,
+    SuperAdminRolePermissionListAPIView,
+    SuperAdminRolePermissionDetailAPIView,
 )
 
 
@@ -530,5 +533,26 @@ path(
     'admin/instructors/<int:user_id>/verification/',
     SuperAdminInstructorVerificationAPIView.as_view(),
     name='api-admin-instructor-verification'
+),
+# =========================================================
+# Super Admin - Role & Permission Management
+# =========================================================
+
+path(
+    'admin/permissions/',
+    SuperAdminPermissionListAPIView.as_view(),
+    name='api-admin-permissions'
+),
+
+path(
+    'admin/roles/',
+    SuperAdminRolePermissionListAPIView.as_view(),
+    name='api-admin-roles'
+),
+
+path(
+    'admin/roles/<int:role_id>/permissions/',
+    SuperAdminRolePermissionDetailAPIView.as_view(),
+    name='api-admin-role-permissions'
 ),
 ]

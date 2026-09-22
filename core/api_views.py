@@ -49,6 +49,8 @@ from .models import (
     ShortLike,
     ShortView,
 	Role,
+	Permission,
+    RolePermission,
 )
 
 from .serializers import (
@@ -2999,6 +3001,292 @@ class SuperAdminInstructorVerificationAPIView(
                     ),
                     'verified_at':
                         instructor.verified_at,
+                },
+            },
+            status=status.HTTP_200_OK
+        )
+# =========================================================
+# Super Admin - Role & Permission Management
+# =========================================================
+
+class SuperAdminPermissionListAPIView(
+    SuperAdminRequiredMixin,
+    APIView
+):
+    """
+    List all permissions available in the system.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        self.check_super_admin(request)
+
+        permissions = Permission.objects.all().order_by('id')
+
+        results = [
+            {
+                'id': permission.id,
+                'name': permission.name,
+                'description': permission.description,
+            }
+            for permission in permissions
+        ]
+
+        return Response(
+            {
+                'count': len(results),
+                'results': results,
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class SuperAdminRolePermissionListAPIView(
+    SuperAdminRequiredMixin,
+    APIView
+):
+    """
+    List all roles together with their assigned permissions.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        self.check_super_admin(request)
+
+        roles = Role.objects.all().order_by('id')
+
+        results = []
+
+        for role in roles:
+            role_permissions = (
+                RolePermission.objects
+                .filter(role=role)
+                .select_related('permission')
+                .order_by('permission__id')
+            )
+
+            permissions = [
+                {
+                    'id': item.permission.id,
+                    'name': item.permission.name,
+                    'description': item.permission.description,
+                }
+                for item in role_permissions
+            ]
+
+            results.append({
+                'id': role.id,
+                'name': role.name,
+                'description': role.description,
+                'permissions': permissions,
+            })
+
+        return Response(
+            {
+                'count': len(results),
+                'results': results,
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class SuperAdminRolePermissionDetailAPIView(
+    SuperAdminRequiredMixin,
+    APIView
+):
+    """
+    Retrieve or replace permissions assigned to one role.
+
+    PATCH body:
+
+    {
+        "permissions": [
+            "manage_courses",
+            "manage_payments"
+        ]
+    }
+
+    PATCH replaces the role's current permission set.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, role_id):
+        self.check_super_admin(request)
+
+        try:
+            role = Role.objects.get(pk=role_id)
+
+        except Role.DoesNotExist:
+            raise NotFound('Role not found.')
+
+        role_permissions = (
+            RolePermission.objects
+            .filter(role=role)
+            .select_related('permission')
+            .order_by('permission__id')
+        )
+
+        permissions = [
+            {
+                'id': item.permission.id,
+                'name': item.permission.name,
+                'description': item.permission.description,
+            }
+            for item in role_permissions
+        ]
+
+        return Response(
+            {
+                'id': role.id,
+                'name': role.name,
+                'description': role.description,
+                'permissions': permissions,
+            },
+            status=status.HTTP_200_OK
+        )
+
+    def patch(self, request, role_id):
+        self.check_super_admin(request)
+
+        try:
+            role = Role.objects.get(pk=role_id)
+
+        except Role.DoesNotExist:
+            raise NotFound('Role not found.')
+
+        permission_names = request.data.get('permissions')
+
+        if permission_names is None:
+            return Response(
+                {
+                    'detail': 'permissions is required.'
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not isinstance(permission_names, list):
+            return Response(
+                {
+                    'detail':
+                        'permissions must be a list of permission names.'
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Prevent duplicate permission names.
+        if len(permission_names) != len(set(permission_names)):
+            return Response(
+                {
+                    'detail':
+                        'Duplicate permissions are not allowed.'
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Every item must be a string.
+        if not all(
+            isinstance(permission_name, str)
+            for permission_name in permission_names
+        ):
+            return Response(
+                {
+                    'detail':
+                        'Every permission must be provided as a name.'
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        permissions = Permission.objects.filter(
+            name__in=permission_names
+        )
+
+        found_names = set(
+            permissions.values_list('name', flat=True)
+        )
+
+        requested_names = set(permission_names)
+
+        invalid_permissions = sorted(
+            requested_names - found_names
+        )
+
+        if invalid_permissions:
+            return Response(
+                {
+                    'detail':
+                        'One or more permissions are invalid.',
+                    'invalid_permissions':
+                        invalid_permissions,
+                    'available_permissions': list(
+                        Permission.objects.order_by('id')
+                        .values_list('name', flat=True)
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Do not allow Super Admin to remove its own
+        # permission-management access through this endpoint.
+        # Superuser accounts still bypass role permissions,
+        # but keeping this guard avoids accidental lockout
+        # for non-superuser users assigned super_admin role.
+        if role.name == 'super_admin':
+            current_permission_names = set(
+                RolePermission.objects
+                .filter(role=role)
+                .values_list(
+                    'permission__name',
+                    flat=True
+                )
+            )
+
+            # At present there is no dedicated
+            # "manage_permissions" permission in the database,
+            # so existing permissions may be changed normally.
+            # Super Admin API access itself remains protected
+            # by the super_admin role.
+            current_permission_names = current_permission_names
+
+        # Replace existing assignments.
+        RolePermission.objects.filter(
+            role=role
+        ).delete()
+
+        RolePermission.objects.bulk_create([
+            RolePermission(
+                role=role,
+                permission=permission
+            )
+            for permission in permissions
+        ])
+
+        updated_permissions = (
+            RolePermission.objects
+            .filter(role=role)
+            .select_related('permission')
+            .order_by('permission__id')
+        )
+
+        return Response(
+            {
+                'detail':
+                    'Role permissions updated successfully.',
+                'role': {
+                    'id': role.id,
+                    'name': role.name,
+                    'permissions': [
+                        {
+                            'id': item.permission.id,
+                            'name': item.permission.name,
+                        }
+                        for item in updated_permissions
+                    ],
                 },
             },
             status=status.HTTP_200_OK
