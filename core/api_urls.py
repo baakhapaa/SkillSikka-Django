@@ -81,6 +81,10 @@ from .api_views import (
     ShortDetailAPIView,
     ShortListCreateAPIView,
     ToggleShortLikeAPIView,
+	NotificationListAPIView,
+    NotificationUnreadCountAPIView,
+    NotificationMarkReadAPIView,
+    NotificationMarkAllReadAPIView,
 )
 
 
@@ -646,5 +650,32 @@ path(
     'shorts/comments/<int:pk>/',
     ShortCommentDetailAPIView.as_view(),
     name='short-comment-detail',
+),
+# =========================
+# Notifications
+# =========================
+
+path(
+    'notifications/',
+    NotificationListAPIView.as_view(),
+    name='notification-list',
+),
+
+path(
+    'notifications/unread-count/',
+    NotificationUnreadCountAPIView.as_view(),
+    name='notification-unread-count',
+),
+
+path(
+    'notifications/<int:pk>/read/',
+    NotificationMarkReadAPIView.as_view(),
+    name='notification-mark-read',
+),
+
+path(
+    'notifications/mark-all-read/',
+    NotificationMarkAllReadAPIView.as_view(),
+    name='notification-mark-all-read',
 ),
 ]

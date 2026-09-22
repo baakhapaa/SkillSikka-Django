@@ -1103,3 +1103,79 @@ class ShortComment(models.Model):
 
     def __str__(self):
         return f'{self.student.email} - {self.short.title}'
+class Notification(models.Model):
+    TYPE_COURSE_UPDATE = 'course_update'
+    TYPE_ASSESSMENT_RESULT = 'assessment_result'
+    TYPE_PAYMENT = 'payment'
+    TYPE_CERTIFICATE = 'certificate'
+    TYPE_CHALLENGE = 'challenge'
+    TYPE_SYSTEM = 'system'
+
+    TYPE_CHOICES = [
+        (TYPE_COURSE_UPDATE, 'Course Update'),
+        (TYPE_ASSESSMENT_RESULT, 'Assessment Result'),
+        (TYPE_PAYMENT, 'Payment Confirmation'),
+        (TYPE_CERTIFICATE, 'Certificate'),
+        (TYPE_CHALLENGE, 'Challenge'),
+        (TYPE_SYSTEM, 'System'),
+    ]
+
+    recipient = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='notifications'
+    )
+
+    notification_type = models.CharField(
+        max_length=30,
+        choices=TYPE_CHOICES,
+        default=TYPE_SYSTEM
+    )
+
+    title = models.CharField(
+        max_length=255
+    )
+
+    message = models.TextField()
+
+    # Optional generic reference to the related resource.
+    # Example:
+    # related_type = "course"
+    # related_id = 5
+    related_type = models.CharField(
+        max_length=50,
+        blank=True
+    )
+
+    related_id = models.PositiveBigIntegerField(
+        null=True,
+        blank=True
+    )
+
+    is_read = models.BooleanField(
+        default=False
+    )
+
+    read_at = models.DateTimeField(
+        null=True,
+        blank=True
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True
+    )
+
+    class Meta:
+        db_table = 'notifications'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(
+                fields=['recipient', 'is_read']
+            ),
+            models.Index(
+                fields=['recipient', '-created_at']
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.recipient.email} - {self.title}'

@@ -52,6 +52,7 @@ from .models import (
 	ShortComment,
 	ShortLike,
 	ShortView,
+	 Notification,
 )
 
 from .serializers import (
@@ -100,6 +101,7 @@ from .serializers import (
 	ShortLikeSerializer,
 	ShortSerializer,
 	ShortViewSerializer,
+	NotificationSerializer,
 )
 
 
@@ -3213,3 +3215,152 @@ class ShortCommentDetailAPIView(
 			)
 
 		instance.delete()
+class NotificationListAPIView(APIView):
+        """
+        Return notifications belonging only to the authenticated user.
+
+        Optional query parameter:
+        ?is_read=true
+        ?is_read=false
+        """
+
+        authentication_classes = [JWTAuthentication]
+        permission_classes = [IsAuthenticated]
+
+        def get(self, request):
+                notifications = Notification.objects.filter(
+                        recipient=request.user
+                )
+
+                is_read = request.query_params.get('is_read')
+
+                if is_read is not None:
+                        value = is_read.strip().lower()
+
+                        if value == 'true':
+                                notifications = notifications.filter(
+                                        is_read=True
+                                )
+
+                        elif value == 'false':
+                                notifications = notifications.filter(
+                                        is_read=False
+                                )
+
+                        else:
+                                return Response(
+                                        {
+                                                'detail': (
+                                                        'is_read must be '
+                                                        'true or false.'
+                                                )
+                                        },
+                                        status=status.HTTP_400_BAD_REQUEST
+                                )
+
+                serializer = NotificationSerializer(
+                        notifications,
+                        many=True
+                )
+
+                return Response(
+                        serializer.data,
+                        status=status.HTTP_200_OK
+                )
+
+
+class NotificationUnreadCountAPIView(APIView):
+        """
+        Return unread notification count for the authenticated user.
+        """
+
+        authentication_classes = [JWTAuthentication]
+        permission_classes = [IsAuthenticated]
+
+        def get(self, request):
+                unread_count = Notification.objects.filter(
+                        recipient=request.user,
+                        is_read=False
+                ).count()
+
+                return Response(
+                        {
+                                'unread_count': unread_count
+                        },
+                        status=status.HTTP_200_OK
+                )
+
+
+class NotificationMarkReadAPIView(APIView):
+        """
+        Mark one notification belonging to the authenticated user as read.
+        """
+
+        authentication_classes = [JWTAuthentication]
+        permission_classes = [IsAuthenticated]
+
+        def patch(self, request, pk):
+                try:
+                        notification = Notification.objects.get(
+                                pk=pk,
+                                recipient=request.user
+                        )
+
+                except Notification.DoesNotExist:
+                        return Response(
+                                {
+                                        'detail': 'Notification not found.'
+                                },
+                                status=status.HTTP_404_NOT_FOUND
+                        )
+
+                if not notification.is_read:
+                        notification.is_read = True
+                        notification.read_at = timezone.now()
+
+                        notification.save(
+                                update_fields=[
+                                        'is_read',
+                                        'read_at',
+                                ]
+                        )
+
+                serializer = NotificationSerializer(
+                        notification
+                )
+
+                return Response(
+                        serializer.data,
+                        status=status.HTTP_200_OK
+                )
+
+
+class NotificationMarkAllReadAPIView(APIView):
+        """
+        Mark all unread notifications belonging to the authenticated user
+        as read.
+        """
+
+        authentication_classes = [JWTAuthentication]
+        permission_classes = [IsAuthenticated]
+
+        def post(self, request):
+                now = timezone.now()
+
+                updated_count = Notification.objects.filter(
+                        recipient=request.user,
+                        is_read=False
+                ).update(
+                        is_read=True,
+                        read_at=now
+                )
+
+                return Response(
+                        {
+                                'detail': (
+                                        'All notifications marked as read.'
+                                ),
+                                'updated_count': updated_count
+                        },
+                        status=status.HTTP_200_OK
+                )
