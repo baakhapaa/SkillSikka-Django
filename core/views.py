@@ -60,6 +60,11 @@ def login_view(request):
 
 @login_required
 def dashboard(request):
+	if not is_admin(request.user):
+		logout(request)
+		messages.error(request, 'The dashboard is available to administrators only.')
+		return redirect('login')
+
 	users = User.objects.select_related('role').order_by('-created_at')
 	stats = {
 		'total_users': users.count(),
