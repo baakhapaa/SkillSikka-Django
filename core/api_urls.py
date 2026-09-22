@@ -67,6 +67,8 @@ from .api_views import (
 	SuperAdminPermissionListAPIView,
     SuperAdminRolePermissionListAPIView,
     SuperAdminRolePermissionDetailAPIView,
+	SuperAdminAuditLogListAPIView,
+    SuperAdminAuditLogDetailAPIView,
 )
 
 
@@ -554,5 +556,16 @@ path(
     'admin/roles/<int:role_id>/permissions/',
     SuperAdminRolePermissionDetailAPIView.as_view(),
     name='api-admin-role-permissions'
+),
+path(
+    'admin/audit-logs/',
+    SuperAdminAuditLogListAPIView.as_view(),
+    name='api-admin-audit-logs'
+),
+
+path(
+    'admin/audit-logs/<int:audit_log_id>/',
+    SuperAdminAuditLogDetailAPIView.as_view(),
+    name='api-admin-audit-log-detail'
 ),
 ]

@@ -51,6 +51,7 @@ from .models import (
 	Role,
 	Permission,
     RolePermission,
+	AuditLog,
 )
 
 from .serializers import (
@@ -2525,6 +2526,36 @@ class ShortCommentDetailAPIView(
 # Super Admin - User Management
 # =========================================================
 
+def _get_client_ip(request):
+    forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+
+    if forwarded_for:
+        return forwarded_for.split(',')[0].strip()
+
+    return request.META.get('REMOTE_ADDR')
+
+
+def _create_audit_log(
+    request,
+    action,
+    target_type,
+    target_id=None,
+    target_display='',
+    description='',
+    metadata=None
+):
+    AuditLog.objects.create(
+        actor=request.user,
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        target_display=target_display,
+        description=description,
+        metadata=metadata or {},
+        ip_address=_get_client_ip(request)
+    )
+
+
 class SuperAdminRequiredMixin:
     """
     Restricts access to Super Admin users only.
@@ -2777,6 +2808,8 @@ class SuperAdminUserStatusAPIView(
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        previous_status = target_user.is_active
+
         target_user.is_active = is_active
 
         target_user.save(
@@ -2784,6 +2817,22 @@ class SuperAdminUserStatusAPIView(
                 'is_active',
                 'updated_at',
             ]
+        )
+
+        _create_audit_log(
+            request=request,
+            action='activate' if is_active else 'deactivate',
+            target_type='user',
+            target_id=target_user.id,
+            target_display=target_user.email,
+            description=(
+                f'User {target_user.email} was '
+                f'{"activated" if is_active else "deactivated"}.'
+            ),
+            metadata={
+                'previous_is_active': previous_status,
+                'new_is_active': is_active,
+            }
         )
 
         return Response(
@@ -2876,11 +2925,28 @@ class SuperAdminUserRoleAPIView(
         )
 
         target_user.role = role
+
         target_user.save(
             update_fields=[
                 'role',
                 'updated_at',
             ]
+        )
+
+        _create_audit_log(
+            request=request,
+            action='role_change',
+            target_type='user',
+            target_id=target_user.id,
+            target_display=target_user.email,
+            description=(
+                f'Role for {target_user.email} changed '
+                f'from {old_role} to {role.name}.'
+            ),
+            metadata={
+                'previous_role': old_role,
+                'new_role': role.name,
+            }
         )
 
         return Response(
@@ -2961,6 +3027,10 @@ class SuperAdminInstructorVerificationAPIView(
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        old_verification_status = (
+            instructor.verification_status
+        )
+
         instructor.verification_status = (
             verification_status
         )
@@ -2980,6 +3050,25 @@ class SuperAdminInstructorVerificationAPIView(
                 'verified_at',
                 'updated_at',
             ]
+        )
+
+        _create_audit_log(
+            request=request,
+            action='verification_change',
+            target_type='instructor',
+            target_id=instructor.id,
+            target_display=instructor.email,
+            description=(
+                f'Instructor {instructor.email} verification '
+                f'changed from {old_verification_status} '
+                f'to {verification_status}.'
+            ),
+            metadata={
+                'previous_status':
+                    old_verification_status,
+                'new_status':
+                    verification_status,
+            }
         )
 
         return Response(
@@ -3005,6 +3094,8 @@ class SuperAdminInstructorVerificationAPIView(
             },
             status=status.HTTP_200_OK
         )
+
+
 # =========================================================
 # Super Admin - Role & Permission Management
 # =========================================================
@@ -3073,7 +3164,8 @@ class SuperAdminRolePermissionListAPIView(
                 {
                     'id': item.permission.id,
                     'name': item.permission.name,
-                    'description': item.permission.description,
+                    'description':
+                        item.permission.description,
                 }
                 for item in role_permissions
             ]
@@ -3136,7 +3228,8 @@ class SuperAdminRolePermissionDetailAPIView(
             {
                 'id': item.permission.id,
                 'name': item.permission.name,
-                'description': item.permission.description,
+                'description':
+                    item.permission.description,
             }
             for item in role_permissions
         ]
@@ -3151,6 +3244,7 @@ class SuperAdminRolePermissionDetailAPIView(
             status=status.HTTP_200_OK
         )
 
+    @transaction.atomic
     def patch(self, request, role_id):
         self.check_super_admin(request)
 
@@ -3174,13 +3268,15 @@ class SuperAdminRolePermissionDetailAPIView(
             return Response(
                 {
                     'detail':
-                        'permissions must be a list of permission names.'
+                        'permissions must be a list '
+                        'of permission names.'
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Prevent duplicate permission names.
-        if len(permission_names) != len(set(permission_names)):
+        if len(permission_names) != len(
+            set(permission_names)
+        ):
             return Response(
                 {
                     'detail':
@@ -3189,7 +3285,6 @@ class SuperAdminRolePermissionDetailAPIView(
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Every item must be a string.
         if not all(
             isinstance(permission_name, str)
             for permission_name in permission_names
@@ -3197,7 +3292,8 @@ class SuperAdminRolePermissionDetailAPIView(
             return Response(
                 {
                     'detail':
-                        'Every permission must be provided as a name.'
+                        'Every permission must be '
+                        'provided as a name.'
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
@@ -3207,7 +3303,10 @@ class SuperAdminRolePermissionDetailAPIView(
         )
 
         found_names = set(
-            permissions.values_list('name', flat=True)
+            permissions.values_list(
+                'name',
+                flat=True
+            )
         )
 
         requested_names = set(permission_names)
@@ -3231,29 +3330,16 @@ class SuperAdminRolePermissionDetailAPIView(
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Do not allow Super Admin to remove its own
-        # permission-management access through this endpoint.
-        # Superuser accounts still bypass role permissions,
-        # but keeping this guard avoids accidental lockout
-        # for non-superuser users assigned super_admin role.
-        if role.name == 'super_admin':
-            current_permission_names = set(
-                RolePermission.objects
-                .filter(role=role)
-                .values_list(
-                    'permission__name',
-                    flat=True
-                )
+        old_permissions = list(
+            RolePermission.objects
+            .filter(role=role)
+            .order_by('permission__id')
+            .values_list(
+                'permission__name',
+                flat=True
             )
+        )
 
-            # At present there is no dedicated
-            # "manage_permissions" permission in the database,
-            # so existing permissions may be changed normally.
-            # Super Admin API access itself remains protected
-            # by the super_admin role.
-            current_permission_names = current_permission_names
-
-        # Replace existing assignments.
         RolePermission.objects.filter(
             role=role
         ).delete()
@@ -3273,6 +3359,29 @@ class SuperAdminRolePermissionDetailAPIView(
             .order_by('permission__id')
         )
 
+        new_permissions = [
+            item.permission.name
+            for item in updated_permissions
+        ]
+
+        _create_audit_log(
+            request=request,
+            action='permission_change',
+            target_type='role',
+            target_id=role.id,
+            target_display=role.name,
+            description=(
+                f'Permissions for role {role.name} '
+                f'were updated.'
+            ),
+            metadata={
+                'previous_permissions':
+                    old_permissions,
+                'new_permissions':
+                    new_permissions,
+            }
+        )
+
         return Response(
             {
                 'detail':
@@ -3288,6 +3397,191 @@ class SuperAdminRolePermissionDetailAPIView(
                         for item in updated_permissions
                     ],
                 },
+            },
+            status=status.HTTP_200_OK
+        )
+# =========================================================
+# Super Admin - Audit Records
+# =========================================================
+
+class SuperAdminAuditLogListAPIView(
+    SuperAdminRequiredMixin,
+    APIView
+):
+    """
+    List audit records for Super Admin.
+
+    Optional query parameters:
+    - action
+    - target_type
+    - actor_id
+    - search
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        self.check_super_admin(request)
+
+        audit_logs = (
+            AuditLog.objects
+            .select_related('actor')
+            .all()
+            .order_by('-created_at')
+        )
+
+        action = request.query_params.get('action')
+        target_type = request.query_params.get('target_type')
+        actor_id = request.query_params.get('actor_id')
+        search = request.query_params.get('search')
+
+        if action:
+            valid_actions = {
+                choice[0]
+                for choice in AuditLog.ACTION_CHOICES
+            }
+
+            if action not in valid_actions:
+                return Response(
+                    {
+                        'detail': 'Invalid audit action.',
+                        'available_actions': sorted(valid_actions),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            audit_logs = audit_logs.filter(action=action)
+
+        if target_type:
+            audit_logs = audit_logs.filter(
+                target_type=target_type
+            )
+
+        if actor_id:
+            try:
+                actor_id = int(actor_id)
+
+            except (TypeError, ValueError):
+                return Response(
+                    {
+                        'detail':
+                            'actor_id must be a valid integer.'
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            audit_logs = audit_logs.filter(
+                actor_id=actor_id
+            )
+
+        if search:
+            audit_logs = audit_logs.filter(
+                Q(target_display__icontains=search)
+                | Q(description__icontains=search)
+                | Q(actor__name__icontains=search)
+                | Q(actor__email__icontains=search)
+            )
+
+        results = []
+
+        for audit_log in audit_logs:
+            results.append(
+                self._serialize_audit_log(audit_log)
+            )
+
+        return Response(
+            {
+                'count': len(results),
+                'results': results,
+            },
+            status=status.HTTP_200_OK
+        )
+
+    def _serialize_audit_log(self, audit_log):
+        return {
+            'id': audit_log.id,
+            'actor': (
+                {
+                    'id': audit_log.actor.id,
+                    'name': audit_log.actor.name,
+                    'email': audit_log.actor.email,
+                    'role': (
+                        audit_log.actor.role.name
+                        if audit_log.actor.role
+                        else None
+                    ),
+                }
+                if audit_log.actor
+                else None
+            ),
+            'action': audit_log.action,
+            'target_type': audit_log.target_type,
+            'target_id': audit_log.target_id,
+            'target_display': audit_log.target_display,
+            'description': audit_log.description,
+            'metadata': audit_log.metadata,
+            'ip_address': audit_log.ip_address,
+            'created_at': audit_log.created_at,
+        }
+
+
+class SuperAdminAuditLogDetailAPIView(
+    SuperAdminRequiredMixin,
+    APIView
+):
+    """
+    Retrieve one audit record.
+
+    Audit records are read-only and cannot be modified
+    or deleted through this API.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, audit_log_id):
+        self.check_super_admin(request)
+
+        try:
+            audit_log = (
+                AuditLog.objects
+                .select_related(
+                    'actor',
+                    'actor__role'
+                )
+                .get(pk=audit_log_id)
+            )
+
+        except AuditLog.DoesNotExist:
+            raise NotFound('Audit record not found.')
+
+        return Response(
+            {
+                'id': audit_log.id,
+                'actor': (
+                    {
+                        'id': audit_log.actor.id,
+                        'name': audit_log.actor.name,
+                        'email': audit_log.actor.email,
+                        'role': (
+                            audit_log.actor.role.name
+                            if audit_log.actor.role
+                            else None
+                        ),
+                    }
+                    if audit_log.actor
+                    else None
+                ),
+                'action': audit_log.action,
+                'target_type': audit_log.target_type,
+                'target_id': audit_log.target_id,
+                'target_display':
+                    audit_log.target_display,
+                'description': audit_log.description,
+                'metadata': audit_log.metadata,
+                'ip_address': audit_log.ip_address,
+                'created_at': audit_log.created_at,
             },
             status=status.HTTP_200_OK
         )

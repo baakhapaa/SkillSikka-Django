@@ -1028,3 +1028,68 @@ class ShortComment(models.Model):
 
     def __str__(self):
         return f'{self.student.email} - {self.short.title}'
+
+class AuditLog(models.Model):
+    ACTION_CHOICES = (
+        ('create', 'Create'),
+        ('update', 'Update'),
+        ('delete', 'Delete'),
+        ('activate', 'Activate'),
+        ('deactivate', 'Deactivate'),
+        ('role_change', 'Role Change'),
+        ('verification_change', 'Verification Change'),
+        ('permission_change', 'Permission Change'),
+    )
+
+    actor = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='audit_actions'
+    )
+
+    action = models.CharField(
+        max_length=40,
+        choices=ACTION_CHOICES
+    )
+
+    target_type = models.CharField(
+        max_length=100
+    )
+
+    target_id = models.PositiveBigIntegerField(
+        null=True,
+        blank=True
+    )
+
+    target_display = models.CharField(
+        max_length=255,
+        blank=True
+    )
+
+    description = models.TextField(
+        blank=True
+    )
+
+    metadata = models.JSONField(
+        default=dict,
+        blank=True
+    )
+
+    ip_address = models.GenericIPAddressField(
+        null=True,
+        blank=True
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True
+    )
+
+    class Meta:
+        db_table = 'audit_logs'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        actor = self.actor.email if self.actor else 'System'
+        return f'{actor} - {self.action} - {self.target_type}'
