@@ -81,6 +81,8 @@ from .api_views import (
     ShortDetailAPIView,
     ShortListCreateAPIView,
     ToggleShortLikeAPIView,
+	MunicipalityDashboardAPIView,
+    MinistryDashboardAPIView, 
 )
 
 
@@ -646,5 +648,16 @@ path(
     'shorts/comments/<int:pk>/',
     ShortCommentDetailAPIView.as_view(),
     name='short-comment-detail',
+),
+path(
+    'municipality/dashboard/',
+    MunicipalityDashboardAPIView.as_view(),
+    name='api-municipality-dashboard'
+),
+
+path(
+    'ministry/dashboard/',
+    MinistryDashboardAPIView.as_view(),
+    name='api-ministry-dashboard'
 ),
 ]

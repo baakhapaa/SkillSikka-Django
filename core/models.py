@@ -1103,3 +1103,24 @@ class ShortComment(models.Model):
 
     def __str__(self):
         return f'{self.student.email} - {self.short.title}'
+class LocalAuthorityProfile(models.Model):
+    user = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name='local_authority_profile'
+    )
+
+    municipality = models.ForeignKey(
+        Municipality,
+        on_delete=models.PROTECT,
+        related_name='local_authority_profiles'
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'local_authority_profiles'
+
+    def __str__(self):
+        return f'{self.user.email} - {self.municipality.name}'
