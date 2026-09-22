@@ -2,6 +2,17 @@ from django.urls import path
 
 from rest_framework_simplejwt.views import TokenRefreshView
 
+from .analytics_views import (
+	TeacherChallengeAnalyticsAPIView,
+	TeacherChallengeAnalyticsExportAPIView,
+	TeacherCourseAnalyticsDetailAPIView,
+	TeacherCourseAnalyticsExportAPIView,
+	TeacherCourseAnalyticsListAPIView,
+	TeacherCourseStudentsAPIView,
+	TeacherCourseStudentsExportAPIView,
+	TeacherCourseTimelineAPIView,
+	TeacherTimelineAPIView,
+)
 from .api_views import (
 	BadgeDetailAPIView,
 	BadgeListCreateAPIView,
@@ -419,6 +430,64 @@ urlpatterns = [
 		'my-challenges/',
 		MyChallengesAPIView.as_view(),
 		name='api-my-challenges'
+	),
+
+	# =========================
+	# Teacher Analytics
+	# =========================
+
+	path(
+		'teacher/analytics/courses/',
+		TeacherCourseAnalyticsListAPIView.as_view(),
+		name='api-teacher-analytics-courses'
+	),
+
+	path(
+		'teacher/analytics/courses/export/',
+		TeacherCourseAnalyticsExportAPIView.as_view(),
+		name='api-teacher-analytics-courses-export'
+	),
+
+	path(
+		'teacher/analytics/courses/<int:course_id>/',
+		TeacherCourseAnalyticsDetailAPIView.as_view(),
+		name='api-teacher-analytics-course-detail'
+	),
+
+	path(
+		'teacher/analytics/courses/<int:course_id>/students/',
+		TeacherCourseStudentsAPIView.as_view(),
+		name='api-teacher-analytics-course-students'
+	),
+
+	path(
+		'teacher/analytics/courses/<int:course_id>/students/export/',
+		TeacherCourseStudentsExportAPIView.as_view(),
+		name='api-teacher-analytics-course-students-export'
+	),
+
+	path(
+		'teacher/analytics/courses/<int:course_id>/timeline/',
+		TeacherCourseTimelineAPIView.as_view(),
+		name='api-teacher-analytics-course-timeline'
+	),
+
+	path(
+		'teacher/analytics/timeline/',
+		TeacherTimelineAPIView.as_view(),
+		name='api-teacher-analytics-timeline'
+	),
+
+	path(
+		'teacher/analytics/challenges/',
+		TeacherChallengeAnalyticsAPIView.as_view(),
+		name='api-teacher-analytics-challenges'
+	),
+
+	path(
+		'teacher/analytics/challenges/export/',
+		TeacherChallengeAnalyticsExportAPIView.as_view(),
+		name='api-teacher-analytics-challenges-export'
 	),
 
 	# =========================
