@@ -52,7 +52,10 @@ from .models import (
 	ShortComment,
 	ShortLike,
 	ShortView,
+    AIActivity,
 )
+
+from .ai_service import GeminiService
 
 from .serializers import (
 	BadgeSerializer,
@@ -3213,3 +3216,961 @@ class ShortCommentDetailAPIView(
 			)
 
 		instance.delete()
+
+class AIAskAPIView(APIView):
+    """
+    FR-AI-01:
+    Allow students to submit learning questions
+    to the SkillSikka AI assistant.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        role_name = getattr(
+            getattr(request.user, 'role', None),
+            'name',
+            None
+        )
+
+        if role_name != 'student':
+            return Response(
+                {
+                    'detail': (
+                        'Only students can use the AI assistant.'
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        question = request.data.get(
+            'question',
+            ''
+        ).strip()
+
+        learning_context = request.data.get(
+            'learning_context',
+            ''
+        ).strip()
+
+        if not question:
+            return Response(
+                {
+                    'question': [
+                        'Question is required.'
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if len(question) > 2000:
+            return Response(
+                {
+                    'question': [
+                        'Question must not exceed 2000 characters.'
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if len(learning_context) > 5000:
+            return Response(
+                {
+                    'learning_context': [
+                        'Learning context must not exceed 5000 characters.'
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            answer = GeminiService.ask_student_question(
+                question=question,
+                learning_context=(
+                    learning_context
+                    if learning_context
+                    else None
+                )
+            )
+
+        except ValueError as exc:
+            return Response(
+                {
+                    'detail': str(exc)
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        except Exception:
+            return Response(
+                {
+                    'detail': (
+                        'The AI assistant is temporarily unavailable. '
+                        'Please try again later.'
+                    )
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
+        return Response(
+            {
+                'question': question,
+                'answer': answer
+            },
+            status=status.HTTP_200_OK
+        )
+class AIAssistAPIView(APIView):
+    """
+    FR-AI-02:
+    Provide explanations, hints, and guided assistance
+    to authenticated students.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        role_name = getattr(
+            getattr(request.user, 'role', None),
+            'name',
+            None
+        )
+
+        if role_name != 'student':
+            return Response(
+                {
+                    'detail': (
+                        'Only students can use AI assistance.'
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        question = str(
+            request.data.get('question', '')
+        ).strip()
+
+        assistance_mode = str(
+            request.data.get('assistance_mode', '')
+        ).strip().lower()
+
+        learning_context = str(
+            request.data.get('learning_context', '')
+        ).strip()
+
+        if not question:
+            return Response(
+                {
+                    'question': [
+                        'Question is required.'
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if len(question) > 2000:
+            return Response(
+                {
+                    'question': [
+                        'Question must not exceed 2000 characters.'
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if assistance_mode not in GeminiService.ASSISTANCE_MODES:
+            return Response(
+                {
+                    'assistance_mode': [
+                        (
+                            'Invalid assistance mode. '
+                            'Use explain, hint, or guide.'
+                        )
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if len(learning_context) > 5000:
+            return Response(
+                {
+                    'learning_context': [
+                        (
+                            'Learning context must not exceed '
+                            '5000 characters.'
+                        )
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            answer = GeminiService.get_guided_assistance(
+                question=question,
+                assistance_mode=assistance_mode,
+                learning_context=(
+                    learning_context
+                    if learning_context
+                    else None
+                )
+            )
+
+        except ValueError as exc:
+            return Response(
+                {
+                    'detail': str(exc)
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        except Exception:
+            return Response(
+                {
+                    'detail': (
+                        'The AI assistant is temporarily unavailable. '
+                        'Please try again later.'
+                    )
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
+        return Response(
+            {
+                'question': question,
+                'assistance_mode': assistance_mode,
+                'learning_context': (
+                    learning_context
+                    if learning_context
+                    else None
+                ),
+                'answer': answer,
+            },
+            status=status.HTTP_200_OK
+        )
+class AIActivityGenerateAPIView(APIView):
+    """
+    FR-AI-03 / FR-AI-04:
+    Generate an AI educational activity and save it
+    for teacher/admin review.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        role_name = getattr(
+            getattr(request.user, 'role', None),
+            'name',
+            None
+        )
+
+        if role_name != 'student':
+            return Response(
+                {
+                    'detail': (
+                        'Only students can generate '
+                        'AI learning activities.'
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        activity_type = str(
+            request.data.get('activity_type', '')
+        ).strip().lower()
+
+        topic = str(
+            request.data.get('topic', '')
+        ).strip()
+
+        learning_context = str(
+            request.data.get('learning_context', '')
+        ).strip()
+
+        difficulty = str(
+            request.data.get('difficulty', 'medium')
+        ).strip().lower()
+
+        question_count = request.data.get(
+            'question_count',
+            5
+        )
+
+        if activity_type not in GeminiService.ACTIVITY_TYPES:
+            return Response(
+                {
+                    'activity_type': [
+                        (
+                            'Invalid activity type. Use '
+                            'practice_questions, crossword, '
+                            'or challenge.'
+                        )
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not topic:
+            return Response(
+                {
+                    'topic': [
+                        'Topic is required.'
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if len(topic) > 255:
+            return Response(
+                {
+                    'topic': [
+                        'Topic must not exceed 255 characters.'
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if len(learning_context) > 5000:
+            return Response(
+                {
+                    'learning_context': [
+                        (
+                            'Learning context must not exceed '
+                            '5000 characters.'
+                        )
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if difficulty not in {
+            'easy',
+            'medium',
+            'hard',
+        }:
+            return Response(
+                {
+                    'difficulty': [
+                        (
+                            'Difficulty must be easy, '
+                            'medium, or hard.'
+                        )
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            question_count = int(question_count)
+        except (TypeError, ValueError):
+            return Response(
+                {
+                    'question_count': [
+                        'Question count must be a number.'
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if question_count < 1 or question_count > 10:
+            return Response(
+                {
+                    'question_count': [
+                        (
+                            'Question count must be '
+                            'between 1 and 10.'
+                        )
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            generated_content = (
+                GeminiService.generate_educational_activity(
+                    activity_type=activity_type,
+                    topic=topic,
+                    learning_context=(
+                        learning_context
+                        if learning_context
+                        else None
+                    ),
+                    difficulty=difficulty,
+                    question_count=question_count,
+                )
+            )
+
+        except ValueError as exc:
+            return Response(
+                {
+                    'detail': str(exc)
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        except Exception:
+            return Response(
+                {
+                    'detail': (
+                        'The AI activity generator is '
+                        'temporarily unavailable. '
+                        'Please try again later.'
+                    )
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
+        ai_activity = AIActivity.objects.create(
+            generated_by=request.user,
+            activity_type=activity_type,
+            topic=topic,
+            learning_context=learning_context,
+            difficulty=difficulty,
+            generated_content=generated_content,
+            status='pending_review',
+        )
+
+        return Response(
+            {
+                'id': ai_activity.id,
+                'activity_type': ai_activity.activity_type,
+                'topic': ai_activity.topic,
+                'difficulty': ai_activity.difficulty,
+                'status': ai_activity.status,
+                'activity': ai_activity.generated_content,
+                'created_at': ai_activity.created_at,
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+
+def _serialize_ai_activity(activity):
+    """
+    Convert an AIActivity database object into API response data.
+    """
+
+    return {
+        'id': activity.id,
+        'activity_type': activity.activity_type,
+        'topic': activity.topic,
+        'learning_context': activity.learning_context,
+        'difficulty': activity.difficulty,
+        'generated_content': activity.generated_content,
+        'status': activity.status,
+        'generated_by': {
+            'id': activity.generated_by_id,
+            'name': activity.generated_by.name,
+            'email': activity.generated_by.email,
+        },
+        'reviewed_by': (
+            {
+                'id': activity.reviewed_by_id,
+                'name': activity.reviewed_by.name,
+                'email': activity.reviewed_by.email,
+            }
+            if activity.reviewed_by
+            else None
+        ),
+        'review_notes': activity.review_notes,
+        'reviewed_at': activity.reviewed_at,
+        'created_at': activity.created_at,
+        'updated_at': activity.updated_at,
+    }
+
+
+def _can_review_ai_activity(user):
+    """
+    AI-generated educational content may be reviewed by
+    verified instructors, school admins, or super admins.
+    """
+
+    role_name = _role_name(user)
+
+    return (
+        _is_admin(user)
+        or _is_verified_instructor(user)
+        or role_name == 'school_admin'
+    )
+
+
+class AIActivityPendingReviewAPIView(APIView):
+    """
+    FR-AI-04:
+    List AI-generated activities waiting for review.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not _can_review_ai_activity(request.user):
+            return Response(
+                {
+                    'detail': (
+                        'Only authorized teachers or '
+                        'administrators can review '
+                        'AI-generated activities.'
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        activities = AIActivity.objects.filter(
+            status='pending_review'
+        ).select_related(
+            'generated_by',
+            'reviewed_by',
+        ).order_by(
+            '-created_at'
+        )
+
+        return Response(
+            [
+                _serialize_ai_activity(activity)
+                for activity in activities
+            ],
+            status=status.HTTP_200_OK
+        )
+
+
+class AIActivityDetailAPIView(APIView):
+    """
+    FR-AI-04:
+    View a generated AI activity.
+
+    Students may view their own generated activity.
+    Reviewers may view any activity requiring review.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, activity_id):
+        activity = AIActivity.objects.select_related(
+            'generated_by',
+            'reviewed_by',
+        ).filter(
+            pk=activity_id
+        ).first()
+
+        if activity is None:
+            return Response(
+                {
+                    'detail': 'AI activity not found.'
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        is_owner = (
+            activity.generated_by_id
+            == request.user.id
+        )
+
+        if not (
+            is_owner
+            or _can_review_ai_activity(request.user)
+        ):
+            return Response(
+                {
+                    'detail': (
+                        'You do not have permission '
+                        'to view this AI activity.'
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        return Response(
+            _serialize_ai_activity(activity),
+            status=status.HTTP_200_OK
+        )
+
+
+class AIActivityReviewAPIView(APIView):
+    """
+    FR-AI-04:
+    Approve or reject AI-generated educational content.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, activity_id):
+        if not _can_review_ai_activity(request.user):
+            return Response(
+                {
+                    'detail': (
+                        'Only authorized teachers or '
+                        'administrators can review '
+                        'AI-generated activities.'
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        activity = AIActivity.objects.select_for_update().filter(
+            pk=activity_id
+        ).first()
+
+        if activity is None:
+            return Response(
+                {
+                    'detail': 'AI activity not found.'
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if activity.status != 'pending_review':
+            return Response(
+                {
+                    'detail': (
+                        'This AI activity has already '
+                        'been reviewed.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        action = str(
+            request.data.get('action', '')
+        ).strip().lower()
+
+        review_notes = str(
+            request.data.get('review_notes', '')
+        ).strip()
+
+        if action not in {
+            'approve',
+            'reject',
+        }:
+            return Response(
+                {
+                    'action': [
+                        'Action must be approve or reject.'
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if len(review_notes) > 2000:
+            return Response(
+                {
+                    'review_notes': [
+                        (
+                            'Review notes must not exceed '
+                            '2000 characters.'
+                        )
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if action == 'reject' and not review_notes:
+            return Response(
+                {
+                    'review_notes': [
+                        (
+                            'Review notes are required '
+                            'when rejecting AI content.'
+                        )
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        activity.status = (
+            'approved'
+            if action == 'approve'
+            else 'rejected'
+        )
+
+        activity.reviewed_by = request.user
+        activity.review_notes = review_notes
+        activity.reviewed_at = timezone.now()
+
+        activity.save(
+            update_fields=[
+                'status',
+                'reviewed_by',
+                'review_notes',
+                'reviewed_at',
+                'updated_at',
+            ]
+        )
+
+        activity = AIActivity.objects.select_related(
+            'generated_by',
+            'reviewed_by',
+        ).get(
+            pk=activity.pk
+        )
+
+        return Response(
+            _serialize_ai_activity(activity),
+            status=status.HTTP_200_OK
+        )
+# =========================================================
+# FR-AI-05 - AI Learning Recommendations
+# =========================================================
+
+class AIRecommendationAPIView(APIView):
+    """
+    FR-AI-05:
+    Recommend relevant SkillSikka courses, lessons,
+    and educational videos to students.
+
+    Gemini may only select content that currently exists
+    in the SkillSikka database.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not _is_student(request.user):
+            return Response(
+                {
+                    'detail': (
+                        'Only students can request '
+                        'AI learning recommendations.'
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        learning_goal = str(
+            request.data.get('learning_goal', '')
+        ).strip()
+
+        learning_context = str(
+            request.data.get('learning_context', '')
+        ).strip()
+
+        if not learning_goal:
+            return Response(
+                {
+                    'learning_goal': [
+                        'Learning goal is required.'
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if len(learning_goal) > 1000:
+            return Response(
+                {
+                    'learning_goal': [
+                        (
+                            'Learning goal must not exceed '
+                            '1000 characters.'
+                        )
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if len(learning_context) > 5000:
+            return Response(
+                {
+                    'learning_context': [
+                        (
+                            'Learning context must not exceed '
+                            '5000 characters.'
+                        )
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Only published courses are eligible for recommendation.
+        courses = list(
+            Course.objects.filter(
+                is_published=True
+            ).select_related(
+                'subject',
+                'grade',
+                'instructor',
+            ).order_by(
+                '-created_at'
+            )[:100]
+        )
+
+        course_ids = [
+            course.id
+            for course in courses
+        ]
+
+        # Only lessons belonging to published courses are exposed
+        # to the AI recommendation engine.
+        lessons = list(
+            Lesson.objects.filter(
+                course_id__in=course_ids
+            ).select_related(
+                'course',
+                'topic',
+            ).order_by(
+                'course_id',
+                'order',
+                'id',
+            )[:200]
+        )
+
+        # Only published Shorts/videos are eligible.
+        videos = list(
+            Short.objects.filter(
+                is_published=True
+            ).select_related(
+                'instructor'
+            ).order_by(
+                '-created_at'
+            )[:100]
+        )
+
+        try:
+            recommendations = (
+                GeminiService.recommend_learning_content(
+                    learning_goal=learning_goal,
+                    learning_context=(
+                        learning_context
+                        if learning_context
+                        else None
+                    ),
+                    courses=courses,
+                    lessons=lessons,
+                    videos=videos,
+                )
+            )
+
+        except ValueError as exc:
+            return Response(
+                {
+                    'detail': str(exc)
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        except Exception:
+            return Response(
+                {
+                    'detail': (
+                        'The AI recommendation service is '
+                        'temporarily unavailable. '
+                        'Please try again later.'
+                    )
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
+        course_map = {
+            course.id: course
+            for course in courses
+        }
+
+        lesson_map = {
+            lesson.id: lesson
+            for lesson in lessons
+        }
+
+        video_map = {
+            video.id: video
+            for video in videos
+        }
+
+        recommended_courses = []
+
+        for item in recommendations.get('courses', []):
+            course = course_map.get(
+                item.get('id')
+            )
+
+            if course is None:
+                continue
+
+            recommended_courses.append({
+                'id': course.id,
+                'title': course.title,
+                'description': course.description,
+                'course_type': course.course_type,
+                'subject': (
+                    str(course.subject)
+                    if course.subject
+                    else None
+                ),
+                'grade': (
+                    str(course.grade)
+                    if course.grade
+                    else None
+                ),
+                'is_paid': course.is_paid,
+                'price': str(course.price),
+                'thumbnail_url': course.thumbnail_url,
+                'reason': item.get('reason', ''),
+            })
+
+        recommended_lessons = []
+
+        for item in recommendations.get('lessons', []):
+            lesson = lesson_map.get(
+                item.get('id')
+            )
+
+            if lesson is None:
+                continue
+
+            recommended_lessons.append({
+                'id': lesson.id,
+                'title': lesson.title,
+                'topic': (
+                    str(lesson.topic)
+                    if lesson.topic
+                    else None
+                ),
+                'content_type': lesson.content_type,
+                'course': {
+                    'id': lesson.course_id,
+                    'title': (
+                        lesson.course.title
+                        if lesson.course
+                        else None
+                    ),
+                },
+                'reason': item.get('reason', ''),
+            })
+
+        recommended_videos = []
+
+        for item in recommendations.get('videos', []):
+            video = video_map.get(
+                item.get('id')
+            )
+
+            if video is None:
+                continue
+
+            recommended_videos.append({
+                'id': video.id,
+                'title': video.title,
+                'video_url': video.video_url,
+                'thumbnail_url': video.thumbnail_url,
+                'view_count': video.view_count,
+                'reason': item.get('reason', ''),
+            })
+
+        return Response(
+            {
+                'learning_goal': learning_goal,
+                'learning_context': (
+                    learning_context
+                    if learning_context
+                    else None
+                ),
+                'recommendations': {
+                    'courses': recommended_courses,
+                    'lessons': recommended_lessons,
+                    'videos': recommended_videos,
+                },
+            },
+            status=status.HTTP_200_OK
+        )

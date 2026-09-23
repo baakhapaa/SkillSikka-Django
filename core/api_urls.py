@@ -81,6 +81,13 @@ from .api_views import (
     ShortDetailAPIView,
     ShortListCreateAPIView,
     ToggleShortLikeAPIView,
+	AIAskAPIView,
+    AIAssistAPIView,
+    AIActivityGenerateAPIView,
+    AIActivityPendingReviewAPIView,
+    AIActivityDetailAPIView,
+    AIActivityReviewAPIView,
+	AIRecommendationAPIView,
 )
 
 
@@ -646,5 +653,57 @@ path(
     'shorts/comments/<int:pk>/',
     ShortCommentDetailAPIView.as_view(),
     name='short-comment-detail',
+),
+    	# =========================
+	# AI Assistant
+	# =========================
+
+	path(
+		'ai/ask/',
+		AIAskAPIView.as_view(),
+		name='ai-ask',
+	),
+
+	path(
+		'ai/assist/',
+		AIAssistAPIView.as_view(),
+		name='ai-assist',
+	),
+
+	# FR-AI-03 + FR-AI-04
+	# Generate activity and save it as pending review
+	path(
+		'ai/activities/generate/',
+		AIActivityGenerateAPIView.as_view(),
+		name='ai-activity-generate',
+	),
+
+	# FR-AI-04
+	# Authorized teacher/admin pending review queue
+	path(
+		'ai/activities/pending-review/',
+		AIActivityPendingReviewAPIView.as_view(),
+		name='ai-activity-pending-review',
+	),
+
+	# FR-AI-04
+	# Student owner or authorized reviewer can view activity
+	path(
+		'ai/activities/<int:activity_id>/',
+		AIActivityDetailAPIView.as_view(),
+		name='ai-activity-detail',
+	),
+
+	# FR-AI-04
+	# Authorized teacher/admin approve or reject activity
+	path(
+		'ai/activities/<int:activity_id>/review/',
+		AIActivityReviewAPIView.as_view(),
+		name='ai-activity-review',
+	),
+	path(
+    'ai/recommendations/',
+    AIRecommendationAPIView.as_view(),
+    name='ai-recommendations'
 ),
 ]

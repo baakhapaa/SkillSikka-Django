@@ -299,3 +299,10 @@ EMAIL_BACKEND = (
 )
 
 DEFAULT_FROM_EMAIL = 'noreply@skillsikka.com'
+
+# Gemini AI
+# Gemini AI
+GEMINI_API_KEY = config(
+    'GEMINI_API_KEY',
+    default=''
+)
