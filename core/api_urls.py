@@ -12,6 +12,7 @@ from .analytics_views import (
 	TeacherCourseStudentsExportAPIView,
 	TeacherCourseTimelineAPIView,
 	TeacherTimelineAPIView,
+    
 )
 from .api_views import (
 	BadgeDetailAPIView,
@@ -24,11 +25,14 @@ from .api_views import (
 	CheckCourseCertificateAPIView,
 	CheckGradeCertificateAPIView,
 	CompleteLessonAPIView,
+	CompleteStudentProfileAPIView,
 	CourseDetailAPIView,
 	CourseListCreateAPIView,
 	CourseProgressAPIView,
 	CurrentUserAPIView,
 	DistrictListAPIView,
+    EBookListCreateAPIView,
+    EBookDetailAPIView,
 	EnrollCourseAPIView,
 	ForgotPasswordAPIView,
 	GradeListAPIView,
@@ -76,11 +80,11 @@ from .api_views import (
 	VerifyPaymentAPIView,
 	PointsLeaderboardAPIView,
 	RecordShortViewAPIView,
-    ShortCommentDetailAPIView,
-    ShortCommentListCreateAPIView,
-    ShortDetailAPIView,
-    ShortListCreateAPIView,
-    ToggleShortLikeAPIView,
+	ShortCommentDetailAPIView,
+	ShortCommentListCreateAPIView,
+	ShortDetailAPIView,
+	ShortListCreateAPIView,
+	ToggleShortLikeAPIView,
 )
 
 
@@ -125,6 +129,12 @@ urlpatterns = [
 		'me/',
 		CurrentUserAPIView.as_view(),
 		name='api-current-user'
+	),
+
+	path(
+		'me/complete-profile/',
+		CompleteStudentProfileAPIView.as_view(),
+		name='api-complete-student-profile'
 	),
 
 	path(
@@ -588,7 +598,8 @@ urlpatterns = [
 		StudentPointsAPIView.as_view(),
 		name='student-points',
 	),
-		# =========================
+
+	# =========================
 	# Points Leaderboard
 	# =========================
 
@@ -599,52 +610,59 @@ urlpatterns = [
 	),
 
 	# =========================
-	# Student Points
+	# Shorts
 	# =========================
 
 	path(
-		'student/points/',
-		StudentPointsAPIView.as_view(),
-		name='student-points',
+		'shorts/',
+		ShortListCreateAPIView.as_view(),
+		name='api-short-list-create',
 	),
 
+	path(
+		'shorts/<int:pk>/',
+		ShortDetailAPIView.as_view(),
+		name='api-short-detail',
+	),
+
+	path(
+		'student/shorts/<int:short_id>/view/',
+		RecordShortViewAPIView.as_view(),
+		name='student-short-view',
+	),
+
+	path(
+		'student/shorts/<int:short_id>/like/',
+		ToggleShortLikeAPIView.as_view(),
+		name='student-short-like',
+	),
+
+	path(
+		'student/shorts/<int:short_id>/comments/',
+		ShortCommentListCreateAPIView.as_view(),
+		name='student-short-comments',
+	),
+
+	path(
+		'shorts/comments/<int:pk>/',
+		ShortCommentDetailAPIView.as_view(),
+		name='short-comment-detail',
+	),
+
+
 	# =========================
-# Shorts
-# =========================
+	# eBooks
+	# =========================
 
-path(
-    'shorts/',
-    ShortListCreateAPIView.as_view(),
-    name='api-short-list-create',
-),
+	path(
+		'ebooks/',
+		EBookListCreateAPIView.as_view(),
+		name='api-ebook-list-create'
+	),
 
-path(
-    'shorts/<int:pk>/',
-    ShortDetailAPIView.as_view(),
-    name='api-short-detail',
-),
-
-path(
-    'student/shorts/<int:short_id>/view/',
-    RecordShortViewAPIView.as_view(),
-    name='student-short-view',
-),
-
-path(
-    'student/shorts/<int:short_id>/like/',
-    ToggleShortLikeAPIView.as_view(),
-    name='student-short-like',
-),
-
-path(
-    'student/shorts/<int:short_id>/comments/',
-    ShortCommentListCreateAPIView.as_view(),
-    name='student-short-comments',
-),
-
-path(
-    'shorts/comments/<int:pk>/',
-    ShortCommentDetailAPIView.as_view(),
-    name='short-comment-detail',
-),
+	path(
+		'ebooks/<int:pk>/',
+		EBookDetailAPIView.as_view(),
+		name='api-ebook-detail'
+	),
 ]

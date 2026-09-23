@@ -296,18 +296,24 @@ class StudentProfile(models.Model):
 	grade = models.ForeignKey(
 		Grade,
 		on_delete=models.PROTECT,
+		null=True,
+		blank=True,
 		related_name='student_profiles'
 	)
 
 	province = models.ForeignKey(
 		Province,
 		on_delete=models.PROTECT,
+		null=True,
+		blank=True,
 		related_name='student_profiles'
 	)
 
 	district = models.ForeignKey(
 		District,
 		on_delete=models.PROTECT,
+		null=True,
+		blank=True,
 		related_name='student_profiles'
 	)
 
@@ -980,126 +986,148 @@ class ChallengeParticipant(models.Model):
 
 
 class Short(models.Model):
-    title = models.CharField(max_length=200)
+	title = models.CharField(max_length=200)
 
-    instructor = models.ForeignKey(
-        User,
-        on_delete=models.PROTECT,
-        related_name='shorts'
-    )
+	instructor = models.ForeignKey(
+		User,
+		on_delete=models.PROTECT,
+		related_name='shorts'
+	)
 
-    video_url = models.URLField()
+	video_url = models.URLField()
 
-    thumbnail_url = models.URLField(
-        blank=True
-    )
+	thumbnail_url = models.URLField(
+		blank=True
+	)
 
-    is_published = models.BooleanField(
-        default=False
-    )
+	is_published = models.BooleanField(
+		default=False
+	)
 
-    view_count = models.PositiveIntegerField(
-        default=0
-    )
+	view_count = models.PositiveIntegerField(
+		default=0
+	)
 
-    created_at = models.DateTimeField(
-        auto_now_add=True
-    )
+	created_at = models.DateTimeField(
+		auto_now_add=True
+	)
 
-    updated_at = models.DateTimeField(
-        auto_now=True
-    )
+	updated_at = models.DateTimeField(
+		auto_now=True
+	)
 
-    class Meta:
-        db_table = 'shorts'
-        ordering = ['-created_at']
+	class Meta:
+		db_table = 'shorts'
+		ordering = ['-created_at']
 
-    def __str__(self):
-        return self.title
+	def __str__(self):
+		return self.title
 
 
 class ShortView(models.Model):
-    student = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='short_views'
-    )
+	student = models.ForeignKey(
+		User,
+		on_delete=models.CASCADE,
+		related_name='short_views'
+	)
 
-    short = models.ForeignKey(
-        Short,
-        on_delete=models.CASCADE,
-        related_name='views'
-    )
+	short = models.ForeignKey(
+		Short,
+		on_delete=models.CASCADE,
+		related_name='views'
+	)
 
-    viewed_at = models.DateTimeField(
-        auto_now_add=True
-    )
+	viewed_at = models.DateTimeField(
+		auto_now_add=True
+	)
 
-    class Meta:
-        db_table = 'short_views'
-        constraints = [
-            models.UniqueConstraint(
-                fields=['student', 'short'],
-                name='unique_short_view_per_student'
-            )
-        ]
+	class Meta:
+		db_table = 'short_views'
+		constraints = [
+			models.UniqueConstraint(
+				fields=['student', 'short'],
+				name='unique_short_view_per_student'
+			)
+		]
 
-    def __str__(self):
-        return f'{self.student.email} - {self.short.title}'
+	def __str__(self):
+		return f'{self.student.email} - {self.short.title}'
 
 
 class ShortLike(models.Model):
-    student = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='short_likes'
-    )
+	student = models.ForeignKey(
+		User,
+		on_delete=models.CASCADE,
+		related_name='short_likes'
+	)
 
-    short = models.ForeignKey(
-        Short,
-        on_delete=models.CASCADE,
-        related_name='likes'
-    )
+	short = models.ForeignKey(
+		Short,
+		on_delete=models.CASCADE,
+		related_name='likes'
+	)
 
-    created_at = models.DateTimeField(
-        auto_now_add=True
-    )
+	created_at = models.DateTimeField(
+		auto_now_add=True
+	)
 
-    class Meta:
-        db_table = 'short_likes'
-        constraints = [
-            models.UniqueConstraint(
-                fields=['student', 'short'],
-                name='unique_short_like_per_student'
-            )
-        ]
+	class Meta:
+		db_table = 'short_likes'
+		constraints = [
+			models.UniqueConstraint(
+				fields=['student', 'short'],
+				name='unique_short_like_per_student'
+			)
+		]
 
-    def __str__(self):
-        return f'{self.student.email} likes {self.short.title}'
+	def __str__(self):
+		return f'{self.student.email} likes {self.short.title}'
 
 
 class ShortComment(models.Model):
-    student = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='short_comments'
-    )
+	student = models.ForeignKey(
+		User,
+		on_delete=models.CASCADE,
+		related_name='short_comments'
+	)
 
-    short = models.ForeignKey(
-        Short,
-        on_delete=models.CASCADE,
-        related_name='comments'
-    )
+	short = models.ForeignKey(
+		Short,
+		on_delete=models.CASCADE,
+		related_name='comments'
+	)
 
-    text = models.TextField()
+	text = models.TextField()
 
-    created_at = models.DateTimeField(
-        auto_now_add=True
-    )
+	created_at = models.DateTimeField(
+		auto_now_add=True
+	)
 
-    class Meta:
-        db_table = 'short_comments'
-        ordering = ['-created_at']
+	class Meta:
+		db_table = 'short_comments'
+		ordering = ['-created_at']
 
-    def __str__(self):
-        return f'{self.student.email} - {self.short.title}'
+	def __str__(self):
+		return f'{self.student.email} - {self.short.title}'
+
+	
+
+class EBook(models.Model):
+	title = models.CharField(max_length=200)
+	description = models.TextField(blank=True)
+	author = models.CharField(max_length=200, blank=True)
+	subject = models.ForeignKey(Subject, on_delete=models.SET_NULL, null=True, blank=True, related_name='ebooks')
+	grade = models.ForeignKey(Grade, on_delete=models.SET_NULL, null=True, blank=True, related_name='ebooks')
+	uploaded_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name='ebooks')
+	cover_url = models.URLField(blank=True)
+	file_url = models.URLField()
+	is_published = models.BooleanField(default=False)
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'ebooks'
+		ordering = ['-created_at']
+
+	def __str__(self):
+		return self.title

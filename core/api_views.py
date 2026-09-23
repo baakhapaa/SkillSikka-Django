@@ -27,6 +27,7 @@ from .models import (
 	Chapter,
 	Course,
 	District,
+	EBook,
 	Enrollment,
 	Grade,
 	LearningStreak,
@@ -63,8 +64,10 @@ from .serializers import (
 	ChallengeSubmitSerializer,
 	ChallengeWinnersSerializer,
 	ChapterSerializer,
+	CompleteStudentProfileSerializer,
 	CourseSerializer,
 	DistrictSerializer,
+	EBookSerializer,
 	EnrollCourseSerializer,
 	EnrollmentSerializer,
 	ForgotPasswordSerializer,
@@ -1436,6 +1439,44 @@ class MyBadgesAPIView(generics.ListAPIView):
 		return StudentBadge.objects.filter(
 			student=self.request.user
 		).select_related('badge').order_by('-awarded_at')
+
+
+# =========================================================
+# Complete Student Profile
+# =========================================================
+
+class CompleteStudentProfileAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def post(self, request):
+		user = request.user
+
+		if not _is_student(user):
+			return Response(
+				{'detail': 'Only students can complete this profile step.'},
+				status=status.HTTP_403_FORBIDDEN,
+			)
+
+		serializer = CompleteStudentProfileSerializer(
+			data=request.data,
+			context={'request': request},
+		)
+		serializer.is_valid(raise_exception=True)
+		profile = serializer.save()
+
+		return Response(
+			{
+				'detail': 'Profile completed successfully.',
+				'onboarding_completed': True,
+				'grade': profile.grade_id,
+				'province': profile.province_id,
+				'district': profile.district_id,
+				'municipality': profile.municipality_id,
+				'school': profile.school_id,
+			},
+			status=status.HTTP_200_OK,
+		)
 
 
 # =========================================================
@@ -3213,3 +3254,116 @@ class ShortCommentDetailAPIView(
 			)
 
 		instance.delete()
+
+
+# =========================================================
+# eBooks
+# =========================================================
+
+class EBookListCreateAPIView(generics.ListCreateAPIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = EBookSerializer
+
+	def get_queryset(self):
+		user = self.request.user
+
+		queryset = EBook.objects.select_related(
+			'subject',
+			'grade',
+			'uploaded_by',
+		)
+
+		if _is_admin(user):
+			pass
+
+		elif _is_instructor(user):
+			queryset = queryset.filter(
+				Q(is_published=True)
+				| Q(uploaded_by=user)
+			)
+
+		else:
+			queryset = queryset.filter(
+				is_published=True
+			)
+
+		subject_id = self.request.query_params.get('subject')
+		grade_id = self.request.query_params.get('grade')
+
+		if subject_id:
+			queryset = queryset.filter(
+				subject_id=subject_id
+			)
+
+		if grade_id:
+			queryset = queryset.filter(
+				grade_id=grade_id
+			)
+
+		return queryset.order_by('-created_at')
+
+	def perform_create(self, serializer):
+		user = self.request.user
+
+		if not (
+			_is_admin(user)
+			or _is_verified_instructor(user)
+		):
+			raise PermissionDenied(
+				'Only verified instructors or administrators '
+				'can upload eBooks.'
+			)
+
+		serializer.save(uploaded_by=user)
+
+
+class EBookDetailAPIView(
+	generics.RetrieveUpdateDestroyAPIView
+):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = EBookSerializer
+
+	def get_queryset(self):
+		user = self.request.user
+
+		queryset = EBook.objects.select_related(
+			'subject',
+			'grade',
+			'uploaded_by',
+		)
+
+		if _is_admin(user):
+			return queryset
+
+		if _is_instructor(user):
+			return queryset.filter(
+				Q(is_published=True)
+				| Q(uploaded_by=user)
+			)
+
+		return queryset.filter(
+			is_published=True
+		)
+
+	def _check_owner_or_admin(self, ebook):
+		user = self.request.user
+
+		if not (
+			_is_admin(user)
+			or ebook.uploaded_by_id == user.id
+		):
+			raise PermissionDenied(
+				'Only the eBook owner or administrator '
+				'can modify this eBook.'
+			)
+
+	def perform_update(self, serializer):
+		ebook = self.get_object()
+		self._check_owner_or_admin(ebook)
+		serializer.save()
+
+	def perform_destroy(self, instance):
+		self._check_owner_or_admin(instance)
+		instance.delete()		
