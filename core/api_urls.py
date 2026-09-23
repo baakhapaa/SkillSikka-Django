@@ -12,7 +12,6 @@ from .analytics_views import (
 	TeacherCourseStudentsExportAPIView,
 	TeacherCourseTimelineAPIView,
 	TeacherTimelineAPIView,
-    
 )
 from .api_views import (
 	BadgeDetailAPIView,
@@ -31,8 +30,8 @@ from .api_views import (
 	CourseProgressAPIView,
 	CurrentUserAPIView,
 	DistrictListAPIView,
-    EBookListCreateAPIView,
-    EBookDetailAPIView,
+	EBookListCreateAPIView,
+	EBookDetailAPIView,
 	EnrollCourseAPIView,
 	ForgotPasswordAPIView,
 	GradeListAPIView,
@@ -85,6 +84,10 @@ from .api_views import (
 	ShortDetailAPIView,
 	ShortListCreateAPIView,
 	ToggleShortLikeAPIView,
+	NotificationListAPIView,
+	NotificationUnreadCountAPIView,
+	NotificationMarkReadAPIView,
+	NotificationMarkAllReadAPIView,
 )
 
 
@@ -649,7 +652,6 @@ urlpatterns = [
 		name='short-comment-detail',
 	),
 
-
 	# =========================
 	# eBooks
 	# =========================
@@ -664,5 +666,33 @@ urlpatterns = [
 		'ebooks/<int:pk>/',
 		EBookDetailAPIView.as_view(),
 		name='api-ebook-detail'
+	),
+
+	# =========================
+	# Notifications
+	# =========================
+
+	path(
+		'notifications/',
+		NotificationListAPIView.as_view(),
+		name='notification-list',
+	),
+
+	path(
+		'notifications/unread-count/',
+		NotificationUnreadCountAPIView.as_view(),
+		name='notification-unread-count',
+	),
+
+	path(
+		'notifications/<int:pk>/read/',
+		NotificationMarkReadAPIView.as_view(),
+		name='notification-mark-read',
+	),
+
+	path(
+		'notifications/mark-all-read/',
+		NotificationMarkAllReadAPIView.as_view(),
+		name='notification-mark-all-read',
 	),
 ]

@@ -49,6 +49,7 @@ from .models import (
 	ShortLike,
 	ShortView,
 	EBook,
+	Notification,
 )
 
 
@@ -1852,4 +1853,33 @@ class EBookSerializer(serializers.ModelSerializer):
 			'uploaded_by',
 			'created_at',
 			'updated_at',
-		]		
+		]
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+	class Meta:
+		model = Notification
+
+		fields = [
+			'id',
+			'notification_type',
+			'title',
+			'message',
+			'related_type',
+			'related_id',
+			'is_read',
+			'read_at',
+			'created_at',
+		]
+
+		read_only_fields = [
+			'id',
+			'notification_type',
+			'title',
+			'message',
+			'related_type',
+			'related_id',
+			'is_read',
+			'read_at',
+			'created_at',
+		]
