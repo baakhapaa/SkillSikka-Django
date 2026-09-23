@@ -88,6 +88,13 @@ from .api_views import (
 	NotificationUnreadCountAPIView,
 	NotificationMarkReadAPIView,
 	NotificationMarkAllReadAPIView,
+	AIAskAPIView,
+	AIAssistAPIView,
+	AIActivityGenerateAPIView,
+	AIActivityPendingReviewAPIView,
+	AIActivityDetailAPIView,
+	AIActivityReviewAPIView,
+	AIRecommendationAPIView,
 )
 
 
@@ -694,5 +701,51 @@ urlpatterns = [
 		'notifications/mark-all-read/',
 		NotificationMarkAllReadAPIView.as_view(),
 		name='notification-mark-all-read',
+	),
+
+	# =========================
+	# AI Assistant
+	# =========================
+
+	path(
+		'ai/ask/',
+		AIAskAPIView.as_view(),
+		name='ai-ask',
+	),
+
+	path(
+		'ai/assist/',
+		AIAssistAPIView.as_view(),
+		name='ai-assist',
+	),
+
+	path(
+		'ai/activities/generate/',
+		AIActivityGenerateAPIView.as_view(),
+		name='ai-activity-generate',
+	),
+
+	path(
+		'ai/activities/pending-review/',
+		AIActivityPendingReviewAPIView.as_view(),
+		name='ai-activity-pending-review',
+	),
+
+	path(
+		'ai/activities/<int:activity_id>/',
+		AIActivityDetailAPIView.as_view(),
+		name='ai-activity-detail',
+	),
+
+	path(
+		'ai/activities/<int:activity_id>/review/',
+		AIActivityReviewAPIView.as_view(),
+		name='ai-activity-review',
+	),
+
+	path(
+		'ai/recommendations/',
+		AIRecommendationAPIView.as_view(),
+		name='ai-recommendations',
 	),
 ]

@@ -1133,74 +1133,129 @@ class EBook(models.Model):
 
 
 class Notification(models.Model):
-    TYPE_COURSE_UPDATE = 'course_update'
-    TYPE_ASSESSMENT_RESULT = 'assessment_result'
-    TYPE_PAYMENT = 'payment'
-    TYPE_CERTIFICATE = 'certificate'
-    TYPE_CHALLENGE = 'challenge'
-    TYPE_SYSTEM = 'system'
+	TYPE_COURSE_UPDATE = 'course_update'
+	TYPE_ASSESSMENT_RESULT = 'assessment_result'
+	TYPE_PAYMENT = 'payment'
+	TYPE_CERTIFICATE = 'certificate'
+	TYPE_CHALLENGE = 'challenge'
+	TYPE_SYSTEM = 'system'
 
-    TYPE_CHOICES = [
-        (TYPE_COURSE_UPDATE, 'Course Update'),
-        (TYPE_ASSESSMENT_RESULT, 'Assessment Result'),
-        (TYPE_PAYMENT, 'Payment Confirmation'),
-        (TYPE_CERTIFICATE, 'Certificate'),
-        (TYPE_CHALLENGE, 'Challenge'),
-        (TYPE_SYSTEM, 'System'),
-    ]
+	TYPE_CHOICES = [
+		(TYPE_COURSE_UPDATE, 'Course Update'),
+		(TYPE_ASSESSMENT_RESULT, 'Assessment Result'),
+		(TYPE_PAYMENT, 'Payment Confirmation'),
+		(TYPE_CERTIFICATE, 'Certificate'),
+		(TYPE_CHALLENGE, 'Challenge'),
+		(TYPE_SYSTEM, 'System'),
+	]
 
-    recipient = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='notifications'
-    )
+	recipient = models.ForeignKey(
+		User,
+		on_delete=models.CASCADE,
+		related_name='notifications'
+	)
 
-    notification_type = models.CharField(
-        max_length=30,
-        choices=TYPE_CHOICES,
-        default=TYPE_SYSTEM
-    )
+	notification_type = models.CharField(
+		max_length=30,
+		choices=TYPE_CHOICES,
+		default=TYPE_SYSTEM
+	)
 
-    title = models.CharField(
-        max_length=255
-    )
+	title = models.CharField(
+		max_length=255
+	)
 
-    message = models.TextField()
+	message = models.TextField()
 
-    related_type = models.CharField(
-        max_length=50,
-        blank=True
-    )
+	related_type = models.CharField(
+		max_length=50,
+		blank=True
+	)
 
-    related_id = models.PositiveBigIntegerField(
-        null=True,
-        blank=True
-    )
+	related_id = models.PositiveBigIntegerField(
+		null=True,
+		blank=True
+	)
 
-    is_read = models.BooleanField(
-        default=False
-    )
+	is_read = models.BooleanField(
+		default=False
+	)
 
-    read_at = models.DateTimeField(
-        null=True,
-        blank=True
-    )
+	read_at = models.DateTimeField(
+		null=True,
+		blank=True
+	)
 
-    created_at = models.DateTimeField(
-        auto_now_add=True
-    )
+	created_at = models.DateTimeField(
+		auto_now_add=True
+	)
 
-    class Meta:
-        db_table = 'notifications'
-        ordering = ['-created_at']
-        indexes = [
-            models.Index(
-                fields=['recipient', 'is_read']
-            ),
-            models.Index(
-                fields=['recipient', '-created_at']
-            ),
-        ]
+	class Meta:
+		db_table = 'notifications'
+		ordering = ['-created_at']
+		indexes = [
+			models.Index(
+				fields=['recipient', 'is_read']
+			),
+			models.Index(
+				fields=['recipient', '-created_at']
+			),
+		]
 
-    def __str__(self):
-        return f'{self.recipient.email} - {self.title}'
+	def __str__(self):
+		return f'{self.recipient.email} - {self.title}'
+
+
+class AIActivity(models.Model):
+	ACTIVITY_TYPE_CHOICES = (
+		('practice_questions', 'Practice Questions'),
+		('crossword', 'Crossword'),
+		('challenge', 'Challenge'),
+	)
+
+	STATUS_CHOICES = (
+		('pending_review', 'Pending Review'),
+		('approved', 'Approved'),
+		('rejected', 'Rejected'),
+	)
+
+	generated_by = models.ForeignKey(
+		User,
+		on_delete=models.CASCADE,
+		related_name='generated_ai_activities'
+	)
+	activity_type = models.CharField(
+		max_length=30,
+		choices=ACTIVITY_TYPE_CHOICES
+	)
+	topic = models.CharField(max_length=255)
+	learning_context = models.TextField(blank=True)
+	difficulty = models.CharField(max_length=20, default='medium')
+	generated_content = models.JSONField()
+	status = models.CharField(
+		max_length=20,
+		choices=STATUS_CHOICES,
+		default='pending_review'
+	)
+	reviewed_by = models.ForeignKey(
+		User,
+		on_delete=models.SET_NULL,
+		null=True,
+		blank=True,
+		related_name='reviewed_ai_activities'
+	)
+	review_notes = models.TextField(blank=True)
+	reviewed_at = models.DateTimeField(null=True, blank=True)
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'ai_activities'
+		ordering = ['-created_at']
+
+	def __str__(self):
+		return (
+			f'{self.activity_type} - '
+			f'{self.topic} - '
+			f'{self.status}'
+		)
