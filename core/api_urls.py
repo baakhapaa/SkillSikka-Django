@@ -95,6 +95,8 @@ from .api_views import (
 	AIActivityDetailAPIView,
 	AIActivityReviewAPIView,
 	AIRecommendationAPIView,
+	MunicipalityDashboardAPIView,
+	MinistryDashboardAPIView,
 )
 
 
@@ -747,5 +749,21 @@ urlpatterns = [
 		'ai/recommendations/',
 		AIRecommendationAPIView.as_view(),
 		name='ai-recommendations',
+	),
+
+	# =========================
+	# Municipality / Ministry Dashboards
+	# =========================
+
+	path(
+		'municipality/dashboard/',
+		MunicipalityDashboardAPIView.as_view(),
+		name='api-municipality-dashboard',
+	),
+
+	path(
+		'ministry/dashboard/',
+		MinistryDashboardAPIView.as_view(),
+		name='api-ministry-dashboard',
 	),
 ]
