@@ -126,7 +126,27 @@ class RegistrationResponseMixin:
 
 	def post(self, request, *args, **kwargs):
 		serializer = self.serializer_class(data=request.data)
-		serializer.is_valid(raise_exception=True)
+
+		if not serializer.is_valid():
+			email_errors = serializer.errors.get('email', [])
+
+			if any(
+				getattr(error, 'code', None) == 'EMAIL_ALREADY_REGISTERED'
+				for error in email_errors
+			):
+				return Response(
+					{
+						'code': 'EMAIL_ALREADY_REGISTERED',
+						'message': 'A user with this email already exists.',
+						'errors': serializer.errors,
+					},
+					status=status.HTTP_400_BAD_REQUEST,
+				)
+
+			return Response(
+				serializer.errors,
+				status=status.HTTP_400_BAD_REQUEST,
+			)
 
 		user = serializer.save()
 		refresh = RefreshToken.for_user(user)

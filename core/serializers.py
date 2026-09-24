@@ -4,6 +4,8 @@ import secrets
 
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.files.storage import default_storage
 from django.core.mail import send_mail
 from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
@@ -126,7 +128,7 @@ class RegistrationSerializer(serializers.Serializer):
 	password = serializers.CharField(write_only=True, min_length=8)
 	confirm_password = serializers.CharField(write_only=True, min_length=8)
 	name = serializers.CharField(max_length=150)
-	gender = serializers.CharField(max_length=10)
+	gender = serializers.ChoiceField(choices=['male', 'female', 'other'])
 	dob = serializers.DateField(input_formats=['%d/%m/%Y', '%Y-%m-%d'])
 	phone_country_code = serializers.CharField(max_length=8)
 	phone_number = serializers.CharField(max_length=30)
@@ -138,14 +140,47 @@ class RegistrationSerializer(serializers.Serializer):
 		write_only=True
 	)
 
+	def validate_profile_photo(self, uploaded_file):
+		allowed_extensions = {'.jpg', '.jpeg', '.png'}
+		allowed_content_types = {'image/jpeg', 'image/png'}
+		max_size = 5 * 1024 * 1024
+
+		extension = Path(uploaded_file.name).suffix.lower()
+
+		if extension not in allowed_extensions:
+			raise serializers.ValidationError(
+				'Profile photo must be a JPG, JPEG, or PNG file.'
+			)
+
+		content_type = getattr(uploaded_file, 'content_type', None)
+		if content_type and content_type not in allowed_content_types:
+			raise serializers.ValidationError(
+				'Profile photo must be a JPG, JPEG, or PNG image.'
+			)
+
+		if uploaded_file.size > max_size:
+			raise serializers.ValidationError(
+				'Profile photo must not exceed 5 MB.'
+			)
+
+		return uploaded_file
+
 	def validate_email(self, value):
 		value = value.strip().lower()
 
 		if User.objects.filter(email__iexact=value).exists():
 			raise serializers.ValidationError(
-				'A user with this email already exists.'
+				'A user with this email already exists.',
+				code='EMAIL_ALREADY_REGISTERED',
 			)
 
+		return value
+
+	def validate_password(self, value):
+		try:
+			validate_password(value)
+		except DjangoValidationError as exc:
+			raise serializers.ValidationError(list(exc.messages))
 		return value
 
 	def validate(self, attrs):
@@ -181,7 +216,9 @@ class RegistrationSerializer(serializers.Serializer):
 		user.set_password(password)
 		user.role = user_role(role_name)
 		user.onboarding_completed = onboarding_completed
-		user.verification_status = 'pending'
+		user.verification_status = (
+			'pending' if role_name == 'instructor' else 'not_applicable'
+		)
 		user.save()
 
 		if profile_photo:
@@ -199,11 +236,44 @@ class RegistrationSerializer(serializers.Serializer):
 
 
 class StudentRegistrationSerializer(RegistrationSerializer):
+	phone_country_code = serializers.CharField(max_length=8, required=False, allow_blank=True)
+	phone_number = serializers.CharField(max_length=30, required=False, allow_blank=True)
+	location = serializers.CharField(max_length=255, required=False, allow_blank=True)
+
 	student_id_card = serializers.FileField(
 		required=False,
 		allow_null=True,
 		write_only=True
 	)
+
+	def validate_student_id_card(self, uploaded_file):
+		allowed_extensions = {'.jpg', '.jpeg', '.png', '.pdf'}
+		allowed_content_types = {
+			'image/jpeg',
+			'image/png',
+			'application/pdf',
+		}
+		max_size = 10 * 1024 * 1024
+
+		extension = Path(uploaded_file.name).suffix.lower()
+
+		if extension not in allowed_extensions:
+			raise serializers.ValidationError(
+				'Student ID card must be a JPG, JPEG, PNG, or PDF file.'
+			)
+
+		content_type = getattr(uploaded_file, 'content_type', None)
+		if content_type and content_type not in allowed_content_types:
+			raise serializers.ValidationError(
+				'Student ID card must be a JPG, JPEG, PNG, or PDF file.'
+			)
+
+		if uploaded_file.size > max_size:
+			raise serializers.ValidationError(
+				'Student ID card must not exceed 10 MB.'
+			)
+
+		return uploaded_file
 
 	@transaction.atomic
 	def create(self, validated_data):
@@ -361,6 +431,10 @@ class InstructorRegistrationSerializer(RegistrationSerializer):
 
 
 class CompleteStudentProfileSerializer(serializers.Serializer):
+	phone_country_code = serializers.CharField(max_length=8)
+	phone_number = serializers.CharField(max_length=30)
+	location = serializers.CharField(max_length=255)
+
 	grade_id = serializers.PrimaryKeyRelatedField(
 		queryset=Grade.objects.all(),
 		source='grade'
@@ -411,8 +485,17 @@ class CompleteStudentProfileSerializer(serializers.Serializer):
 			'grade', 'province', 'district', 'municipality', 'school'
 		])
 
+		user.phone_country_code = self.validated_data['phone_country_code']
+		user.phone_number = self.validated_data['phone_number']
+		user.location = self.validated_data['location']
 		user.onboarding_completed = True
-		user.save(update_fields=['onboarding_completed', 'updated_at'])
+		user.save(update_fields=[
+			'phone_country_code',
+			'phone_number',
+			'location',
+			'onboarding_completed',
+			'updated_at',
+		])
 
 		return profile
 
