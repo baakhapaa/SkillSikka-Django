@@ -598,7 +598,34 @@ def _check_and_award_badges(student):
 			if created:
 				awarded.append(badge)
 
+				_notify(
+					recipient=student,
+					notification_type='course_update',
+					title='New badge earned!',
+					message=f'You earned the "{badge.name}" badge.',
+					related_type='badge',
+					related_id=badge.id,
+				)
+
 	return awarded
+
+
+def _notify(
+	recipient,
+	notification_type,
+	title,
+	message,
+	related_type='',
+	related_id=None,
+):
+	Notification.objects.create(
+		recipient=recipient,
+		notification_type=notification_type,
+		title=title,
+		message=message,
+		related_type=related_type,
+		related_id=related_id,
+	)
 
 
 # =========================================================
@@ -1271,6 +1298,25 @@ class VerifyPaymentAPIView(APIView):
 		serializer.is_valid(raise_exception=True)
 		payment = serializer.save()
 
+		if payment.status == 'successful':
+			_notify(
+				recipient=payment.student,
+				notification_type='payment',
+				title='Payment successful',
+				message=f'Your payment for "{payment.course.title}" was successful.',
+				related_type='payment',
+				related_id=payment.id,
+			)
+		else:
+			_notify(
+				recipient=payment.student,
+				notification_type='payment',
+				title='Payment failed',
+				message=f'Your payment for "{payment.course.title}" failed. Please try again.',
+				related_type='payment',
+				related_id=payment.id,
+			)
+
 		return Response(PaymentSerializer(payment).data, status=status.HTTP_200_OK)
 
 
@@ -1928,6 +1974,19 @@ class ReviewChallengeSubmissionAPIView(APIView):
 			'reviewed_by',
 		).get(pk=participant.pk)
 
+		_notify(
+			recipient=participant.student,
+			notification_type='challenge',
+			title=(
+				'Challenge submission approved'
+				if participant.status == 'approved'
+				else 'Challenge submission rejected'
+			),
+			message=f'Your submission for "{participant.challenge.title}" was {participant.status}.',
+			related_type='challenge',
+			related_id=participant.challenge_id,
+		)
+
 		return Response(
 			ChallengeParticipantSerializer(participant).data,
 			status=status.HTTP_200_OK,
@@ -1998,6 +2057,16 @@ class SetChallengeWinnersAPIView(APIView):
 			'student',
 			'reviewed_by',
 		)
+
+		for winner in winners:
+			_notify(
+				recipient=winner.student,
+				notification_type='challenge',
+				title='You won a challenge!',
+				message=f'You were named a winner of "{challenge.title}".',
+				related_type='challenge',
+				related_id=challenge.id,
+			)
 
 		return Response(
 			ChallengeParticipantSerializer(winners, many=True).data,
@@ -4187,6 +4256,19 @@ class AIActivityReviewAPIView(APIView):
 			pk=activity.pk
 		)
 
+		_notify(
+			recipient=activity.generated_by,
+			notification_type='system',
+			title=(
+				'AI activity approved'
+				if activity.status == 'approved'
+				else 'AI activity rejected'
+			),
+			message=f'Your generated "{activity.topic}" activity was {activity.status}.',
+			related_type='ai_activity',
+			related_id=activity.id,
+		)
+
 		return Response(
 			_serialize_ai_activity(activity),
 			status=status.HTTP_200_OK
@@ -6235,6 +6317,21 @@ class SuperAdminUserStatusAPIView(
 			}
 		)
 
+		_notify(
+			recipient=target_user,
+			notification_type='system',
+			title=(
+				'Account activated'
+				if is_active
+				else 'Account deactivated'
+			),
+			message=(
+				'Your account has been activated.'
+				if is_active
+				else 'Your account has been deactivated. Contact support if this is unexpected.'
+			),
+		)
+
 		return Response(
 			{
 				'detail': (
@@ -6347,6 +6444,13 @@ class SuperAdminUserRoleAPIView(
 				'previous_role': old_role,
 				'new_role': role.name,
 			}
+		)
+
+		_notify(
+			recipient=target_user,
+			notification_type='system',
+			title='Your role has changed',
+			message=f'Your account role was changed to "{role.name}".',
 		)
 
 		return Response(
@@ -6469,6 +6573,13 @@ class SuperAdminInstructorVerificationAPIView(
 				'new_status':
 					verification_status,
 			}
+		)
+
+		_notify(
+			recipient=instructor,
+			notification_type='verification_change',
+			title=f'Verification status: {verification_status}',
+			message=f'Your instructor verification status is now "{verification_status}".',
 		)
 
 		return Response(
