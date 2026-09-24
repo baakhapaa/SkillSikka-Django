@@ -314,3 +314,15 @@ SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
 }
+
+# API throttling configuration
+
+REST_FRAMEWORK['DEFAULT_THROTTLE_CLASSES'] = (
+    'rest_framework.throttling.AnonRateThrottle',
+    'rest_framework.throttling.UserRateThrottle',
+)
+
+REST_FRAMEWORK['DEFAULT_THROTTLE_RATES'] = {
+    'anon': '20/minute',
+    'user': '120/minute',
+}
