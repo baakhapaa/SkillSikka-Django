@@ -97,6 +97,16 @@ from .api_views import (
 	AIRecommendationAPIView,
 	MunicipalityDashboardAPIView,
 	MinistryDashboardAPIView,
+	SuperAdminUserListAPIView,
+	SuperAdminUserDetailAPIView,
+	SuperAdminUserStatusAPIView,
+	SuperAdminUserRoleAPIView,
+	SuperAdminInstructorVerificationAPIView,
+	SuperAdminPermissionListAPIView,
+	SuperAdminRolePermissionListAPIView,
+	SuperAdminRolePermissionDetailAPIView,
+	SuperAdminAuditLogListAPIView,
+	SuperAdminAuditLogDetailAPIView,
 )
 
 
@@ -765,5 +775,73 @@ urlpatterns = [
 		'ministry/dashboard/',
 		MinistryDashboardAPIView.as_view(),
 		name='api-ministry-dashboard',
+	),
+
+	# =========================
+	# Super Admin - User Management
+	# =========================
+
+	path(
+		'admin/users/',
+		SuperAdminUserListAPIView.as_view(),
+		name='api-admin-users'
+	),
+
+	path(
+		'admin/users/<int:user_id>/',
+		SuperAdminUserDetailAPIView.as_view(),
+		name='api-admin-user-detail'
+	),
+
+	path(
+		'admin/users/<int:user_id>/status/',
+		SuperAdminUserStatusAPIView.as_view(),
+		name='api-admin-user-status'
+	),
+
+	path(
+		'admin/users/<int:user_id>/role/',
+		SuperAdminUserRoleAPIView.as_view(),
+		name='api-admin-user-role'
+	),
+
+	path(
+		'admin/instructors/<int:user_id>/verification/',
+		SuperAdminInstructorVerificationAPIView.as_view(),
+		name='api-admin-instructor-verification'
+	),
+
+	# =========================
+	# Super Admin - Role & Permission Management
+	# =========================
+
+	path(
+		'admin/permissions/',
+		SuperAdminPermissionListAPIView.as_view(),
+		name='api-admin-permissions'
+	),
+
+	path(
+		'admin/roles/',
+		SuperAdminRolePermissionListAPIView.as_view(),
+		name='api-admin-roles'
+	),
+
+	path(
+		'admin/roles/<int:role_id>/permissions/',
+		SuperAdminRolePermissionDetailAPIView.as_view(),
+		name='api-admin-role-permissions'
+	),
+
+	path(
+		'admin/audit-logs/',
+		SuperAdminAuditLogListAPIView.as_view(),
+		name='api-admin-audit-logs'
+	),
+
+	path(
+		'admin/audit-logs/<int:audit_log_id>/',
+		SuperAdminAuditLogDetailAPIView.as_view(),
+		name='api-admin-audit-log-detail'
 	),
 ]
