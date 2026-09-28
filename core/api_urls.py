@@ -66,6 +66,9 @@ from .api_views import (
 	StartQuizAttemptAPIView,
 	StreakLeaderboardAPIView,
 	StudentPointsAPIView,
+	MyRedemptionListAPIView,
+	RedeemRewardAPIView,
+	RewardListAPIView,
 	StudentQuizAttemptHistoryAPIView,
 	StudentQuizDetailAPIView,
 	StudentRegistrationAPIView,
@@ -844,4 +847,27 @@ urlpatterns = [
 		SuperAdminAuditLogDetailAPIView.as_view(),
 		name='api-admin-audit-log-detail'
 	),
+
+        # =========================
+        # Rewards & Redemption
+        # =========================
+
+        path(
+                'rewards/',
+                RewardListAPIView.as_view(),
+                name='api-rewards'
+        ),
+
+        path(
+                'rewards/redeem/',
+                RedeemRewardAPIView.as_view(),
+                name='api-redeem-reward'
+        ),
+
+        path(
+                'redemptions/',
+                MyRedemptionListAPIView.as_view(),
+                name='api-my-redemptions'
+        ),
+
 ]

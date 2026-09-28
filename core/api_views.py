@@ -49,6 +49,8 @@ from .models import (
 	Topic,
 	User,
 	PointTransaction,
+	Redemption,
+	Reward,
 	Short,
 	ShortComment,
 	ShortLike,
@@ -108,6 +110,8 @@ from .serializers import (
 	VerifyPaymentSerializer,
 	PointsLeaderboardEntrySerializer,
 	PointTransactionSerializer,
+	RedemptionSerializer,
+	RewardSerializer,
 	ShortCommentSerializer,
 	ShortLikeSerializer,
 	ShortSerializer,
@@ -7098,3 +7102,210 @@ class SuperAdminAuditLogDetailAPIView(
 			},
 			status=status.HTTP_200_OK
 		)
+
+
+# =========================================================
+# Rewards & Redemption
+# =========================================================
+
+
+class RewardListAPIView(APIView):
+        authentication_classes = [JWTAuthentication]
+        permission_classes = [IsAuthenticated]
+
+        def get(self, request):
+                if _role_name(request.user) != 'student':
+                        return Response(
+                                {
+                                        'detail':
+                                                'Only students can access rewards.'
+                                },
+                                status=status.HTTP_403_FORBIDDEN
+                        )
+
+                rewards = (
+                        Reward.objects
+                        .filter(is_active=True)
+                        .order_by('points_required', 'name')
+                )
+
+                return Response(
+                        RewardSerializer(
+                                rewards,
+                                many=True
+                        ).data,
+                        status=status.HTTP_200_OK
+                )
+
+
+class RedeemRewardAPIView(APIView):
+        authentication_classes = [JWTAuthentication]
+        permission_classes = [IsAuthenticated]
+
+        def post(self, request):
+                user = request.user
+
+                if _role_name(user) != 'student':
+                        return Response(
+                                {
+                                        'detail':
+                                                'Only students can redeem rewards.'
+                                },
+                                status=status.HTTP_403_FORBIDDEN
+                        )
+
+                reward_id = request.data.get('reward_id')
+
+                if not reward_id:
+                        return Response(
+                                {
+                                        'reward_id':
+                                                ['This field is required.']
+                                },
+                                status=status.HTTP_400_BAD_REQUEST
+                        )
+
+                try:
+                        reward_id = int(reward_id)
+                except (TypeError, ValueError):
+                        return Response(
+                                {
+                                        'reward_id':
+                                                ['A valid reward ID is required.']
+                                },
+                                status=status.HTTP_400_BAD_REQUEST
+                        )
+
+                with transaction.atomic():
+                        try:
+                                reward = (
+                                        Reward.objects
+                                        .select_for_update()
+                                        .get(
+                                                id=reward_id,
+                                                is_active=True
+                                        )
+                                )
+                        except Reward.DoesNotExist:
+                                return Response(
+                                        {
+                                                'detail':
+                                                        'Reward not found or inactive.'
+                                        },
+                                        status=status.HTTP_404_NOT_FOUND
+                                )
+
+                        if reward.stock is not None and reward.stock <= 0:
+                                return Response(
+                                        {
+                                                'detail':
+                                                        'This reward is out of stock.'
+                                        },
+                                        status=status.HTTP_400_BAD_REQUEST
+                                )
+
+                        # Lock the student row so concurrent redemption
+                        # requests for the same student are serialized.
+                        User.objects.select_for_update().get(pk=user.pk)
+
+                        current_points = (
+                                PointTransaction.objects
+                                .filter(student=user)
+                                .aggregate(total=Sum('points'))['total']
+                                or 0
+                        )
+
+                        if current_points < reward.points_required:
+                                return Response(
+                                        {
+                                                'detail':
+                                                        'Insufficient points.',
+                                                'current_points':
+                                                        current_points,
+                                                'required_points':
+                                                        reward.points_required,
+                                        },
+                                        status=status.HTTP_400_BAD_REQUEST
+                                )
+
+                        point_transaction = (
+                                PointTransaction.objects.create(
+                                        student=user,
+                                        points=-reward.points_required,
+                                        event_type='reward_redemption',
+                                        description=(
+                                                f'Redeemed reward: {reward.name}'
+                                        ),
+                                )
+                        )
+
+                        redemption = Redemption.objects.create(
+                                student=user,
+                                reward=reward,
+                                points_spent=reward.points_required,
+                                status='pending',
+                                point_transaction=point_transaction,
+                        )
+
+                        if reward.stock is not None:
+                                reward.stock -= 1
+                                reward.save(
+                                        update_fields=[
+                                                'stock',
+                                                'updated_at'
+                                        ]
+                                )
+
+                        remaining_points = (
+                                current_points -
+                                reward.points_required
+                        )
+
+                return Response(
+                        {
+                                'detail':
+                                        'Reward redeemed successfully.',
+                                'remaining_points':
+                                        remaining_points,
+                                'redemption':
+                                        RedemptionSerializer(
+                                                redemption
+                                        ).data,
+                        },
+                        status=status.HTTP_201_CREATED
+                )
+
+
+class MyRedemptionListAPIView(APIView):
+        authentication_classes = [JWTAuthentication]
+        permission_classes = [IsAuthenticated]
+
+        def get(self, request):
+                user = request.user
+
+                if _role_name(user) != 'student':
+                        return Response(
+                                {
+                                        'detail':
+                                                'Only students can access redemption history.'
+                                },
+                                status=status.HTTP_403_FORBIDDEN
+                        )
+
+                redemptions = (
+                        Redemption.objects
+                        .filter(student=user)
+                        .select_related(
+                                'reward',
+                                'point_transaction'
+                        )
+                        .order_by('-created_at')
+                )
+
+                return Response(
+                        RedemptionSerializer(
+                                redemptions,
+                                many=True
+                        ).data,
+                        status=status.HTTP_200_OK
+                )
