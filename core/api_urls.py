@@ -36,6 +36,7 @@ from .api_views import (
 	ForgotPasswordAPIView,
 	GradeListAPIView,
 	InitiatePaymentAPIView,
+	InstructorCompleteProfileAPIView,
 	InstructorQuizResultsAPIView,
 	InstructorRegistrationAPIView,
 	JoinChallengeAPIView,
@@ -157,6 +158,12 @@ urlpatterns = [
 		'me/complete-profile/',
 		CompleteStudentProfileAPIView.as_view(),
 		name='api-complete-student-profile'
+	),
+
+	path(
+		'instructor/complete-profile/',
+		InstructorCompleteProfileAPIView.as_view(),
+		name='api-instructor-complete-profile'
 	),
 
 	path(

@@ -389,12 +389,14 @@ class InstructorProfile(models.Model):
 		related_name='instructor_profiles'
 	)
 
-	qualification = models.CharField(max_length=255)
-	subject_expertise = models.TextField()
+	qualification = models.CharField(max_length=255, blank=True, default='')
+	subject_expertise = models.TextField(blank=True, default='')
 
 	experience_years = models.DecimalField(
 		max_digits=5,
-		decimal_places=2
+		decimal_places=2,
+		null=True,
+		blank=True,
 	)
 
 	cv_resume_document = models.ForeignKey(

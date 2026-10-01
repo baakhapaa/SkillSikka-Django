@@ -314,19 +314,48 @@ class StudentRegistrationSerializer(RegistrationSerializer):
 
 
 class InstructorRegistrationSerializer(RegistrationSerializer):
+	# Overrides the base RegistrationSerializer's required phone/location —
+	# deferred to InstructorCompleteProfileSerializer, same pattern as A1.
+	phone_country_code = serializers.CharField(
+		max_length=8,
+		required=False,
+		allow_blank=True,
+		default=''
+	)
+
+	phone_number = serializers.CharField(
+		max_length=30,
+		required=False,
+		allow_blank=True,
+		default=''
+	)
+
+	location = serializers.CharField(
+		max_length=255,
+		required=False,
+		allow_blank=True,
+		default=''
+	)
+
 	province_id = serializers.PrimaryKeyRelatedField(
 		queryset=Province.objects.all(),
-		source='province'
+		source='province',
+		required=False,
+		allow_null=True,
 	)
 
 	district_id = serializers.PrimaryKeyRelatedField(
 		queryset=District.objects.select_related('province').all(),
-		source='district'
+		source='district',
+		required=False,
+		allow_null=True,
 	)
 
 	municipality_id = serializers.PrimaryKeyRelatedField(
 		queryset=Municipality.objects.select_related('district').all(),
 		source='municipality',
+		required=False,
+		allow_null=True,
 	)
 
 	school_id = serializers.PrimaryKeyRelatedField(
@@ -338,13 +367,25 @@ class InstructorRegistrationSerializer(RegistrationSerializer):
 		allow_null=True,
 	)
 
-	qualification = serializers.CharField(max_length=255)
-	subject_expertise = serializers.CharField()
+	qualification = serializers.CharField(
+		max_length=255,
+		required=False,
+		allow_blank=True,
+		default=''
+	)
+
+	subject_expertise = serializers.CharField(
+		required=False,
+		allow_blank=True,
+		default=''
+	)
 
 	experience_years = serializers.DecimalField(
 		max_digits=5,
 		decimal_places=2,
-		min_value=0
+		min_value=0,
+		required=False,
+		allow_null=True,
 	)
 
 	cv_resume = serializers.FileField(
@@ -362,12 +403,15 @@ class InstructorRegistrationSerializer(RegistrationSerializer):
 	def validate(self, attrs):
 		attrs = super().validate(attrs)
 
-		_validate_location_chain(
-			attrs.get('province'),
-			attrs.get('district'),
-			attrs.get('municipality'),
-			attrs.get('school'),
-		)
+		# Only enforce the chain if the instructor supplied any part of it —
+		# it's deferred entirely to complete-profile otherwise.
+		if attrs.get('province') or attrs.get('district'):
+			_validate_location_chain(
+				attrs.get('province'),
+				attrs.get('district'),
+				attrs.get('municipality'),
+				attrs.get('school'),
+			)
 
 		return attrs
 
@@ -380,12 +424,12 @@ class InstructorRegistrationSerializer(RegistrationSerializer):
 			[]
 		)
 
-		qualification = validated_data.pop('qualification')
-		subject_expertise = validated_data.pop('subject_expertise')
-		experience_years = validated_data.pop('experience_years')
-		province = validated_data.pop('province')
-		district = validated_data.pop('district')
-		municipality = validated_data.pop('municipality')
+		qualification = validated_data.pop('qualification', '')
+		subject_expertise = validated_data.pop('subject_expertise', '')
+		experience_years = validated_data.pop('experience_years', None)
+		province = validated_data.pop('province', None)
+		district = validated_data.pop('district', None)
+		municipality = validated_data.pop('municipality', None)
 		school = validated_data.pop('school', None)
 
 		user = self._create_user(
@@ -495,6 +539,80 @@ class CompleteStudentProfileSerializer(serializers.Serializer):
 			'location',
 			'onboarding_completed',
 			'updated_at',
+		])
+
+		return profile
+
+
+class InstructorCompleteProfileSerializer(serializers.Serializer):
+	phone_country_code = serializers.CharField(max_length=8)
+	phone_number = serializers.CharField(max_length=30)
+	location = serializers.CharField(max_length=255)
+
+	province_id = serializers.PrimaryKeyRelatedField(
+		queryset=Province.objects.all(),
+		source='province'
+	)
+
+	district_id = serializers.PrimaryKeyRelatedField(
+		queryset=District.objects.select_related('province').all(),
+		source='district'
+	)
+
+	municipality_id = serializers.PrimaryKeyRelatedField(
+		queryset=Municipality.objects.select_related('district').all(),
+		source='municipality'
+	)
+
+	school_id = serializers.PrimaryKeyRelatedField(
+		queryset=School.objects.select_related(
+			'municipality__district'
+		).all(),
+		source='school',
+		required=False,
+		allow_null=True,
+	)
+
+	qualification = serializers.CharField(max_length=255)
+	subject_expertise = serializers.CharField()
+
+	experience_years = serializers.DecimalField(
+		max_digits=5,
+		decimal_places=2,
+		min_value=0
+	)
+
+	def validate(self, attrs):
+		_validate_location_chain(
+			attrs.get('province'),
+			attrs.get('district'),
+			attrs.get('municipality'),
+			attrs.get('school'),
+		)
+
+		return attrs
+
+	def save(self):
+		user = self.context['request'].user
+		profile = user.instructor_profile
+
+		profile.province = self.validated_data['province']
+		profile.district = self.validated_data['district']
+		profile.municipality = self.validated_data['municipality']
+		profile.school = self.validated_data.get('school')
+		profile.qualification = self.validated_data['qualification']
+		profile.subject_expertise = self.validated_data['subject_expertise']
+		profile.experience_years = self.validated_data['experience_years']
+		profile.save(update_fields=[
+			'province', 'district', 'municipality', 'school',
+			'qualification', 'subject_expertise', 'experience_years',
+		])
+
+		user.phone_country_code = self.validated_data['phone_country_code']
+		user.phone_number = self.validated_data['phone_number']
+		user.location = self.validated_data['location']
+		user.save(update_fields=[
+			'phone_country_code', 'phone_number', 'location', 'updated_at'
 		])
 
 		return profile

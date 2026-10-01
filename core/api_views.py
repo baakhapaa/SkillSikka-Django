@@ -82,6 +82,7 @@ from .serializers import (
 	ForgotPasswordSerializer,
 	GradeSerializer,
 	InitiatePaymentSerializer,
+	InstructorCompleteProfileSerializer,
 	InstructorQuizResultSerializer,
 	InstructorRegistrationSerializer,
 	LeaderboardEntrySerializer,
@@ -1550,6 +1551,45 @@ class CompleteStudentProfileAPIView(APIView):
 				'district': profile.district_id,
 				'municipality': profile.municipality_id,
 				'school': profile.school_id,
+			},
+			status=status.HTTP_200_OK,
+		)
+
+
+# =========================================================
+# Complete Instructor Profile
+# =========================================================
+
+class InstructorCompleteProfileAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def post(self, request):
+		user = request.user
+
+		if not _is_instructor(user):
+			return Response(
+				{'detail': 'Only instructors can complete this profile step.'},
+				status=status.HTTP_403_FORBIDDEN,
+			)
+
+		serializer = InstructorCompleteProfileSerializer(
+			data=request.data,
+			context={'request': request},
+		)
+		serializer.is_valid(raise_exception=True)
+		profile = serializer.save()
+
+		return Response(
+			{
+				'detail': 'Profile completed successfully.',
+				'province': profile.province_id,
+				'district': profile.district_id,
+				'municipality': profile.municipality_id,
+				'school': profile.school_id,
+				'qualification': profile.qualification,
+				'subject_expertise': profile.subject_expertise,
+				'experience_years': str(profile.experience_years),
 			},
 			status=status.HTTP_200_OK,
 		)
