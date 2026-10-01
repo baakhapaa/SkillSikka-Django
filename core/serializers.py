@@ -33,6 +33,8 @@ from .models import (
 	PasswordResetOTP,
 	Payment,
 	PointTransaction,
+	Reward,
+	Redemption,
 	Province,
 	Question,
 	QuestionOption,
@@ -2084,3 +2086,68 @@ class NotificationSerializer(serializers.ModelSerializer):
 			'read_at',
 			'created_at',
 		]
+
+
+# =========================================================
+# Rewards & Redemption
+# =========================================================
+
+
+class RewardSerializer(serializers.ModelSerializer):
+        available = serializers.SerializerMethodField()
+
+        class Meta:
+                model = Reward
+                fields = [
+                        'id',
+                        'name',
+                        'description',
+                        'points_required',
+                        'stock',
+                        'is_active',
+                        'available',
+                        'created_at',
+                        'updated_at',
+                ]
+                read_only_fields = [
+                        'id',
+                        'created_at',
+                        'updated_at',
+                ]
+
+        def get_available(self, obj):
+                return (
+                        obj.is_active
+                        and (obj.stock is None or obj.stock > 0)
+                )
+
+
+class RedemptionSerializer(serializers.ModelSerializer):
+        reward = RewardSerializer(read_only=True)
+
+        reward_id = serializers.PrimaryKeyRelatedField(
+                source='reward',
+                queryset=Reward.objects.filter(is_active=True),
+                write_only=True
+        )
+
+        class Meta:
+                model = Redemption
+                fields = [
+                        'id',
+                        'reward',
+                        'reward_id',
+                        'points_spent',
+                        'status',
+                        'note',
+                        'created_at',
+                        'updated_at',
+                ]
+                read_only_fields = [
+                        'id',
+                        'points_spent',
+                        'status',
+                        'note',
+                        'created_at',
+                        'updated_at',
+                ]

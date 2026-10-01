@@ -777,6 +777,7 @@ class PointTransaction(models.Model):
 		('course_completion', 'Course Completion'),
 		('challenge_completion', 'Challenge Completion'),
 		('manual_adjustment', 'Manual Adjustment'),
+		('reward_redemption', 'Reward Redemption'),
 	]
 
 	student = models.ForeignKey(
@@ -1350,3 +1351,84 @@ class AuditLog(models.Model):
 	def __str__(self):
 		actor = self.actor.email if self.actor else 'System'
 		return f'{actor} - {self.action} - {self.target_type}'
+
+
+# =========================================================
+# Rewards & Redemption
+# =========================================================
+
+
+class Reward(models.Model):
+        name = models.CharField(max_length=150)
+        description = models.TextField(blank=True)
+        points_required = models.PositiveIntegerField()
+
+        stock = models.PositiveIntegerField(
+                null=True,
+                blank=True,
+                help_text='Leave empty for unlimited stock.'
+        )
+
+        is_active = models.BooleanField(default=True)
+
+        created_at = models.DateTimeField(auto_now_add=True)
+        updated_at = models.DateTimeField(auto_now=True)
+
+        class Meta:
+                db_table = 'rewards'
+                ordering = ['points_required', 'name']
+
+        def __str__(self):
+                return f'{self.name} - {self.points_required} points'
+
+
+class Redemption(models.Model):
+        STATUS_CHOICES = [
+                ('pending', 'Pending'),
+                ('approved', 'Approved'),
+                ('fulfilled', 'Fulfilled'),
+                ('rejected', 'Rejected'),
+                ('cancelled', 'Cancelled'),
+        ]
+
+        student = models.ForeignKey(
+                User,
+                on_delete=models.CASCADE,
+                related_name='redemptions'
+        )
+
+        reward = models.ForeignKey(
+                Reward,
+                on_delete=models.PROTECT,
+                related_name='redemptions'
+        )
+
+        points_spent = models.PositiveIntegerField()
+
+        status = models.CharField(
+                max_length=20,
+                choices=STATUS_CHOICES,
+                default='pending'
+        )
+
+        point_transaction = models.OneToOneField(
+                PointTransaction,
+                on_delete=models.PROTECT,
+                related_name='redemption'
+        )
+
+        note = models.TextField(blank=True)
+
+        created_at = models.DateTimeField(auto_now_add=True)
+        updated_at = models.DateTimeField(auto_now=True)
+
+        class Meta:
+                db_table = 'redemptions'
+                ordering = ['-created_at']
+
+        def __str__(self):
+                return (
+                        f'{self.student.email} - '
+                        f'{self.reward.name} - '
+                        f'{self.status}'
+                )
