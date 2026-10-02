@@ -498,7 +498,9 @@ class CompleteStudentProfileSerializer(serializers.Serializer):
 
 	municipality_id = serializers.PrimaryKeyRelatedField(
 		queryset=Municipality.objects.select_related('district').all(),
-		source='municipality'
+		source='municipality',
+		required=False,
+		allow_null=True,
 	)
 
 	school_id = serializers.PrimaryKeyRelatedField(
@@ -618,6 +620,60 @@ class InstructorCompleteProfileSerializer(serializers.Serializer):
 		])
 
 		return profile
+
+
+class CurrentUserUpdateSerializer(serializers.Serializer):
+	name = serializers.CharField(max_length=150, required=False)
+	email = serializers.EmailField(required=False)
+	gender = serializers.ChoiceField(
+		choices=['male', 'female', 'other'],
+		required=False,
+	)
+	dob = serializers.DateField(
+		input_formats=['%d/%m/%Y', '%Y-%m-%d'],
+		required=False,
+	)
+	phone_country_code = serializers.CharField(
+		max_length=8, required=False, allow_blank=True
+	)
+	phone_number = serializers.CharField(
+		max_length=30, required=False, allow_blank=True
+	)
+	location = serializers.CharField(
+		max_length=255, required=False, allow_blank=True
+	)
+
+	def validate_email(self, value):
+		value = value.strip().lower()
+		user = self.context['request'].user
+
+		if User.objects.filter(
+			email__iexact=value
+		).exclude(pk=user.pk).exists():
+			raise serializers.ValidationError(
+				'A user with this email already exists.',
+				code='EMAIL_ALREADY_REGISTERED',
+			)
+
+		return value
+
+	def save(self):
+		user = self.context['request'].user
+		updated_fields = []
+
+		for field in (
+			'name', 'email', 'gender', 'dob',
+			'phone_country_code', 'phone_number', 'location',
+		):
+			if field in self.validated_data:
+				setattr(user, field, self.validated_data[field])
+				updated_fields.append(field)
+
+		if updated_fields:
+			updated_fields.append('updated_at')
+			user.save(update_fields=updated_fields)
+
+		return user
 
 
 class LoginSerializer(serializers.Serializer):
@@ -2094,60 +2150,60 @@ class NotificationSerializer(serializers.ModelSerializer):
 
 
 class RewardSerializer(serializers.ModelSerializer):
-        available = serializers.SerializerMethodField()
+	available = serializers.SerializerMethodField()
 
-        class Meta:
-                model = Reward
-                fields = [
-                        'id',
-                        'name',
-                        'description',
-                        'points_required',
-                        'stock',
-                        'is_active',
-                        'available',
-                        'created_at',
-                        'updated_at',
-                ]
-                read_only_fields = [
-                        'id',
-                        'created_at',
-                        'updated_at',
-                ]
+	class Meta:
+		model = Reward
+		fields = [
+			'id',
+			'name',
+			'description',
+			'points_required',
+			'stock',
+			'is_active',
+			'available',
+			'created_at',
+			'updated_at',
+		]
+		read_only_fields = [
+			'id',
+			'created_at',
+			'updated_at',
+		]
 
-        def get_available(self, obj):
-                return (
-                        obj.is_active
-                        and (obj.stock is None or obj.stock > 0)
-                )
+	def get_available(self, obj):
+		return (
+			obj.is_active
+			and (obj.stock is None or obj.stock > 0)
+		)
 
 
 class RedemptionSerializer(serializers.ModelSerializer):
-        reward = RewardSerializer(read_only=True)
+	reward = RewardSerializer(read_only=True)
 
-        reward_id = serializers.PrimaryKeyRelatedField(
-                source='reward',
-                queryset=Reward.objects.filter(is_active=True),
-                write_only=True
-        )
+	reward_id = serializers.PrimaryKeyRelatedField(
+		source='reward',
+		queryset=Reward.objects.filter(is_active=True),
+		write_only=True
+	)
 
-        class Meta:
-                model = Redemption
-                fields = [
-                        'id',
-                        'reward',
-                        'reward_id',
-                        'points_spent',
-                        'status',
-                        'note',
-                        'created_at',
-                        'updated_at',
-                ]
-                read_only_fields = [
-                        'id',
-                        'points_spent',
-                        'status',
-                        'note',
-                        'created_at',
-                        'updated_at',
-                ]
+	class Meta:
+		model = Redemption
+		fields = [
+			'id',
+			'reward',
+			'reward_id',
+			'points_spent',
+			'status',
+			'note',
+			'created_at',
+			'updated_at',
+		]
+		read_only_fields = [
+			'id',
+			'points_spent',
+			'status',
+			'note',
+			'created_at',
+			'updated_at',
+		]
