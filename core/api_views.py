@@ -3,6 +3,14 @@ from django.utils import timezone
 from django.db import transaction
 from decimal import Decimal
 from django.db.models import Sum, Count, Avg
+from pathlib import PurePosixPath
+from urllib.parse import unquote, urlparse
+
+from django.conf import settings
+from django.core.exceptions import ObjectDoesNotExist
+from django.core.files.storage import default_storage
+from django.http import FileResponse
+from django.urls import reverse
 
 from rest_framework import generics, status
 from rest_framework.authentication import SessionAuthentication
@@ -48,6 +56,7 @@ from .models import (
 	Subject,
 	Topic,
 	User,
+	VerificationDocument,
 	PointTransaction,
 	Redemption,
 	Reward,
@@ -223,31 +232,121 @@ class LoginAPIView(APIView):
 		)
 
 
+def _related_or_none(user, attr):
+	try:
+		return getattr(user, attr)
+	except ObjectDoesNotExist:
+		return None
+
+
+def _document_url(request, document):
+	if document is None:
+		return None
+
+	return request.build_absolute_uri(
+		reverse('api-my-document', args=[document.pk])
+	)
+
+
+def _latest_document(user, document_type):
+	return user.verification_documents.filter(
+		document_type=document_type
+	).order_by('-uploaded_at', '-pk').first()
+
+
+def _current_user_payload(request, user):
+	student_profile = _related_or_none(user, 'student_profile')
+	instructor_profile = _related_or_none(user, 'instructor_profile')
+	profile = student_profile or instructor_profile
+
+	municipality_id = profile.municipality_id if profile else None
+	if municipality_id is None and profile and profile.school_id:
+		municipality_id = profile.school.municipality_id
+
+	student_id_card = None
+	if student_profile:
+		student_id_card = (
+			student_profile.student_id_card_document
+			or _latest_document(user, 'student_id_card')
+		)
+
+	cv_resume = None
+	certificates = []
+	experience_years = None
+	if instructor_profile:
+		cv_resume = (
+			instructor_profile.cv_resume_document
+			or _latest_document(user, 'cv_resume')
+		)
+		certificates = user.verification_documents.filter(
+			document_type='certificate'
+		).order_by('uploaded_at', 'pk')
+		if instructor_profile.experience_years is not None:
+			experience_years = int(round(instructor_profile.experience_years))
+
+	return {
+		'id': str(user.id),
+		'email': user.email,
+		'name': user.name,
+		'role': user.role.name if user.role else None,
+		'gender': user.gender,
+		'dob': user.dob,
+		'phone_country_code': user.phone_country_code,
+		'phone_number': user.phone_number,
+		'location': user.location,
+		'verification_status': user.verification_status,
+		'onboarding_completed': user.onboarding_completed,
+		'is_active': user.is_active,
+
+		'grade_id': student_profile.grade_id if student_profile else None,
+		'province_id': profile.province_id if profile else None,
+		'district_id': profile.district_id if profile else None,
+		'municipality_id': municipality_id,
+		'school_id': profile.school_id if profile else None,
+		'qualification': (
+			instructor_profile.qualification or None
+			if instructor_profile else None
+		),
+		'subject_expertise': (
+			instructor_profile.subject_expertise or None
+			if instructor_profile else None
+		),
+		'experience_years': experience_years,
+
+		'profile_photo_url': (
+			request.build_absolute_uri(user.profile_photo_url)
+			if user.profile_photo_url else None
+		),
+		'student_id_card_url': _document_url(request, student_id_card),
+		'cv_resume_url': _document_url(request, cv_resume),
+		'certificates_and_recommendations_urls': [
+			_document_url(request, document) for document in certificates
+		],
+	}
+
+
+def _storage_name(file_url):
+	# file_url holds default_storage.url(name); recover name from its path.
+	path = unquote(urlparse(file_url).path).lstrip('/')
+	media_prefix = (getattr(settings, 'MEDIA_URL', '') or '').strip('/')
+
+	if media_prefix and path.startswith(media_prefix + '/'):
+		path = path[len(media_prefix) + 1:]
+
+	return path
+
+
 class CurrentUserAPIView(APIView):
 	authentication_classes = [
 		JWTAuthentication,
 		SessionAuthentication,
 	]
 	permission_classes = [IsAuthenticated]
+	parser_classes = [JSONParser, MultiPartParser, FormParser]
 
 	def get(self, request):
-		user = request.user
-
 		return Response(
-			{
-				'id': str(user.id),
-				'email': user.email,
-				'name': user.name,
-				'role': user.role.name if user.role else None,
-				'gender': user.gender,
-				'dob': user.dob,
-				'phone_country_code': user.phone_country_code,
-				'phone_number': user.phone_number,
-				'location': user.location,
-				'verification_status': user.verification_status,
-				'onboarding_completed': user.onboarding_completed,
-				'is_active': user.is_active,
-			},
+			_current_user_payload(request, request.user),
 			status=status.HTTP_200_OK,
 		)
 
@@ -282,21 +381,35 @@ class CurrentUserAPIView(APIView):
 		user = serializer.save()
 
 		return Response(
-			{
-				'id': str(user.id),
-				'email': user.email,
-				'name': user.name,
-				'role': user.role.name if user.role else None,
-				'gender': user.gender,
-				'dob': user.dob,
-				'phone_country_code': user.phone_country_code,
-				'phone_number': user.phone_number,
-				'location': user.location,
-				'verification_status': user.verification_status,
-				'onboarding_completed': user.onboarding_completed,
-				'is_active': user.is_active,
-			},
+			_current_user_payload(request, user),
 			status=status.HTTP_200_OK,
+		)
+
+
+class MyDocumentAPIView(APIView):
+	authentication_classes = [
+		JWTAuthentication,
+		SessionAuthentication,
+	]
+	permission_classes = [IsAuthenticated]
+
+	def get(self, request, document_id):
+		document = VerificationDocument.objects.filter(
+			pk=document_id,
+			user=request.user,
+		).first()
+
+		if document is None:
+			raise NotFound('Document not found.')
+
+		name = _storage_name(document.file_url)
+
+		if not name or not default_storage.exists(name):
+			raise NotFound('Document file is missing.')
+
+		return FileResponse(
+			default_storage.open(name, 'rb'),
+			filename=PurePosixPath(name).name,
 		)
 
 
@@ -1647,7 +1760,7 @@ class InstructorCompleteProfileAPIView(APIView):
 				'school': profile.school_id,
 				'qualification': profile.qualification,
 				'subject_expertise': profile.subject_expertise,
-				'experience_years': str(profile.experience_years),
+				'experience_years': int(profile.experience_years),
 			},
 			status=status.HTTP_200_OK,
 		)
@@ -7403,3 +7516,4 @@ class MyRedemptionListAPIView(APIView):
 			).data,
 			status=status.HTTP_200_OK
 		)
+	

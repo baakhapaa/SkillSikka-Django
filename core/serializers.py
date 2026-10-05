@@ -125,6 +125,74 @@ def _validate_location_chain(province, district, municipality, school):
 			})
 
 
+def validate_profile_photo_file(uploaded_file):
+	allowed_extensions = {'.jpg', '.jpeg', '.png'}
+	allowed_content_types = {'image/jpeg', 'image/png'}
+	max_size = 5 * 1024 * 1024
+
+	extension = Path(uploaded_file.name).suffix.lower()
+
+	if extension not in allowed_extensions:
+		raise serializers.ValidationError(
+			'Profile photo must be a JPG, JPEG, or PNG file.'
+		)
+
+	content_type = getattr(uploaded_file, 'content_type', None)
+	if content_type and content_type not in allowed_content_types:
+		raise serializers.ValidationError(
+			'Profile photo must be a JPG, JPEG, or PNG image.'
+		)
+
+	if uploaded_file.size > max_size:
+		raise serializers.ValidationError(
+			'Profile photo must not exceed 5 MB.'
+		)
+
+	return uploaded_file
+
+
+def validate_student_id_card_file(uploaded_file):
+	allowed_extensions = {'.jpg', '.jpeg', '.png', '.pdf'}
+	allowed_content_types = {
+		'image/jpeg',
+		'image/png',
+		'application/pdf',
+	}
+	max_size = 10 * 1024 * 1024
+
+	extension = Path(uploaded_file.name).suffix.lower()
+
+	if extension not in allowed_extensions:
+		raise serializers.ValidationError(
+			'Student ID card must be a JPG, JPEG, PNG, or PDF file.'
+		)
+
+	content_type = getattr(uploaded_file, 'content_type', None)
+	if content_type and content_type not in allowed_content_types:
+		raise serializers.ValidationError(
+			'Student ID card must be a JPG, JPEG, PNG, or PDF file.'
+		)
+
+	if uploaded_file.size > max_size:
+		raise serializers.ValidationError(
+			'Student ID card must not exceed 10 MB.'
+		)
+
+	return uploaded_file
+
+
+def save_upload(uploaded_file, folder, user_id):
+	filename = (
+		f'{folder}/{user_id}/'
+		f'{slugify(Path(uploaded_file.name).stem)}'
+		f'{Path(uploaded_file.name).suffix.lower()}'
+	)
+
+	return default_storage.url(
+		default_storage.save(filename, uploaded_file)
+	)
+
+
 class RegistrationSerializer(serializers.Serializer):
 	email = serializers.EmailField()
 	password = serializers.CharField(write_only=True, min_length=8)
@@ -143,29 +211,7 @@ class RegistrationSerializer(serializers.Serializer):
 	)
 
 	def validate_profile_photo(self, uploaded_file):
-		allowed_extensions = {'.jpg', '.jpeg', '.png'}
-		allowed_content_types = {'image/jpeg', 'image/png'}
-		max_size = 5 * 1024 * 1024
-
-		extension = Path(uploaded_file.name).suffix.lower()
-
-		if extension not in allowed_extensions:
-			raise serializers.ValidationError(
-				'Profile photo must be a JPG, JPEG, or PNG file.'
-			)
-
-		content_type = getattr(uploaded_file, 'content_type', None)
-		if content_type and content_type not in allowed_content_types:
-			raise serializers.ValidationError(
-				'Profile photo must be a JPG, JPEG, or PNG image.'
-			)
-
-		if uploaded_file.size > max_size:
-			raise serializers.ValidationError(
-				'Profile photo must not exceed 5 MB.'
-			)
-
-		return uploaded_file
+		return validate_profile_photo_file(uploaded_file)
 
 	def validate_email(self, value):
 		value = value.strip().lower()
@@ -194,15 +240,7 @@ class RegistrationSerializer(serializers.Serializer):
 		return attrs
 
 	def _save_upload(self, uploaded_file, folder, user_id):
-		filename = (
-			f'{folder}/{user_id}/'
-			f'{slugify(Path(uploaded_file.name).stem)}'
-			f'{Path(uploaded_file.name).suffix.lower()}'
-		)
-
-		return default_storage.url(
-			default_storage.save(filename, uploaded_file)
-		)
+		return save_upload(uploaded_file, folder, user_id)
 
 	def _create_user(self, validated_data, role_name, onboarding_completed):
 		profile_photo = validated_data.pop('profile_photo', None)
@@ -249,33 +287,7 @@ class StudentRegistrationSerializer(RegistrationSerializer):
 	)
 
 	def validate_student_id_card(self, uploaded_file):
-		allowed_extensions = {'.jpg', '.jpeg', '.png', '.pdf'}
-		allowed_content_types = {
-			'image/jpeg',
-			'image/png',
-			'application/pdf',
-		}
-		max_size = 10 * 1024 * 1024
-
-		extension = Path(uploaded_file.name).suffix.lower()
-
-		if extension not in allowed_extensions:
-			raise serializers.ValidationError(
-				'Student ID card must be a JPG, JPEG, PNG, or PDF file.'
-			)
-
-		content_type = getattr(uploaded_file, 'content_type', None)
-		if content_type and content_type not in allowed_content_types:
-			raise serializers.ValidationError(
-				'Student ID card must be a JPG, JPEG, PNG, or PDF file.'
-			)
-
-		if uploaded_file.size > max_size:
-			raise serializers.ValidationError(
-				'Student ID card must not exceed 10 MB.'
-			)
-
-		return uploaded_file
+		return validate_student_id_card_file(uploaded_file)
 
 	@transaction.atomic
 	def create(self, validated_data):
@@ -382,10 +394,9 @@ class InstructorRegistrationSerializer(RegistrationSerializer):
 		default=''
 	)
 
-	experience_years = serializers.DecimalField(
-		max_digits=5,
-		decimal_places=2,
+	experience_years = serializers.IntegerField(
 		min_value=0,
+		max_value=100,
 		required=False,
 		allow_null=True,
 	)
@@ -440,7 +451,7 @@ class InstructorRegistrationSerializer(RegistrationSerializer):
 			onboarding_completed=True,
 		)
 
-		InstructorProfile.objects.create(
+		profile = InstructorProfile.objects.create(
 			user=user,
 			province=province,
 			district=district,
@@ -452,7 +463,7 @@ class InstructorRegistrationSerializer(RegistrationSerializer):
 		)
 
 		if cv_resume:
-			VerificationDocument.objects.create(
+			profile.cv_resume_document = VerificationDocument.objects.create(
 				user=user,
 				document_type='cv_resume',
 				file_url=self._save_upload(
@@ -461,6 +472,7 @@ class InstructorRegistrationSerializer(RegistrationSerializer):
 					user.pk
 				),
 			)
+			profile.save(update_fields=['cv_resume_document'])
 
 		for uploaded_file in documents:
 			VerificationDocument.objects.create(
@@ -511,6 +523,11 @@ class CompleteStudentProfileSerializer(serializers.Serializer):
 	)
 
 	def validate(self, attrs):
+		# The student form has no municipality step; take it from the school
+		# so the school is still checked against the chosen district.
+		if not attrs.get('municipality') and attrs.get('school'):
+			attrs['municipality'] = attrs['school'].municipality
+
 		_validate_location_chain(
 			attrs.get('province'),
 			attrs.get('district'),
@@ -527,7 +544,7 @@ class CompleteStudentProfileSerializer(serializers.Serializer):
 		profile.grade = self.validated_data['grade']
 		profile.province = self.validated_data['province']
 		profile.district = self.validated_data['district']
-		profile.municipality = self.validated_data['municipality']
+		profile.municipality = self.validated_data.get('municipality')
 		profile.school = self.validated_data['school']
 		profile.save(update_fields=[
 			'grade', 'province', 'district', 'municipality', 'school'
@@ -580,10 +597,9 @@ class InstructorCompleteProfileSerializer(serializers.Serializer):
 	qualification = serializers.CharField(max_length=255)
 	subject_expertise = serializers.CharField()
 
-	experience_years = serializers.DecimalField(
-		max_digits=5,
-		decimal_places=2,
-		min_value=0
+	experience_years = serializers.IntegerField(
+		min_value=0,
+		max_value=100,
 	)
 
 	def validate(self, attrs):
@@ -643,6 +659,44 @@ class CurrentUserUpdateSerializer(serializers.Serializer):
 		max_length=255, required=False, allow_blank=True
 	)
 
+	profile_photo = serializers.FileField(required=False, write_only=True)
+	student_id_card = serializers.FileField(required=False, write_only=True)
+	cv_resume = serializers.FileField(required=False, write_only=True)
+	certificates_and_recommendations = serializers.ListField(
+		child=serializers.FileField(),
+		required=False,
+		write_only=True,
+	)
+
+	STUDENT_ONLY_FIELDS = ('student_id_card',)
+	INSTRUCTOR_ONLY_FIELDS = ('cv_resume', 'certificates_and_recommendations')
+
+	def validate_profile_photo(self, uploaded_file):
+		return validate_profile_photo_file(uploaded_file)
+
+	def validate_student_id_card(self, uploaded_file):
+		return validate_student_id_card_file(uploaded_file)
+
+	def validate(self, attrs):
+		user = self.context['request'].user
+		role_name = user.role.name if user.role else None
+		errors = {}
+
+		if role_name != 'student':
+			for field in self.STUDENT_ONLY_FIELDS:
+				if field in attrs:
+					errors[field] = 'Only students can upload this document.'
+
+		if role_name != 'instructor':
+			for field in self.INSTRUCTOR_ONLY_FIELDS:
+				if field in attrs:
+					errors[field] = 'Only instructors can upload this document.'
+
+		if errors:
+			raise serializers.ValidationError(errors)
+
+		return attrs
+
 	def validate_email(self, value):
 		value = value.strip().lower()
 		user = self.context['request'].user
@@ -657,23 +711,60 @@ class CurrentUserUpdateSerializer(serializers.Serializer):
 
 		return value
 
+	@transaction.atomic
 	def save(self):
 		user = self.context['request'].user
+		data = self.validated_data
 		updated_fields = []
 
 		for field in (
 			'name', 'email', 'gender', 'dob',
 			'phone_country_code', 'phone_number', 'location',
 		):
-			if field in self.validated_data:
-				setattr(user, field, self.validated_data[field])
+			if field in data:
+				setattr(user, field, data[field])
 				updated_fields.append(field)
+
+		if 'profile_photo' in data:
+			user.profile_photo_url = save_upload(
+				data['profile_photo'], 'profile-photos', user.pk
+			)
+			updated_fields.append('profile_photo_url')
 
 		if updated_fields:
 			updated_fields.append('updated_at')
 			user.save(update_fields=updated_fields)
 
+		# Replacing a document adds a new VerificationDocument and repoints the
+		# profile at it; earlier rows are kept as review history.
+		if 'student_id_card' in data:
+			profile = user.student_profile
+			profile.student_id_card_document = self._create_document(
+				user, 'student_id_card', data['student_id_card']
+			)
+			profile.save(update_fields=['student_id_card_document'])
+
+		if 'cv_resume' in data:
+			profile = user.instructor_profile
+			profile.cv_resume_document = self._create_document(
+				user, 'cv_resume', data['cv_resume']
+			)
+			profile.save(update_fields=['cv_resume_document'])
+
+		# Certificates are a collection, so uploads add to it.
+		for uploaded_file in data.get('certificates_and_recommendations', []):
+			self._create_document(user, 'certificate', uploaded_file)
+
 		return user
+
+	def _create_document(self, user, document_type, uploaded_file):
+		return VerificationDocument.objects.create(
+			user=user,
+			document_type=document_type,
+			file_url=save_upload(
+				uploaded_file, 'verification-documents', user.pk
+			),
+		)
 
 
 class LoginSerializer(serializers.Serializer):

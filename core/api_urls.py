@@ -48,6 +48,7 @@ from .api_views import (
 	MyBadgesAPIView,
 	MyCertificatesAPIView,
 	MyChallengesAPIView,
+	MyDocumentAPIView,
 	MyEnrollmentsAPIView,
 	MyPaymentsAPIView,
 	MyStreakAPIView,
@@ -155,6 +156,12 @@ urlpatterns = [
 		'me/',
 		CurrentUserAPIView.as_view(),
 		name='api-current-user'
+	),
+
+	path(
+		'me/documents/<int:document_id>/',
+		MyDocumentAPIView.as_view(),
+		name='api-my-document'
 	),
 
 	path(
