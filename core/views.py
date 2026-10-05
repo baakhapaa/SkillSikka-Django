@@ -3,6 +3,7 @@ from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
 from django.db.models import Q
+from django.http import Http404
 from django.shortcuts import redirect, render
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
@@ -33,6 +34,7 @@ from .models import (
 	User,
 	VerificationDocument,
 )
+from .documents import document_file_response
 
 
 def login_view(request):
@@ -182,6 +184,19 @@ def review_verification(request, user_id):
 
 
 @login_required
+def view_document(request, document_id):
+	if not is_admin(request.user):
+		messages.error(request, 'You do not have permission to view documents.')
+		return redirect('dashboard')
+
+	document = VerificationDocument.objects.filter(pk=document_id).first()
+	if document is None:
+		raise Http404('Document not found.')
+
+	return document_file_response(document)
+
+
+@login_required
 def manage_users(request):
 	if not is_admin(request.user):
 		messages.error(request, 'You do not have permission to manage users.')
@@ -262,6 +277,7 @@ def edit_user(request, user_id):
 		'form': form,
 		'target': target,
 		'target_name': target_name,
+		'documents': target.verification_documents.order_by('-uploaded_at', '-pk'),
 		'audit_entries': target.audit_entries.select_related('admin')[:10],
 	})
 

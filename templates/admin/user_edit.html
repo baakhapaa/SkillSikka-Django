@@ -14,6 +14,8 @@
 .ue-log{list-style:none;padding:0;margin:0}
 .ue-log li{padding:10px 0;border-bottom:1px solid var(--line);font-size:14px}
 .ue-log small{color:var(--muted)}
+.ue-photo{display:flex;align-items:center;gap:16px;margin-bottom:16px}
+.ue-photo img,.ue-photo span{width:88px;height:88px;border-radius:50%;object-fit:cover;background:#e0efea;color:var(--teal-dark);display:grid;place-items:center;font-size:28px;font-weight:700}
 </style>
 <div class="app-shell">
     <aside class="sidebar">
@@ -46,6 +48,28 @@
                 <div class="ue-item"><small>Verification</small>{{ target.get_verification_status_display }}</div>
                 <div class="ue-item"><small>Status</small>{% if target.is_active %}<span class="ue-badge">Active</span>{% else %}<span class="ue-badge off">Inactive</span>{% endif %}</div>
             </div>
+        </article>
+
+        <article class="management-card">
+            <div class="section-heading"><div><p class="eyebrow">Uploads</p><h2>Photo &amp; documents</h2></div></div>
+            <div class="ue-photo">
+                {% if target.profile_photo_url %}
+                <a href="{{ target.profile_photo_url }}" target="_blank" rel="noopener"><img src="{{ target.profile_photo_url }}" alt="Profile photo of {{ target_name }}"></a>
+                {% else %}
+                <span>{{ target_name|slice:':1'|upper }}</span>
+                <small>No profile photo uploaded.</small>
+                {% endif %}
+            </div>
+            <ul class="ue-log">
+                {% for doc in documents %}
+                <li>
+                    <a href="{% url 'view_document' doc.pk %}" target="_blank" rel="noopener">{{ doc.get_document_type_display }}</a>
+                    <small>· uploaded {{ doc.uploaded_at|date:"Y-m-d H:i" }}</small>
+                </li>
+                {% empty %}
+                <li><small>No documents uploaded.</small></li>
+                {% endfor %}
+            </ul>
         </article>
 
         <article class="management-card">

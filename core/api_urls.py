@@ -107,6 +107,7 @@ from .api_views import (
 	SuperAdminUserStatusAPIView,
 	SuperAdminUserRoleAPIView,
 	SuperAdminInstructorVerificationAPIView,
+	SuperAdminUserDocumentAPIView,
 	SuperAdminPermissionListAPIView,
 	SuperAdminRolePermissionListAPIView,
 	SuperAdminRolePermissionDetailAPIView,
@@ -808,6 +809,12 @@ urlpatterns = [
 		'admin/users/<int:user_id>/',
 		SuperAdminUserDetailAPIView.as_view(),
 		name='api-admin-user-detail'
+	),
+
+	path(
+		'admin/users/<int:user_id>/documents/<int:document_id>/',
+		SuperAdminUserDocumentAPIView.as_view(),
+		name='api-admin-user-document'
 	),
 
 	path(

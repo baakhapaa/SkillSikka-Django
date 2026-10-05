@@ -52,7 +52,7 @@
                         {% for user in pending_users %}
                         <tr>
                             <td>
-                                <div class="person"><span class="table-avatar">{{ user.name|slice:':1'|upper }}</span><span><strong>{{ user.name }}</strong><small>{{ user.email }}</small></span></div>
+                                <div class="person">{% if user.profile_photo_url %}<a href="{{ user.profile_photo_url }}" target="_blank" rel="noopener"><img class="table-avatar" src="{{ user.profile_photo_url }}" alt="Profile photo of {{ user.name }}" style="object-fit:cover"></a>{% else %}<span class="table-avatar">{{ user.name|slice:':1'|upper }}</span>{% endif %}<span><strong>{{ user.name }}</strong><small>{{ user.email }}</small></span></div>
                             </td>
                             <td>{{ user.role.name|default:'Unassigned'|title }}</td>
                             <td>
@@ -69,7 +69,7 @@
                             </td>
                             <td>
                                 {% for doc in user.verification_documents.all %}
-                                <a href="{{ doc.file_url }}" target="_blank" rel="noopener">{{ doc.get_document_type_display }}</a><br>
+                                <a href="{% url 'view_document' doc.pk %}" target="_blank" rel="noopener">{{ doc.get_document_type_display }}</a> <small>{{ doc.uploaded_at|date:"Y-m-d" }}</small><br>
                                 {% empty %}
                                 <small>No documents uploaded</small>
                                 {% endfor %}

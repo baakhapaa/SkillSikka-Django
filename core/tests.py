@@ -328,6 +328,68 @@ class CurrentUserProfileFieldsTests(TestCase):
 		self.assertEqual(response.status_code, 400)
 		self.assertIn('student_id_card', response.json())
 
+	def upload_cv_as_instructor(self):
+		self.client.force_authenticate(self.instructor)
+		response = self.client.patch('/api/v1/me/', {
+			'profile_photo': SimpleUploadedFile('me.png', b'png-bytes', content_type='image/png'),
+			'cv_resume': SimpleUploadedFile('cv.pdf', b'%PDF cv', content_type='application/pdf'),
+		}, format='multipart')
+		self.assertEqual(response.status_code, 200, response.content)
+		self.client.force_authenticate(user=None)
+		return VerificationDocument.objects.get(user=self.instructor, document_type='cv_resume')
+
+	def make_super_admin(self):
+		role, _ = Role.objects.get_or_create(name='super_admin')
+		return User.objects.create_user(
+			email='me-admin@example.com', password='A-strong-password-123',
+			name='Admin', role=role,
+		)
+
+	def test_super_admin_api_sees_photo_and_documents(self):
+		document = self.upload_cv_as_instructor()
+		self.client.force_authenticate(self.make_super_admin())
+
+		data = self.client.get(f'/api/v1/admin/users/{self.instructor.pk}/').json()
+		self.assertTrue(data['profile_photo_url'].startswith('http://testserver/media/profile-photos/'))
+		self.assertEqual(len(data['documents']), 1)
+		self.assertEqual(data['documents'][0]['document_type'], 'cv_resume')
+
+		response = self.client.get(data['documents'][0]['url'])
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(b''.join(response.streaming_content), b'%PDF cv')
+
+		listed = self.client.get('/api/v1/admin/users/', {'role': 'instructor'}).json()['results']
+		self.assertIsNotNone(next(u for u in listed if u['id'] == self.instructor.pk)['profile_photo_url'])
+
+		# The document must belong to the user in the URL.
+		self.assertEqual(
+			self.client.get(f'/api/v1/admin/users/{self.student.pk}/documents/{document.pk}/').status_code,
+			404,
+		)
+
+	def test_admin_document_api_is_super_admin_only(self):
+		document = self.upload_cv_as_instructor()
+		self.client.force_authenticate(self.student)
+		response = self.client.get(f'/api/v1/admin/users/{self.instructor.pk}/documents/{document.pk}/')
+		self.assertEqual(response.status_code, 403)
+
+	def test_admin_web_pages_show_photo_and_documents(self):
+		document = self.upload_cv_as_instructor()
+		self.instructor.refresh_from_db()
+		web = self.client_class()
+
+		web.force_login(self.student)
+		self.assertEqual(web.get(reverse('view_document', args=[document.pk])).status_code, 302)
+
+		web.force_login(self.make_super_admin())
+		response = web.get(reverse('view_document', args=[document.pk]))
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(b''.join(response.streaming_content), b'%PDF cv')
+
+		page = web.get(reverse('edit_user', args=[self.instructor.pk]))
+		self.assertContains(page, reverse('view_document', args=[document.pk]))
+		self.assertContains(page, self.instructor.profile_photo_url)
+
 	def test_oversized_profile_photo_is_rejected(self):
 		self.client.force_authenticate(self.student)
 		big = SimpleUploadedFile('big.png', b'0' * (5 * 1024 * 1024 + 1), content_type='image/png')

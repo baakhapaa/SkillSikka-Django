@@ -13,6 +13,7 @@ from .views import (
 	review_verification,
 	toggle_user_active,
 	verification_queue,
+	view_document,
 )
 
 
@@ -23,6 +24,7 @@ urlpatterns = [
 	path('admin/geography', manage_geography, name='manage_geography'),
 	path('admin/verifications', verification_queue, name='verification_queue'),
 	path('admin/verifications/<int:user_id>/review', review_verification, name='review_verification'),
+	path('admin/documents/<int:document_id>', view_document, name='view_document'),
 	path('admin/users', manage_users, name='manage_users'),
 	path('admin/users/<int:user_id>/edit', edit_user, name='edit_user'),
 	path('admin/users/<int:user_id>/status', toggle_user_active, name='toggle_user_active'),

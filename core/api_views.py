@@ -3,13 +3,7 @@ from django.utils import timezone
 from django.db import transaction
 from decimal import Decimal
 from django.db.models import Sum, Count, Avg
-from pathlib import PurePosixPath
-from urllib.parse import unquote, urlparse
-
-from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
-from django.core.files.storage import default_storage
-from django.http import FileResponse
 from django.urls import reverse
 
 from rest_framework import generics, status
@@ -74,6 +68,7 @@ from .models import (
 )
 
 from .ai_service import GeminiService
+from .documents import document_file_response
 
 from .serializers import (
 	BadgeSerializer,
@@ -325,15 +320,28 @@ def _current_user_payload(request, user):
 	}
 
 
-def _storage_name(file_url):
-	# file_url holds default_storage.url(name); recover name from its path.
-	path = unquote(urlparse(file_url).path).lstrip('/')
-	media_prefix = (getattr(settings, 'MEDIA_URL', '') or '').strip('/')
+def _admin_documents_payload(request, user):
+	documents = user.verification_documents.order_by('-uploaded_at', '-pk')
 
-	if media_prefix and path.startswith(media_prefix + '/'):
-		path = path[len(media_prefix) + 1:]
+	return [
+		{
+			'id': document.pk,
+			'document_type': document.document_type,
+			'document_type_display': document.get_document_type_display(),
+			'uploaded_at': document.uploaded_at,
+			'url': request.build_absolute_uri(
+				reverse(
+					'api-admin-user-document',
+					args=[user.pk, document.pk],
+				)
+			),
+		}
+		for document in documents
+	]
 
-	return path
+
+def _absolute_or_none(request, url):
+	return request.build_absolute_uri(url) if url else None
 
 
 class CurrentUserAPIView(APIView):
@@ -402,15 +410,7 @@ class MyDocumentAPIView(APIView):
 		if document is None:
 			raise NotFound('Document not found.')
 
-		name = _storage_name(document.file_url)
-
-		if not name or not default_storage.exists(name):
-			raise NotFound('Document file is missing.')
-
-		return FileResponse(
-			default_storage.open(name, 'rb'),
-			filename=PurePosixPath(name).name,
-		)
+		return document_file_response(document)
 
 
 class LogoutAPIView(APIView):
@@ -6341,6 +6341,10 @@ class SuperAdminUserListAPIView(
 				'phone_country_code':
 					user.phone_country_code,
 				'phone_number': user.phone_number,
+				'profile_photo_url': _absolute_or_none(
+					request,
+					user.profile_photo_url
+				),
 				'role': (
 					user.role.name
 					if user.role
@@ -6409,8 +6413,11 @@ class SuperAdminUserDetailAPIView(
 			'gender': user.gender,
 			'dob': user.dob,
 			'location': user.location,
-			'profile_photo_url':
-				user.profile_photo_url,
+			'profile_photo_url': _absolute_or_none(
+				request,
+				user.profile_photo_url
+			),
+			'documents': _admin_documents_payload(request, user),
 			'role': (
 				user.role.name
 				if user.role
@@ -6444,6 +6451,31 @@ class SuperAdminUserDetailAPIView(
 			data,
 			status=status.HTTP_200_OK
 		)
+
+
+class SuperAdminUserDocumentAPIView(
+	SuperAdminRequiredMixin,
+	APIView
+):
+	"""
+	Download one of a user's uploaded verification documents.
+	"""
+
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def get(self, request, user_id, document_id):
+		self.check_super_admin(request)
+
+		document = VerificationDocument.objects.filter(
+			pk=document_id,
+			user_id=user_id,
+		).first()
+
+		if document is None:
+			raise NotFound('Document not found.')
+
+		return document_file_response(document)
 
 
 class SuperAdminUserStatusAPIView(
