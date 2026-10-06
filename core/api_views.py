@@ -69,6 +69,7 @@ from .models import (
 
 from .ai_service import GeminiService
 from .documents import document_file_response
+from .learning_interest_serializers import selected_interests_payload
 
 from .serializers import (
 	BadgeSerializer,
@@ -289,7 +290,7 @@ def _current_user_payload(request, user):
 		if instructor_profile.experience_years is not None:
 			experience_years = int(round(instructor_profile.experience_years))
 
-	return {
+	payload = {
 		'id': str(user.id),
 		'email': user.email,
 		'name': user.name,
@@ -329,6 +330,16 @@ def _current_user_payload(request, user):
 			_document_url(request, document) for document in certificates
 		],
 	}
+	if student_profile and user.role.name == 'student':
+		interests = selected_interests_payload(user, student_profile)
+		payload.update({
+			'learning_interests': interests['learning_interests'],
+			'learning_interests_completed': interests['interests_completed'],
+			'profile_completed': interests['profile_completed'],
+			'onboarding_step': interests['onboarding_step'],
+			'onboarding_flow_version': interests['onboarding_flow_version'],
+		})
+	return payload
 
 
 def _admin_documents_payload(request, user):
@@ -1723,11 +1734,16 @@ class CompleteStudentProfileAPIView(APIView):
 		)
 		serializer.is_valid(raise_exception=True)
 		profile = serializer.save()
+		onboarding = selected_interests_payload(request.user, profile)
 
 		return Response(
 			{
 				'detail': 'Profile completed successfully.',
-				'onboarding_completed': True,
+				'onboarding_completed': onboarding['onboarding_completed'],
+				'profile_completed': onboarding['profile_completed'],
+				'learning_interests_completed': onboarding['interests_completed'],
+				'onboarding_step': onboarding['onboarding_step'],
+				'onboarding_flow_version': onboarding['onboarding_flow_version'],
 				'grade': profile.grade_id,
 				'province': profile.province_id,
 				'district': profile.district_id,

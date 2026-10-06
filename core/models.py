@@ -287,7 +287,35 @@ class VerificationDocument(models.Model):
 		return self.document_type
 
 
+class LearningInterest(models.Model):
+	name = models.CharField(max_length=150)
+	slug = models.SlugField(max_length=150, unique=True)
+	description = models.TextField(blank=True)
+	display_order = models.PositiveSmallIntegerField(default=0)
+	is_active = models.BooleanField(default=True)
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'learning_interests'
+		ordering = ['display_order', 'id']
+
+	def __str__(self):
+		return self.name
+
+
 class StudentProfile(models.Model):
+	LEGACY_ONBOARDING = 1
+	INTERESTS_ONBOARDING = 2
+
+	onboarding_flow_version = models.PositiveSmallIntegerField(
+		choices=((1, 'Legacy'), (2, 'Learning interests')),
+		default=LEGACY_ONBOARDING,
+	)
+	profile_completed = models.BooleanField(default=False)
+	learning_interests = models.ManyToManyField(
+		LearningInterest, blank=True, related_name='student_profiles',
+	)
 	user = models.OneToOneField(
 		User,
 		on_delete=models.CASCADE,

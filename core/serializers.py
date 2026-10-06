@@ -14,6 +14,7 @@ from django.utils import timezone
 from django.utils.text import slugify
 from rest_framework import serializers
 from .signup_otp import issue_signup_otp
+from .student_onboarding import update_student_onboarding
 
 from .models import (
 	Badge,
@@ -304,12 +305,15 @@ class StudentRegistrationSerializer(RegistrationSerializer):
 
 		profile = StudentProfile.objects.create(
 			user=user,
+			onboarding_flow_version=StudentProfile.INTERESTS_ONBOARDING,
 			grade=None,
 			province=None,
 			district=None,
 			municipality=None,
 			school=None,
 		)
+		user.onboarding_step = 2
+		user.save(update_fields=['onboarding_step', 'updated_at'])
 
 		if student_id_card:
 			document = VerificationDocument.objects.create(
@@ -541,8 +545,9 @@ class CompleteStudentProfileSerializer(serializers.Serializer):
 
 		return attrs
 
+	@transaction.atomic
 	def save(self):
-		user = self.context['request'].user
+		user = User.objects.select_for_update().get(pk=self.context['request'].user.pk)
 		profile = user.student_profile
 
 		profile.grade = self.validated_data['grade']
@@ -550,21 +555,24 @@ class CompleteStudentProfileSerializer(serializers.Serializer):
 		profile.district = self.validated_data['district']
 		profile.municipality = self.validated_data.get('municipality')
 		profile.school = self.validated_data['school']
+		profile.profile_completed = True
 		profile.save(update_fields=[
-			'grade', 'province', 'district', 'municipality', 'school'
+			'grade', 'province', 'district', 'municipality', 'school', 'profile_completed'
 		])
 
 		user.phone_country_code = self.validated_data['phone_country_code']
 		user.phone_number = self.validated_data['phone_number']
 		user.location = self.validated_data['location']
-		user.onboarding_completed = True
+		update_student_onboarding(user, profile)
 		user.save(update_fields=[
 			'phone_country_code',
 			'phone_number',
 			'location',
 			'onboarding_completed',
+			'onboarding_step',
 			'updated_at',
 		])
+		self.context['request'].user.refresh_from_db()
 
 		return profile
 

@@ -282,11 +282,12 @@ class InstructorEmailMigrationTests(TransactionTestCase):
         before = [('core', '0033_reward_alter_pointtransaction_event_type_redemption')]
         after = [('core', '0034_instructor_signup_email_otp')]
         executor = MigrationExecutor(connection)
-        self.assertEqual(executor.loader.graph.leaf_nodes('core'), after)
+        latest = executor.loader.graph.leaf_nodes('core')
+        self.assertEqual(len(latest), 1)
         executor.migrate(before)
         try:
             old_apps = executor.loader.project_state(before).apps
-            role = old_apps.get_model('core', 'Role').objects.get(name='instructor')
+            role, _ = old_apps.get_model('core', 'Role').objects.get_or_create(name='instructor')
             legacy = old_apps.get_model('core', 'User').objects.create(
                 email='migration-legacy@example.com', name='Legacy', role=role,
                 password='legacy-hash', verification_status='pending',
@@ -297,7 +298,7 @@ class InstructorEmailMigrationTests(TransactionTestCase):
             self.assertTrue(migrated.email_verified)
             self.assertEqual(migrated.verification_status, 'pending')
         finally:
-            MigrationExecutor(connection).migrate(after)
+            MigrationExecutor(connection).migrate(latest)
 
 
 @override_settings(EMAIL_BACKEND='django.core.mail.backends.console.EmailBackend')
