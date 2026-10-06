@@ -1,4 +1,5 @@
 from django.urls import path
+from .advertisement_views import AdvertisementListAPIView, AdvertisementAdminListAPIView, AdvertisementAdminDetailAPIView
 
 from rest_framework_simplejwt.views import TokenRefreshView
 from .signup_views import VerifyInstructorSignupOTPAPIView, ResendInstructorSignupOTPAPIView
@@ -119,6 +120,9 @@ from .api_views import (
 
 
 urlpatterns = [
+    path('advertisements/', AdvertisementListAPIView.as_view(), name='api-advertisements'),
+    path('admin/advertisements/', AdvertisementAdminListAPIView.as_view(), name='api-admin-advertisements'),
+    path('admin/advertisements/<int:advertisement_id>/', AdvertisementAdminDetailAPIView.as_view(), name='api-admin-advertisement-detail'),
 	path('learning-interests/', LearningInterestListAPIView.as_view(), name='api-learning-interests'),
 	path('me/learning-interests/', MyLearningInterestsAPIView.as_view(), name='api-my-learning-interests'),
 	path('register/instructor/verify-otp/', VerifyInstructorSignupOTPAPIView.as_view(), name='api-instructor-signup-verify'),

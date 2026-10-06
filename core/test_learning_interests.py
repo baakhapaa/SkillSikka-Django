@@ -258,6 +258,7 @@ class LearningInterestMigrationTests(TransactionTestCase):
         before = [('core', '0034_instructor_signup_email_otp')]
         after = [('core', '0036_seed_learning_interests')]
         executor = MigrationExecutor(connection)
+        latest = executor.loader.graph.leaf_nodes('core')
         executor.migrate(before)
         try:
             old = executor.loader.project_state(before).apps
@@ -283,7 +284,7 @@ class LearningInterestMigrationTests(TransactionTestCase):
             seed.seed_interests_and_profile_stage(new, SimpleNamespace(connection=connection))
             self.assertEqual(new.get_model('core', 'LearningInterest').objects.count(), 12)
         finally:
-            MigrationExecutor(connection).migrate(after)
+            MigrationExecutor(connection).migrate(latest)
 
 
 class StudentLearningInterestsLiveTests(LiveServerTestCase):

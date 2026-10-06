@@ -287,6 +287,39 @@ class VerificationDocument(models.Model):
 		return self.document_type
 
 
+def advertisement_image_path(instance, filename):
+	from pathlib import Path
+	from uuid import uuid4
+	return f'advertisements/{uuid4().hex}{Path(filename).suffix.lower()}'
+
+
+class Advertisement(models.Model):
+	title = models.CharField(max_length=200)
+	description = models.TextField(blank=True)
+	banner_image = models.ImageField(upload_to=advertisement_image_path)
+	cta_text = models.CharField(max_length=100, blank=True)
+	cta_url = models.URLField(max_length=2048, blank=True)
+	starts_at = models.DateTimeField(null=True, blank=True)
+	ends_at = models.DateTimeField(null=True, blank=True)
+	display_order = models.PositiveIntegerField(default=0)
+	is_active = models.BooleanField(default=False)
+	archived_at = models.DateTimeField(null=True, blank=True)
+	created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_advertisements')
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'advertisements'
+		ordering = ['display_order', 'id']
+		constraints = [models.CheckConstraint(
+			condition=models.Q(starts_at__isnull=True) | models.Q(ends_at__isnull=True) | models.Q(ends_at__gte=models.F('starts_at')),
+			name='advertisement_valid_schedule',
+		)]
+
+	def __str__(self):
+		return self.title
+
+
 class LearningInterest(models.Model):
 	name = models.CharField(max_length=150)
 	slug = models.SlugField(max_length=150, unique=True)
