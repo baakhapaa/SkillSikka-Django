@@ -91,6 +91,8 @@ from .api_views import (
 	ShortCommentListCreateAPIView,
 	ShortDetailAPIView,
 	ShortListCreateAPIView,
+	StudentShortBookmarkAPIView,
+	SavedShortsListAPIView,
 	ToggleShortLikeAPIView,
 	NotificationListAPIView,
 	NotificationUnreadCountAPIView,
@@ -662,6 +664,8 @@ urlpatterns = [
 	# =========================
 	# Shorts
 	# =========================
+	path('student/shorts/saved/', SavedShortsListAPIView.as_view(), name='student-saved-shorts'),
+	path('student/shorts/<int:short_id>/save/', StudentShortBookmarkAPIView.as_view(), name='student-short-save'),
 
 	path(
 		'shorts/',

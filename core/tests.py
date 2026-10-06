@@ -1,12 +1,23 @@
 import shutil
 import tempfile
+import json
+import urllib.error
+import urllib.request
+from datetime import timedelta
+from types import SimpleNamespace
 
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, override_settings
+from django.test import TestCase, LiveServerTestCase, override_settings
+from django.db import connection, IntegrityError, transaction
+from django.core.cache import cache
+from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 from django.urls import reverse
 from rest_framework.test import APIClient
 
 from .models import District, Grade, InstructorProfile, Municipality, Permission, Province, Role, School, StudentProfile, User, VerificationDocument
+from .models import Short, ShortBookmark, ShortComment, ShortLike, ShortView
+from .serializers import ShortSerializer
 
 
 class AuthenticationFlowTests(TestCase):
@@ -398,3 +409,249 @@ class CurrentUserProfileFieldsTests(TestCase):
 		response = self.client.patch('/api/v1/me/', {'profile_photo': big}, format='multipart')
 		self.assertEqual(response.status_code, 400)
 		self.assertIn('profile_photo', response.json())
+
+
+class ShortBookmarkTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.student = User.objects.create_user(email='bookmark-student@example.com', name='Student', role=Role.objects.get(name='student'))
+        self.other = User.objects.create_user(email='bookmark-other@example.com', name='Other', role=Role.objects.get(name='student'))
+        self.instructor = User.objects.create_user(email='bookmark-instructor@example.com', name='Instructor',
+            role=Role.objects.get(name='instructor'), verification_status='verified')
+        self.short = Short.objects.create(title='Published short', instructor=self.instructor, video_url='https://example.com/video', is_published=True)
+        self.client = APIClient()
+        self.client.force_authenticate(self.student)
+        self.save_url = f'/api/v1/student/shorts/{self.short.pk}/save/'
+        self.detail_url = f'/api/v1/shorts/{self.short.pk}/'
+        self.list_url = '/api/v1/shorts/'
+        self.saved_url = '/api/v1/student/shorts/saved/'
+
+    def test_save_persists_and_repeated_post_is_idempotent(self):
+        response = self.client.post(self.save_url)
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.data['is_saved'])
+        self.assertTrue(ShortBookmark.objects.filter(student=self.student, short=self.short).exists())
+        first = ShortBookmark.objects.get()
+        response = self.client.post(self.save_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data['is_saved'])
+        self.assertEqual(ShortBookmark.objects.count(), 1)
+        self.assertEqual(ShortBookmark.objects.get().created_at, first.created_at)
+
+    def test_unsave_and_repeated_delete_are_idempotent(self):
+        self.client.post(self.save_url)
+        for _ in range(2):
+            response = self.client.delete(self.save_url)
+            self.assertEqual(response.status_code, 200)
+            self.assertFalse(response.data['is_saved'])
+            self.assertFalse(ShortBookmark.objects.exists())
+
+    def test_student_specific_state_and_cross_user_deletion(self):
+        self.client.post(self.save_url)
+        self.client.force_authenticate(self.other)
+        self.assertFalse(self.client.get(self.detail_url).data['is_saved'])
+        self.assertEqual(self.client.get(self.saved_url).data, [])
+        self.assertEqual(self.client.delete(self.save_url).status_code, 200)
+        self.assertTrue(ShortBookmark.objects.filter(student=self.student).exists())
+        self.client.post(self.save_url)
+        self.assertEqual(ShortBookmark.objects.count(), 2)
+        self.client.delete(self.save_url)
+        self.assertTrue(ShortBookmark.objects.filter(student=self.student).exists())
+        self.assertFalse(ShortBookmark.objects.filter(student=self.other).exists())
+
+    def test_is_saved_in_list_detail_and_saved_list_preserves_fields(self):
+        expected = {'id','title','instructor_id','instructor_name','video_url','thumbnail_url','is_published',
+                    'view_count','like_count','comment_count','is_liked','is_saved','created_at','updated_at'}
+        self.assertFalse(self.client.get(self.detail_url).data['is_saved'])
+        self.assertFalse(self.client.get(self.list_url).data[0]['is_saved'])
+        self.client.post(self.save_url)
+        for body in (self.client.get(self.detail_url).data, self.client.get(self.list_url).data[0],
+                     self.client.get(self.saved_url).data[0]):
+            self.assertTrue(body['is_saved'])
+            self.assertEqual(set(body), expected)
+            self.assertEqual(body['id'], self.short.pk)
+
+    def test_saved_order_by_bookmark_timestamp_then_id(self):
+        now = timezone.now()
+        first = ShortBookmark.objects.create(student=self.student, short=self.short)
+        shorts = [Short.objects.create(title=str(i), instructor=self.instructor, video_url='https://example.com/video',
+                  is_published=True) for i in range(2)]
+        second = ShortBookmark.objects.create(student=self.student, short=shorts[0])
+        third = ShortBookmark.objects.create(student=self.student, short=shorts[1])
+        ShortBookmark.objects.filter(pk=first.pk).update(created_at=now-timedelta(days=1))
+        ShortBookmark.objects.filter(pk__in=[second.pk, third.pk]).update(created_at=now)
+        self.assertEqual([r['id'] for r in self.client.get(self.saved_url).data], [third.short_id,second.short_id,first.short_id])
+
+    def test_unpublished_cannot_be_saved_but_existing_bookmark_can_be_removed(self):
+        self.client.post(self.save_url)
+        self.short.is_published = False
+        self.short.save(update_fields=['is_published'])
+        self.assertTrue(ShortBookmark.objects.exists())
+        self.assertEqual(self.client.get(self.saved_url).data, [])
+        self.assertEqual(self.client.post(self.save_url).status_code, 404)
+        self.assertEqual(self.client.delete(self.save_url).status_code, 200)
+        self.assertFalse(ShortBookmark.objects.exists())
+        self.assertEqual(self.client.post(self.save_url).status_code, 404)
+
+    def test_republished_saved_short_reappears_without_new_bookmark(self):
+        self.client.post(self.save_url)
+        original = ShortBookmark.objects.get().pk
+        self.short.is_published = False
+        self.short.save()
+        self.assertEqual(self.client.get(self.saved_url).data, [])
+        self.short.is_published = True
+        self.short.save()
+        self.assertEqual(self.client.get(self.saved_url).data[0]['id'], self.short.pk)
+        self.assertEqual(ShortBookmark.objects.get().pk, original)
+
+    def test_nonexistent_short_returns_404(self):
+        missing = '/api/v1/student/shorts/999999/save/'
+        self.assertEqual(self.client.post(missing).status_code, 404)
+        self.assertEqual(self.client.delete(missing).status_code, 404)
+
+    def test_anonymous_and_other_roles_denied(self):
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.post(self.save_url).status_code, 401)
+        self.assertEqual(self.client.delete(self.save_url).status_code, 401)
+        self.assertEqual(self.client.get(self.saved_url).status_code, 401)
+        for role in ('instructor','super_admin','local_authority','ministry'):
+            user = User.objects.create_user(email=role+'-bookmark-denied@example.com', name='Denied', role=Role.objects.get(name=role))
+            self.client.force_authenticate(user)
+            with self.subTest(role=role):
+                self.assertEqual(self.client.post(self.save_url).status_code, 403)
+                self.assertEqual(self.client.delete(self.save_url).status_code, 403)
+                self.assertEqual(self.client.get(self.saved_url).status_code, 403)
+
+    def test_request_body_cannot_choose_owner(self):
+        for key in ('student','student_id','user','user_id'):
+            with self.subTest(key=key):
+                self.assertEqual(self.client.post(self.save_url, {key:self.other.pk}, format='json').status_code, 400)
+                self.assertFalse(ShortBookmark.objects.exists())
+        self.client.post(self.save_url)
+        response = self.client.delete(self.save_url, {'student_id':self.other.pk}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(ShortBookmark.objects.exists())
+
+    def test_duplicate_database_constraint_and_cascade_deletion(self):
+        ShortBookmark.objects.create(student=self.student, short=self.short)
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ShortBookmark.objects.create(student=self.student, short=self.short)
+        self.short.delete()
+        self.assertFalse(ShortBookmark.objects.exists())
+
+    def test_bookmark_state_has_no_per_short_queries(self):
+        def bookmark_queries(path):
+            with CaptureQueriesContext(connection) as queries:
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 200)
+            sql = [q['sql'] for q in queries if 'short_bookmarks' in q['sql']]
+            self.assertEqual(len(sql), 1, sql)
+            self.assertIn('EXISTS', sql[0].upper())
+        self.client.post(self.save_url)
+        bookmark_queries(self.list_url)
+        for i in range(6):
+            short = Short.objects.create(title=str(i), instructor=self.instructor, video_url='https://example.com/v', is_published=True)
+            ShortBookmark.objects.create(student=self.student, short=short)
+        bookmark_queries(self.list_url)
+        bookmark_queries(self.detail_url)
+        bookmark_queries(self.saved_url)
+
+    def test_serializer_without_authenticated_student_context_returns_false(self):
+        self.short._is_saved = True
+        self.assertFalse(ShortSerializer(self.short).data['is_saved'])
+        from django.contrib.auth.models import AnonymousUser
+        for user in (AnonymousUser(), self.instructor):
+            serializer = ShortSerializer(self.short, context={'request':SimpleNamespace(user=user)})
+            self.assertFalse(serializer.data['is_saved'])
+
+    def test_existing_views_likes_comments_and_is_liked_unchanged(self):
+        self.client.post(self.save_url)
+        prefix = f'/api/v1/student/shorts/{self.short.pk}/'
+        self.assertEqual(self.client.post(prefix+'view/').status_code, 201)
+        self.assertEqual(self.client.post(prefix+'view/').status_code, 200)
+        response = self.client.post(prefix+'like/')
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.data['is_liked'])
+        self.assertEqual(self.client.post(prefix+'comments/', {'text':'Helpful lesson'}, format='json').status_code, 201)
+        detail = self.client.get(self.detail_url).data
+        self.assertTrue(detail['is_saved'])
+        self.assertTrue(detail['is_liked'])
+        self.assertEqual((detail['view_count'],detail['like_count'],detail['comment_count']), (1,1,1))
+        self.assertEqual(self.client.get(prefix+'comments/').data[0]['text'], 'Helpful lesson')
+        self.assertFalse(self.client.post(prefix+'like/').data['is_liked'])
+        self.assertTrue(self.client.get(self.detail_url).data['is_saved'])
+        self.assertEqual(ShortView.objects.count(), 1)
+        self.assertEqual(ShortLike.objects.count(), 0)
+        self.assertEqual(ShortComment.objects.count(), 1)
+
+    def test_short_crud_visibility_ownership_and_is_saved_read_only(self):
+        self.client.force_authenticate(self.instructor)
+        response = self.client.post(self.list_url, {'title':'Draft', 'video_url':'https://example.com/new', 'is_saved':True}, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertFalse(response.data['is_saved'])
+        draft_url = f"/api/v1/shorts/{response.data['id']}/"
+        self.client.force_authenticate(self.student)
+        self.assertEqual(self.client.get(draft_url).status_code, 404)
+        self.assertEqual(len(self.client.get(self.list_url).data), 1)
+        self.assertEqual(self.client.patch(self.detail_url, {'title':'Not owner'}, format='json').status_code, 403)
+        self.client.force_authenticate(self.instructor)
+        self.assertEqual(len(self.client.get(self.list_url).data), 2)
+        self.assertEqual(self.client.patch(draft_url, {'is_published':True}, format='json').status_code, 200)
+        other_instructor = User.objects.create_user(email='other-owner@example.com', name='Other', role=Role.objects.get(name='instructor'))
+        self.client.force_authenticate(other_instructor)
+        self.assertEqual(self.client.delete(draft_url).status_code, 403)
+        admin = User.objects.create_user(email='short-admin@example.com', name='Admin', role=Role.objects.get(name='super_admin'))
+        self.client.force_authenticate(admin)
+        self.assertEqual(self.client.get(draft_url).status_code, 200)
+        self.assertFalse(self.client.get(draft_url).data['is_saved'])
+        self.assertEqual(self.client.delete(draft_url).status_code, 204)
+
+
+class ShortBookmarkLiveTests(LiveServerTestCase):
+    def setUp(self):
+        cache.clear()
+        role = Role.objects.get_or_create(name='student')[0]
+        self.password = 'Live-bookmarks-Strong-123!'
+        self.students = [User.objects.create_user(email=f'live-bookmark-{i}@example.com', name='Student', role=role,
+                         password=self.password) for i in range(2)]
+        instructor = User.objects.create_user(email='live-bookmark-instructor@example.com', name='Instructor',
+            role=Role.objects.get_or_create(name='instructor')[0])
+        self.short = Short.objects.create(title='Live short', instructor=instructor, video_url='https://example.com/video', is_published=True)
+
+    def request(self, path, token=None, payload=None, method=None):
+        headers = {'Content-Type':'application/json'}
+        if token:
+            headers['Authorization'] = 'Bearer '+token
+        req = urllib.request.Request(self.live_server_url+'/api/v1/'+path,
+            data=json.dumps(payload).encode() if payload is not None else None, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=20) as response:
+                return response.status, json.load(response)
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read())
+
+    def test_real_http_login_save_state_list_idempotency_and_owner_isolation(self):
+        tokens = []
+        for student in self.students:
+            status, body = self.request('login/', payload={'email':student.email,'password':self.password})
+            self.assertEqual(status, 200, body)
+            tokens.append(body['tokens']['access'])
+        first, second = tokens
+        detail = f'shorts/{self.short.pk}/'
+        save = f'student/shorts/{self.short.pk}/save/'
+        saved = 'student/shorts/saved/'
+        self.assertFalse(self.request(detail, first)[1]['is_saved'])
+        self.assertEqual(self.request(save, first, method='POST'), (201, {'short_id':self.short.pk,'is_saved':True}))
+        self.assertTrue(self.request(detail, first)[1]['is_saved'])
+        self.assertTrue(self.request('shorts/', first)[1][0]['is_saved'])
+        self.assertEqual(self.request(saved, first)[1][0]['id'], self.short.pk)
+        self.assertEqual(self.request(save, first, method='POST')[0], 200)
+        self.assertEqual(ShortBookmark.objects.count(), 1)
+        self.assertFalse(self.request(detail, second)[1]['is_saved'])
+        self.assertEqual(self.request(save, second, method='DELETE')[0], 200)
+        self.assertTrue(self.request(detail, first)[1]['is_saved'])
+        for _ in range(2):
+            self.assertEqual(self.request(save, first, method='DELETE'), (200, {'short_id':self.short.pk,'is_saved':False}))
+        self.assertFalse(self.request(detail, first)[1]['is_saved'])
+        self.assertEqual(self.request(saved, first), (200, []))

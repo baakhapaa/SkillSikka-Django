@@ -1,5 +1,6 @@
 ﻿from django.db.models import Count, Prefetch, Q, QuerySet
 from django.utils import timezone
+from django.db.models import Exists, OuterRef
 from django.db import transaction
 from decimal import Decimal
 from django.db.models import Sum, Count, Avg
@@ -55,6 +56,7 @@ from .models import (
 	Redemption,
 	Reward,
 	Short,
+	ShortBookmark,
 	ShortComment,
 	ShortLike,
 	ShortView,
@@ -3247,6 +3249,59 @@ class StudentPointsAPIView(APIView):
 # Shorts
 # =========================================================
 
+def _shorts_with_saved_state(user):
+	return Short.objects.select_related('instructor').prefetch_related('likes', 'comments').annotate(
+		_is_saved=Exists(ShortBookmark.objects.filter(student=user, short_id=OuterRef('pk'))),
+	)
+
+
+class StudentShortBookmarkAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def initial(self, request, *args, **kwargs):
+		super().initial(request, *args, **kwargs)
+		if not _is_student(request.user):
+			raise PermissionDenied('Only students can save Shorts.')
+
+	@transaction.atomic
+	def post(self, request, short_id):
+		if request.data:
+			raise ValidationError({'detail': 'This endpoint does not accept request body fields.'})
+		short = Short.objects.select_for_update().filter(pk=short_id, is_published=True).first()
+		if short is None:
+			raise NotFound('Short not found or not published.')
+		_, created = ShortBookmark.objects.get_or_create(student=request.user, short=short)
+		return Response({'short_id': short.pk, 'is_saved': True},
+			status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+	@transaction.atomic
+	def delete(self, request, short_id):
+		if request.data:
+			raise ValidationError({'detail': 'This endpoint does not accept request body fields.'})
+		short = Short.objects.select_for_update().filter(pk=short_id).first()
+		if short is None:
+			raise NotFound('Short not found.')
+		ShortBookmark.objects.filter(student=request.user, short=short).delete()
+		return Response({'short_id': short.pk, 'is_saved': False})
+
+
+class SavedShortsListAPIView(generics.ListAPIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = ShortSerializer
+
+	def initial(self, request, *args, **kwargs):
+		super().initial(request, *args, **kwargs)
+		if not _is_student(request.user):
+			raise PermissionDenied('Only students can retrieve saved Shorts.')
+
+	def get_queryset(self):
+		return _shorts_with_saved_state(self.request.user).filter(
+			bookmarks__student=self.request.user, is_published=True,
+		).order_by('-bookmarks__created_at', '-bookmarks__id')
+
+
 class ShortListCreateAPIView(generics.ListCreateAPIView):
 	authentication_classes = [JWTAuthentication]
 	permission_classes = [IsAuthenticated]
@@ -3255,12 +3310,7 @@ class ShortListCreateAPIView(generics.ListCreateAPIView):
 	def get_queryset(self):
 		user = self.request.user
 
-		queryset = Short.objects.select_related(
-			'instructor'
-		).prefetch_related(
-			'likes',
-			'comments'
-		)
+		queryset = _shorts_with_saved_state(user)
 
 		if _is_admin(user):
 			return queryset.order_by('-created_at')
@@ -3299,12 +3349,7 @@ class ShortDetailAPIView(
 	def get_queryset(self):
 		user = self.request.user
 
-		queryset = Short.objects.select_related(
-			'instructor'
-		).prefetch_related(
-			'likes',
-			'comments'
-		)
+		queryset = _shorts_with_saved_state(user)
 
 		if _is_admin(user):
 			return queryset

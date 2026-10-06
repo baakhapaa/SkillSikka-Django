@@ -2049,6 +2049,7 @@ class ShortSerializer(serializers.ModelSerializer):
 	like_count = serializers.SerializerMethodField()
 	comment_count = serializers.SerializerMethodField()
 	is_liked = serializers.SerializerMethodField()
+	is_saved = serializers.SerializerMethodField()
 
 	class Meta:
 		model = Short
@@ -2065,6 +2066,7 @@ class ShortSerializer(serializers.ModelSerializer):
 			'like_count',
 			'comment_count',
 			'is_liked',
+			'is_saved',
 			'created_at',
 			'updated_at',
 		]
@@ -2077,9 +2079,18 @@ class ShortSerializer(serializers.ModelSerializer):
 			'like_count',
 			'comment_count',
 			'is_liked',
+			'is_saved',
 			'created_at',
 			'updated_at',
 		]
+
+	def get_is_saved(self, obj):
+		request = self.context.get('request')
+		if not request or not request.user.is_authenticated:
+			return False
+		if getattr(getattr(request.user, 'role', None), 'name', '') != 'student':
+			return False
+		return bool(getattr(obj, '_is_saved', False))
 
 	def get_like_count(self, obj):
 		return obj.likes.count()

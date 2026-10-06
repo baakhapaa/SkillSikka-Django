@@ -1163,6 +1163,18 @@ class ShortLike(models.Model):
 		return f'{self.student.email} likes {self.short.title}'
 
 
+class ShortBookmark(models.Model):
+	student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='short_bookmarks')
+	short = models.ForeignKey(Short, on_delete=models.CASCADE, related_name='bookmarks')
+	created_at = models.DateTimeField(auto_now_add=True)
+
+	class Meta:
+		db_table = 'short_bookmarks'
+		constraints = [models.UniqueConstraint(
+			fields=['student', 'short'], name='unique_short_bookmark_per_student',
+		)]
+
+
 class ShortComment(models.Model):
 	student = models.ForeignKey(
 		User,
