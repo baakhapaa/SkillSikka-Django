@@ -237,7 +237,7 @@ LOGOUT_REDIRECT_URL = '/login'
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'core.authentication.EmailVerifiedJWTAuthentication',
     ),
     'DEFAULT_SCHEMA_CLASS': (
         'drf_spectacular.openapi.AutoSchema'
@@ -311,6 +311,7 @@ GEMINI_API_KEY = config(
 from datetime import timedelta
 
 SIMPLE_JWT = {
+    'USER_AUTHENTICATION_RULE': 'core.authentication.email_authentication_rule',
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
 }

@@ -1,6 +1,7 @@
 from django.urls import path
 
 from rest_framework_simplejwt.views import TokenRefreshView
+from .signup_views import VerifyInstructorSignupOTPAPIView, ResendInstructorSignupOTPAPIView
 
 from .analytics_views import (
 	TeacherChallengeAnalyticsAPIView,
@@ -117,6 +118,8 @@ from .api_views import (
 
 
 urlpatterns = [
+	path('register/instructor/verify-otp/', VerifyInstructorSignupOTPAPIView.as_view(), name='api-instructor-signup-verify'),
+	path('register/instructor/resend-otp/', ResendInstructorSignupOTPAPIView.as_view(), name='api-instructor-signup-resend'),
 	# =========================
 	# Roles
 	# =========================

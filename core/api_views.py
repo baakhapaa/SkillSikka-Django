@@ -16,7 +16,7 @@ from rest_framework.views import APIView
 from rest_framework import serializers
 
 
-from rest_framework_simplejwt.authentication import JWTAuthentication
+from .authentication import EmailVerifiedJWTAuthentication as JWTAuthentication
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -159,6 +159,16 @@ class RegistrationResponseMixin:
 			)
 
 		user = serializer.save()
+		if self.role_name == 'instructor':
+			return Response({
+				'user': {
+					'id': str(user.id), 'email': user.email, 'name': user.name,
+					'role': 'instructor', 'verification_status': user.verification_status,
+					'email_verified': user.email_verified,
+				},
+				'detail': 'Verify your email to complete signup.',
+				'email_verification_required': True,
+			}, status=status.HTTP_201_CREATED)
 		refresh = RefreshToken.for_user(user)
 
 		return Response(
@@ -291,6 +301,7 @@ def _current_user_payload(request, user):
 		'location': user.location,
 		'verification_status': user.verification_status,
 		'onboarding_completed': user.onboarding_completed,
+		'email_verified': user.email_verified,
 		'is_active': user.is_active,
 
 		'grade_id': student_profile.grade_id if student_profile else None,

@@ -114,11 +114,11 @@ class GeographyManagementTests(TestCase):
 
 class RegistrationApiTests(TestCase):
 	def setUp(self):
-		self.province = Province.objects.create(name='Bagmati')
-		self.district = District.objects.create(name='Kathmandu', province=self.province)
-		self.municipality = Municipality.objects.create(name='Kirtipur', district=self.district)
+		self.province = Province.objects.create(name='Registration Test Province')
+		self.district = District.objects.create(name='Registration Test District', province=self.province)
+		self.municipality = Municipality.objects.create(name='Registration Test Municipality', district=self.district)
 		self.school = School.objects.create(name='SkillSikka Academy', municipality=self.municipality, sector='private')
-		self.grade = Grade.objects.create(name='Grade 8')
+		self.grade = Grade.objects.create(name='Registration Test Grade')
 
 	def student_payload(self, **overrides):
 		payload = {
@@ -139,13 +139,15 @@ class RegistrationApiTests(TestCase):
 		payload.update(overrides)
 		return payload
 
-	def test_student_registration_creates_pending_profile_without_optional_school(self):
+	def test_student_registration_creates_incomplete_profile_without_optional_school(self):
 		response = self.client.post('/api/v1/register/student/', self.student_payload(), content_type='application/json')
 		self.assertEqual(response.status_code, 201)
 		user = User.objects.get(email='student@example.com')
-		self.assertTrue(StudentProfile.objects.filter(user=user, school=None, grade=self.grade).exists())
+		self.assertTrue(StudentProfile.objects.filter(user=user, school=None, grade=None).exists())
 		self.assertEqual(user.role.name, 'student')
-		self.assertEqual(user.verification_status, 'pending')
+		self.assertEqual(user.verification_status, 'not_applicable')
+		self.assertFalse(user.onboarding_completed)
+		self.assertIn('tokens', response.json())
 
 	def test_instructor_registration_requires_matching_address_and_supports_school(self):
 		payload = {

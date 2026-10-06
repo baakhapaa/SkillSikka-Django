@@ -13,6 +13,7 @@ from django.db import transaction
 from django.utils import timezone
 from django.utils.text import slugify
 from rest_framework import serializers
+from .signup_otp import issue_signup_otp
 
 from .models import (
 	Badge,
@@ -256,6 +257,8 @@ class RegistrationSerializer(serializers.Serializer):
 		user.set_password(password)
 		user.role = user_role(role_name)
 		user.onboarding_completed = onboarding_completed
+		if role_name == 'instructor':
+			user.email_verified = False
 		user.verification_status = (
 			'pending' if role_name == 'instructor' else 'not_applicable'
 		)
@@ -485,6 +488,7 @@ class InstructorRegistrationSerializer(RegistrationSerializer):
 				),
 			)
 
+		issue_signup_otp(user)
 		return user
 
 
@@ -791,6 +795,9 @@ class LoginSerializer(serializers.Serializer):
 			raise serializers.ValidationError({
 				'detail': 'This account is inactive.'
 			})
+
+		if user.role.name == 'instructor' and not user.email_verified:
+			raise serializers.ValidationError({'detail': 'Verify your email before signing in.'})
 
 		attrs['user'] = user
 		return attrs

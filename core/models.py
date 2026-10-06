@@ -206,6 +206,8 @@ class User(AbstractBaseUser, PermissionsMixin):
 	location = models.CharField(max_length=255, blank=True)
 
 	onboarding_completed = models.BooleanField(default=False)
+	# Legacy accounts remain usable; instructor signup explicitly sets False.
+	email_verified = models.BooleanField(default=True)
 	onboarding_step = models.PositiveSmallIntegerField(default=0)
 
 	verification_status = models.CharField(
@@ -501,6 +503,19 @@ class Lesson(models.Model):
 
 	def __str__(self):
 		return self.title
+
+
+class InstructorSignupOTP(models.Model):
+	user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='instructor_signup_otps')
+	otp_hash = models.CharField(max_length=128)
+	created_at = models.DateTimeField(auto_now_add=True)
+	expires_at = models.DateTimeField()
+	is_used = models.BooleanField(default=False)
+	failed_attempts = models.PositiveSmallIntegerField(default=0)
+
+	class Meta:
+		db_table = 'instructor_signup_otps'
+		ordering = ['-created_at', '-pk']
 
 
 class PasswordResetOTP(models.Model):

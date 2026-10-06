@@ -50,6 +50,8 @@ def login_view(request):
 				messages.error(request, 'This account is inactive. Contact an administrator.')
 			else:
 				messages.error(request, 'The email or password is incorrect.')
+		elif user.role.name == 'instructor' and not user.email_verified:
+			messages.warning(request, 'Verify your email before signing in.')
 		elif not user.onboarding_completed:
 			messages.warning(request, 'Complete onboarding before signing in.')
 		elif not user.is_active:
