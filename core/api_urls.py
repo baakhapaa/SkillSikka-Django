@@ -2,7 +2,7 @@ from django.urls import path
 from .advertisement_views import AdvertisementListAPIView, AdvertisementAdminListAPIView, AdvertisementAdminDetailAPIView
 
 from rest_framework_simplejwt.views import TokenRefreshView
-from .signup_views import VerifyInstructorSignupOTPAPIView, ResendInstructorSignupOTPAPIView
+from .signup_views import VerifyInstructorSignupOTPAPIView, ResendInstructorSignupOTPAPIView, VerifyStudentSignupOTPAPIView, ResendStudentSignupOTPAPIView
 from .learning_interest_views import LearningInterestListAPIView, MyLearningInterestsAPIView
 
 from .analytics_views import (
@@ -128,6 +128,8 @@ urlpatterns = [
 	path('learning-interests/', LearningInterestListAPIView.as_view(), name='api-learning-interests'),
 	path('me/learning-interests/', MyLearningInterestsAPIView.as_view(), name='api-my-learning-interests'),
 	path('register/instructor/verify-otp/', VerifyInstructorSignupOTPAPIView.as_view(), name='api-instructor-signup-verify'),
+	path('register/student/verify-otp/', VerifyStudentSignupOTPAPIView.as_view(), name='api-student-signup-verify'),
+	path('register/student/resend-otp/', ResendStudentSignupOTPAPIView.as_view(), name='api-student-signup-resend'),
 	path('register/instructor/resend-otp/', ResendInstructorSignupOTPAPIView.as_view(), name='api-instructor-signup-resend'),
 	# =========================
 	# Roles

@@ -246,10 +246,11 @@ class InstructorSignupOTPTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('tokens', response.data)
 
-    def test_password_reset_stays_six_digits_and_does_not_verify_signup(self):
+    def test_four_digit_password_reset_is_independent_of_signup_verification(self):
         self.register()
-        self.client.post('/api/v1/forgot-password/', {'email': self.user.email}, format='json')
-        reset_otp = re.search(r'OTP is ([0-9]{6})\.', mail.outbox[-1].body).group(1)
+        with patch('core.serializers.secrets.randbelow', return_value=(int(self.otp) + 1) % 10000):
+            self.client.post('/api/v1/forgot-password/', {'email': self.user.email}, format='json')
+        reset_otp = re.search(r'OTP is ([0-9]{4})\.', mail.outbox[-1].body).group(1)
         self.assertEqual(self.verify(reset_otp).status_code, 400)
         record = PasswordResetOTP.objects.get(user=self.user)
         self.assertTrue(check_password(reset_otp, record.otp_hash))
@@ -267,14 +268,194 @@ class InstructorSignupOTPTests(TestCase):
         self.assertTrue(self.user.check_password('Another-strong-password-456'))
         self.assertEqual(self.verify().status_code, 200)
 
-    def test_student_registration_remains_immediately_authenticated(self):
+    def test_student_registration_uses_shared_signup_otp(self):
         payload = dict(self.payload, email='student@example.com')
         response = self.client.post('/api/v1/register/student/', payload, format='json')
         self.assertEqual(response.status_code, 201)
-        self.assertIn('tokens', response.data)
-        self.assertNotIn('email_verification_required', response.data)
-        self.assertEqual(InstructorSignupOTP.objects.count(), 0)
-        self.assertEqual(len(mail.outbox), 0)
+        self.assertNotIn('tokens', response.data)
+        self.assertTrue(response.data['email_verification_required'])
+        self.assertEqual(InstructorSignupOTP.objects.count(), 1)
+        self.assertEqual(len(mail.outbox), 1)
+
+
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+class StudentSignupOTPTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.payload = {'email':'signup-student@example.com','name':'Student','gender':'other','dob':'2010-01-01',
+                        'password':'Student-original-password-123!','confirm_password':'Student-original-password-123!'}
+        self.verify_url = '/api/v1/register/student/verify-otp/'
+        self.resend_url = '/api/v1/register/student/resend-otp/'
+
+    def register(self, url='/api/v1/register/student/'):
+        with patch('core.signup_otp.secrets.randbelow', return_value=7):
+            response = self.client.post(url, self.payload, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        self.user = User.objects.get(email=self.payload['email'])
+        self.otp = re.search(r'OTP is ([0-9]{4})\.', mail.outbox[-1].body).group(1)
+        return response
+
+    def verify(self, otp=None, url=None):
+        return self.client.post(url or self.verify_url, {'email':self.user.email,'otp':otp or self.otp}, format='json')
+
+    def test_new_signup_uses_existing_model_hash_helper_and_no_jwt(self):
+        response = self.register()
+        self.assertNotIn('tokens', response.data)
+        self.assertNotIn('access', response.data)
+        self.assertNotIn('refresh', response.data)
+        self.assertTrue(response.data['email_verification_required'])
+        self.assertFalse(response.data['user']['email_verified'])
+        self.assertFalse(self.user.email_verified)
+        self.assertEqual(self.user.verification_status, 'not_applicable')
+        self.assertEqual(self.otp, '0007')
+        record = InstructorSignupOTP.objects.get(user=self.user)
+        self.assertTrue(check_password(self.otp, record.otp_hash))
+        self.assertNotEqual(record.otp_hash, self.otp)
+        self.assertAlmostEqual((record.expires_at-record.created_at).total_seconds(),600,delta=2)
+        self.assertEqual(record.failed_attempts, 0)
+        self.assertEqual(self.user.student_profile.onboarding_flow_version, 2)
+        self.assertFalse(self.user.student_profile.profile_completed)
+        self.assertFalse(self.user.onboarding_completed)
+        self.assertEqual(self.user.onboarding_step, 2)
+        self.assertNotIn(self.otp, str(response.data))
+        self.assertEqual(mail.outbox[-1].subject, 'SkillSikka Student Signup OTP')
+
+    def test_verification_returns_usable_jwt_without_completing_onboarding(self):
+        self.register()
+        response = self.verify()
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['user']['role'], 'student')
+        self.assertTrue(response.data['user']['email_verified'])
+        self.assertIn('access', response.data['tokens'])
+        self.assertIn('refresh', response.data['tokens'])
+        self.client.credentials(HTTP_AUTHORIZATION='Bearer '+response.data['tokens']['access'])
+        me = self.client.get('/api/v1/me/')
+        self.assertEqual(me.status_code, 200, me.data)
+        self.assertTrue(me.data['email_verified'])
+        self.assertFalse(me.data['onboarding_completed'])
+        self.assertFalse(me.data['profile_completed'])
+        self.assertEqual(me.data['onboarding_step'], 2)
+        self.assertTrue(InstructorSignupOTP.objects.get(user=self.user).is_used)
+        self.assertEqual(self.verify().status_code, 400)
+        self.assertEqual(self.client.post('/api/v1/login/', {'email':self.user.email,'password':self.payload['password']}, format='json').status_code, 200)
+        self.assertEqual(self.client.post('/api/v1/token/refresh/', {'refresh':response.data['tokens']['refresh']}, format='json').status_code, 200)
+
+    def test_unverified_login_refresh_and_authenticated_apis_are_denied(self):
+        self.register()
+        self.assertEqual(self.client.post('/api/v1/login/', {'email':self.user.email,'password':self.payload['password']}, format='json').status_code, 400)
+        refresh = RefreshToken.for_user(self.user)
+        self.assertEqual(self.client.post('/api/v1/token/refresh/', {'refresh':str(refresh)}, format='json').status_code, 401)
+        self.client.credentials(HTTP_AUTHORIZATION='Bearer '+str(refresh.access_token))
+        for path in ('/api/v1/me/','/api/v1/learning-interests/','/api/v1/advertisements/','/api/v1/shorts/'):
+            self.assertEqual(self.client.get(path).status_code, 401)
+
+    def test_failed_attempt_cap_and_expiry_are_shared(self):
+        self.register()
+        for attempt in range(1,6):
+            response = self.verify('9999')
+            self.assertEqual(response.status_code, 400)
+            self.assertNotIn('tokens', response.data)
+            record = InstructorSignupOTP.objects.get(user=self.user)
+            self.assertEqual(record.failed_attempts, attempt)
+        self.assertTrue(record.is_used)
+        self.assertEqual(self.verify().status_code, 400)
+        record.created_at = timezone.now()-timedelta(seconds=61)
+        record.save(update_fields=['created_at'])
+        self.client.post(self.resend_url, {'email':self.user.email}, format='json')
+        record = InstructorSignupOTP.objects.filter(user=self.user,is_used=False).get()
+        record.expires_at = timezone.now()-timedelta(seconds=1)
+        record.save(update_fields=['expires_at'])
+        self.assertEqual(self.verify().status_code, 400)
+        record.refresh_from_db()
+        self.assertTrue(record.is_used)
+
+    def test_resend_cooldown_invalidation_and_replacement_verification(self):
+        self.register()
+        old = InstructorSignupOTP.objects.get(user=self.user)
+        response = self.client.post(self.resend_url, {'email':self.user.email}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+        InstructorSignupOTP.objects.filter(pk=old.pk).update(created_at=timezone.now()-timedelta(seconds=61))
+        with patch('core.signup_otp.secrets.randbelow',return_value=421):
+            response = self.client.post(self.resend_url, {'email':self.user.email}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('0421', str(response.data))
+        old.refresh_from_db()
+        self.assertTrue(old.is_used)
+        self.assertEqual(self.verify(self.otp).status_code, 400)
+        self.assertEqual(self.verify('0421').status_code, 200)
+
+    def test_role_specific_endpoints_cannot_verify_or_resend_other_role(self):
+        self.register()
+        self.assertEqual(self.verify(url='/api/v1/register/instructor/verify-otp/').status_code,400)
+        self.client.post('/api/v1/register/instructor/resend-otp/', {'email':self.user.email}, format='json')
+        self.assertEqual(len(mail.outbox),1)
+        self.assertEqual(self.verify().status_code,200)
+
+    def test_resend_privacy_for_unknown_verified_and_inactive_accounts(self):
+        self.register()
+        suppressed = self.client.post(self.resend_url, {'email':self.user.email}, format='json').data
+        missing = self.client.post(self.resend_url, {'email':'unknown@example.com'}, format='json').data
+        self.assertEqual(suppressed, missing)
+        self.user.is_active = False
+        self.user.save(update_fields=['is_active'])
+        self.assertEqual(self.client.post(self.resend_url, {'email':self.user.email}, format='json').data,missing)
+        self.assertEqual(self.verify().status_code,400)
+        self.user.is_active = True
+        self.user.email_verified = True
+        self.user.save(update_fields=['is_active','email_verified'])
+        self.assertEqual(self.client.post(self.resend_url, {'email':self.user.email}, format='json').data,missing)
+        self.assertEqual(len(mail.outbox),1)
+
+    def test_legacy_completed_and_incomplete_students_stay_usable(self):
+        from .models import StudentProfile
+        for completed in (False, True):
+            user = User.objects.create_user(email=f'legacy-signup-{completed}@example.com',name='Legacy',
+                password=self.payload['password'],role=Role.objects.get(name='student'),
+                onboarding_completed=completed,onboarding_step=3)
+            StudentProfile.objects.create(user=user)
+            self.assertTrue(user.email_verified)
+            response = self.client.post('/api/v1/login/', {'email':user.email,'password':self.payload['password']}, format='json')
+            self.assertEqual(response.status_code,200,response.data)
+            self.client.credentials(HTTP_AUTHORIZATION='Bearer '+response.data['tokens']['access'])
+            me = self.client.get('/api/v1/me/')
+            self.assertEqual(me.status_code,200)
+            self.assertEqual((me.data['onboarding_completed'],me.data['onboarding_step']), (completed,3))
+            self.client.credentials()
+        self.assertEqual(InstructorSignupOTP.objects.count(),0)
+
+    def test_email_failure_rolls_back_registration_and_shared_otp(self):
+        with patch('core.signup_otp.send_mail',side_effect=RuntimeError('Email unavailable')):
+            with self.assertRaises(RuntimeError):
+                self.client.post('/api/v1/register/student/',self.payload,format='json')
+        self.assertFalse(User.objects.filter(email=self.payload['email']).exists())
+        self.assertEqual(InstructorSignupOTP.objects.count(),0)
+
+    def test_password_reset_remains_four_digits_and_does_not_verify_student_signup(self):
+        self.register()
+        with patch('core.serializers.secrets.randbelow',return_value=421):
+            self.client.post('/api/v1/forgot-password/',{'email':self.user.email},format='json')
+        self.assertEqual(self.verify('0421').status_code,400)
+        response = self.client.post('/api/v1/forgot-password/verify-otp/',{'email':self.user.email,'otp':'0421'},format='json')
+        self.assertEqual(response.status_code,200,response.data)
+        self.client.post('/api/v1/forgot-password/reset/',{'reset_token':response.data['reset_token'],
+            'new_password':'New-student-password-456!','confirm_password':'New-student-password-456!'},format='json')
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.email_verified)
+        self.assertEqual(self.client.post('/api/v1/login/',{'email':self.user.email,'password':'New-student-password-456!'},format='json').status_code,400)
+        self.assertEqual(self.verify().status_code,200)
+
+    def test_unversioned_student_registration_uses_same_flow(self):
+        response = self.register('/api/register/student/')
+        self.assertNotIn('tokens',response.data)
+        self.assertEqual(self.verify().status_code,200)
+
+    def test_malformed_signup_codes_rejected(self):
+        self.register()
+        for otp in ('007','00007','abcd',' 0007','0007 ','0007\n'):
+            self.assertEqual(self.verify(otp).status_code,400)
+        self.assertEqual(InstructorSignupOTP.objects.get(user=self.user).failed_attempts,0)
 
 
 class InstructorEmailMigrationTests(TransactionTestCase):
@@ -393,10 +574,18 @@ class InstructorSignupOTPLiveTests(LiveServerTestCase):
         self.assertEqual(self.request('register/instructor/verify-otp/', {'email': resend_user.email, 'otp': old_otp})[0], 400)
         self.assertEqual(self.request('register/instructor/verify-otp/', {'email': resend_user.email, 'otp': new_otp})[0], 200)
 
-        status, body = self.request('register/student/', dict(self.payload, email='integrated-student@example.com'))
+        (status, body), codes = self.console_request('register/student/', dict(self.payload, email='integrated-student@example.com'))
         self.assertEqual(status, 201)
-        self.assertIn('tokens', body)
-        self.assertNotIn('email_verification_required', body)
+        self.assertNotIn('tokens', body)
+        self.assertTrue(body['email_verification_required'])
+        self.assertEqual(self.request('login/', {
+            'email': 'integrated-student@example.com', 'password': self.payload['password'],
+        })[0], 400)
+        status, body = self.request('register/student/verify-otp/', {
+            'email': 'integrated-student@example.com', 'otp': codes[0],
+        })
+        self.assertEqual(status, 200)
+        self.assertTrue(body['user']['email_verified'])
         self.assertEqual(self.request('me/', token=body['tokens']['access'])[0], 200)
         self.assertEqual(self.request('login/', {
             'email': 'integrated-student@example.com', 'password': self.payload['password'],

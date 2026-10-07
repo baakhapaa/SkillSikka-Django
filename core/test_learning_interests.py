@@ -1,5 +1,6 @@
 import importlib
 import json
+import re
 from types import SimpleNamespace
 import urllib.error
 import urllib.request
@@ -7,9 +8,10 @@ from unittest.mock import patch
 
 from django.apps import apps
 from django.core.cache import cache
+from django.core import mail
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
-from django.test import LiveServerTestCase, TestCase, TransactionTestCase
+from django.test import LiveServerTestCase, TestCase, TransactionTestCase, override_settings
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -24,6 +26,7 @@ EXPECTED_INTERESTS = [
 ]
 
 
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
 class StudentLearningInterestsTests(TestCase):
     def setUp(self):
         self.client = APIClient()
@@ -39,6 +42,10 @@ class StudentLearningInterestsTests(TestCase):
         self.assertEqual(response.status_code, 201, response.data)
         self.registration = response.data
         self.student = User.objects.get(email=self.payload['email'])
+        otp = re.search(r'OTP is ([0-9]{4})\.', mail.outbox[-1].body).group(1)
+        response = self.client.post('/api/v1/register/student/verify-otp/', {'email':self.student.email,'otp':otp}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.student.refresh_from_db()
         self.client.credentials(HTTP_AUTHORIZATION='Bearer ' + response.data['tokens']['access'])
         self.ids = list(LearningInterest.objects.values_list('id', flat=True))
         province = Province.objects.create(name='Interest test province')
@@ -67,9 +74,10 @@ class StudentLearningInterestsTests(TestCase):
         self.assertEqual([(i['name'], i['slug']) for i in response.data], EXPECTED_INTERESTS)
         self.assertEqual(set(response.data[0]), {'id', 'name', 'slug', 'description', 'display_order'})
 
-    def test_new_registration_keeps_jwts_and_enables_new_flow(self):
-        self.assertIn('access', self.registration['tokens'])
-        self.assertIn('refresh', self.registration['tokens'])
+    def test_new_registration_requires_email_verification_and_enables_new_flow(self):
+        self.assertNotIn('tokens', self.registration)
+        self.assertTrue(self.registration['email_verification_required'])
+        self.assertTrue(self.student.email_verified)
         self.assertEqual(self.student.student_profile.onboarding_flow_version, 2)
         self.assertFalse(self.student.onboarding_completed)
         self.assertEqual(self.student.onboarding_step, 2)
@@ -287,6 +295,7 @@ class LearningInterestMigrationTests(TransactionTestCase):
             MigrationExecutor(connection).migrate(latest)
 
 
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
 class StudentLearningInterestsLiveTests(LiveServerTestCase):
     def setUp(self):
         cache.clear()
@@ -322,6 +331,10 @@ class StudentLearningInterestsLiveTests(LiveServerTestCase):
             'gender': 'other', 'dob': '2010-01-01',
         })
         self.assertEqual(status, 201)
+        self.assertNotIn('tokens', body)
+        otp = re.search(r'OTP is ([0-9]{4})\.', mail.outbox[-1].body).group(1)
+        status, body = self.request('register/student/verify-otp/', {'email':'live-interest@example.com','otp':otp})
+        self.assertEqual(status, 200)
         token = body['tokens']['access']
         status, body = self.request('me/complete-profile/', self.profile_payload, token)
         self.assertEqual(status, 200)

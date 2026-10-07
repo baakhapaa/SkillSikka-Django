@@ -258,7 +258,7 @@ class RegistrationSerializer(serializers.Serializer):
 		user.set_password(password)
 		user.role = user_role(role_name)
 		user.onboarding_completed = onboarding_completed
-		if role_name == 'instructor':
+		if role_name in ('student', 'instructor'):
 			user.email_verified = False
 		user.verification_status = (
 			'pending' if role_name == 'instructor' else 'not_applicable'
@@ -331,6 +331,7 @@ class StudentRegistrationSerializer(RegistrationSerializer):
 				update_fields=['student_id_card_document']
 			)
 
+		issue_signup_otp(user)
 		return user
 
 
@@ -804,7 +805,7 @@ class LoginSerializer(serializers.Serializer):
 				'detail': 'This account is inactive.'
 			})
 
-		if user.role.name == 'instructor' and not user.email_verified:
+		if user.role.name in ('student', 'instructor') and not user.email_verified:
 			raise serializers.ValidationError({'detail': 'Verify your email before signing in.'})
 
 		attrs['user'] = user
@@ -825,7 +826,7 @@ class ForgotPasswordSerializer(serializers.Serializer):
 		except User.DoesNotExist:
 			return
 
-		otp = str(secrets.randbelow(900000) + 100000)
+		otp = f'{secrets.randbelow(10000):04d}'
 
 		PasswordResetOTP.objects.filter(
 			user=user,
@@ -857,11 +858,19 @@ class ForgotPasswordSerializer(serializers.Serializer):
 class VerifyPasswordResetOTPSerializer(serializers.Serializer):
 	email = serializers.EmailField()
 
-	otp = serializers.CharField(
-		min_length=6,
-		max_length=6,
-		write_only=True
+	otp = serializers.RegexField(
+		regex=r'^[0-9]{4}$',
+		min_length=4,
+		max_length=4,
+		trim_whitespace=False,
+		write_only=True,
+		error_messages={'invalid': 'Enter exactly 4 numeric digits.'},
 	)
+
+	def validate_otp(self, value):
+		if not isinstance(self.initial_data.get('otp'), str):
+			raise serializers.ValidationError('Enter exactly 4 numeric digits as a string.')
+		return value
 
 	def validate(self, attrs):
 		email = attrs['email'].strip().lower()

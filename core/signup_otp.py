@@ -1,4 +1,4 @@
-"""Email verification for instructor signup, independent of password reset."""
+"""Shared student/instructor signup email verification, separate from password reset."""
 from datetime import timedelta
 import secrets
 
@@ -23,7 +23,7 @@ def issue_signup_otp(user):
         expires_at=timezone.now() + timedelta(seconds=OTP_EXPIRY_SECONDS),
     )
     send_mail(
-        'SkillSikka Instructor Signup OTP',
+        f'SkillSikka {user.role.name.title()} Signup OTP',
         f'Your SkillSikka signup OTP is {otp}. This OTP expires in 10 minutes.',
         settings.DEFAULT_FROM_EMAIL, [user.email], fail_silently=False,
     )

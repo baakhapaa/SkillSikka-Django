@@ -5,7 +5,7 @@ from rest_framework_simplejwt.authentication import default_user_authentication_
 
 def email_authentication_rule(user):
     return default_user_authentication_rule(user) and not (
-        user.role.name == 'instructor' and not user.email_verified
+        user.role.name in ('student', 'instructor') and not user.email_verified
     )
 
 

@@ -1,15 +1,19 @@
 import shutil
 import tempfile
 import json
+import re
 import urllib.error
 import urllib.request
 from datetime import timedelta
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, LiveServerTestCase, override_settings
 from django.db import connection, IntegrityError, transaction
 from django.core.cache import cache
+from django.core import mail
+from django.contrib.auth.hashers import check_password
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from django.urls import reverse
@@ -17,6 +21,7 @@ from rest_framework.test import APIClient
 
 from .models import District, Grade, InstructorProfile, Municipality, Permission, Province, Role, School, StudentProfile, User, VerificationDocument
 from .models import Short, ShortBookmark, ShortComment, ShortLike, ShortView
+from .models import PasswordResetOTP
 from .serializers import ShortSerializer
 
 
@@ -158,7 +163,9 @@ class RegistrationApiTests(TestCase):
 		self.assertEqual(user.role.name, 'student')
 		self.assertEqual(user.verification_status, 'not_applicable')
 		self.assertFalse(user.onboarding_completed)
-		self.assertIn('tokens', response.json())
+		self.assertNotIn('tokens', response.json())
+		self.assertTrue(response.json()['email_verification_required'])
+		self.assertFalse(user.email_verified)
 
 	def test_instructor_registration_requires_matching_address_and_supports_school(self):
 		payload = {
@@ -409,6 +416,139 @@ class CurrentUserProfileFieldsTests(TestCase):
 		response = self.client.patch('/api/v1/me/', {'profile_photo': big}, format='multipart')
 		self.assertEqual(response.status_code, 400)
 		self.assertIn('profile_photo', response.json())
+
+
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+class PasswordResetOTPTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.user = User.objects.create_user(email='reset-student@example.com', name='Student',
+            password='Original-strong-password-123!', role=Role.objects.get(name='student'))
+        self.request_url = '/api/v1/forgot-password/'
+        self.verify_url = self.request_url+'verify-otp/'
+        self.reset_url = self.request_url+'reset/'
+
+    def issue(self, number=7):
+        with patch('core.serializers.secrets.randbelow', return_value=number) as random:
+            response = self.client.post(self.request_url, {'email':self.user.email}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        random.assert_called_once_with(10000)
+        otp = re.search(r'OTP is ([0-9]{4})\.', mail.outbox[-1].body).group(1)
+        self.assertNotIn(otp, str(response.data))
+        return otp
+
+    def verify(self, otp, email=None):
+        return self.client.post(self.verify_url, {'email':email or self.user.email,'otp':otp}, format='json')
+
+    def test_generation_exact_four_numeric_digits_leading_zeros_hash_and_expiry(self):
+        for number, expected in ((0,'0000'),(7,'0007'),(421,'0421'),(5832,'5832'),(9999,'9999')):
+            with self.subTest(number=number):
+                before = timezone.now()
+                otp = self.issue(number)
+                self.assertEqual(otp, expected)
+                record = PasswordResetOTP.objects.filter(user=self.user).latest('pk')
+                self.assertNotEqual(record.otp_hash, otp)
+                self.assertTrue(check_password(otp, record.otp_hash))
+                self.assertGreaterEqual(record.expires_at, before+timedelta(minutes=10))
+                self.assertLessEqual(record.expires_at, timezone.now()+timedelta(minutes=10))
+
+    def test_valid_leading_zero_otp_verifies_once_and_full_reset_login_works(self):
+        otp = self.issue()
+        response = self.verify(otp)
+        self.assertEqual(response.status_code, 200, response.data)
+        token = response.data['reset_token']
+        self.assertTrue(PasswordResetOTP.objects.get(user=self.user).is_used)
+        self.assertEqual(self.verify(otp).status_code, 400)
+        password = 'New-strong-password-456!'
+        response = self.client.post(self.reset_url, {'reset_token':token,'new_password':password,
+                                   'confirm_password':password}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        response = self.client.post('/api/v1/login/', {'email':self.user.email,'password':password}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIn('tokens', response.data)
+        self.assertEqual(self.client.post('/api/v1/login/', {'email':self.user.email,
+            'password':'Original-strong-password-123!'}, format='json').status_code, 400)
+
+    def test_wrong_otp_fails_without_consuming_valid_code(self):
+        otp = self.issue()
+        self.assertEqual(self.verify('9999').status_code, 400)
+        self.assertFalse(PasswordResetOTP.objects.get(user=self.user).is_used)
+        self.assertEqual(self.verify(otp).status_code, 200)
+
+    def test_malformed_otp_formats_rejected_without_consuming_code(self):
+        otp = self.issue()
+        for value in ('007','00007','000007','abcd','0a07',' 0007','0007 ','0007\n',
+                      '\u0660\u0660\u0660\u0667','-007','',None,1234,1234.0,True,[],{}):
+            with self.subTest(value=value):
+                response = self.verify(value)
+                self.assertEqual(response.status_code, 400, response.data)
+                self.assertIn('otp', response.data)
+                self.assertFalse(PasswordResetOTP.objects.get(user=self.user).is_used)
+        self.assertEqual(self.verify(otp).status_code, 200)
+
+    def test_expired_otp_is_rejected_and_marked_used(self):
+        otp = self.issue()
+        PasswordResetOTP.objects.filter(user=self.user).update(expires_at=timezone.now()-timedelta(seconds=1))
+        self.assertEqual(self.verify(otp).status_code, 400)
+        self.assertTrue(PasswordResetOTP.objects.get(user=self.user).is_used)
+
+    def test_new_request_invalidates_old_otp_without_new_cooldown(self):
+        old = self.issue(7)
+        new = self.issue(421)
+        self.assertEqual(PasswordResetOTP.objects.filter(user=self.user,is_used=False).count(), 1)
+        self.assertEqual(self.verify(old).status_code, 400)
+        self.assertEqual(self.verify(new).status_code, 200)
+
+    def test_unknown_email_response_matches_known_email_and_sends_no_email(self):
+        self.issue()
+        known = self.client.post(self.request_url, {'email':self.user.email}, format='json')
+        count = len(mail.outbox)
+        unknown = self.client.post(self.request_url, {'email':'unknown@example.com'}, format='json')
+        self.assertEqual(unknown.status_code, known.status_code)
+        self.assertEqual(unknown.data, known.data)
+        self.assertEqual(len(mail.outbox), count)
+        self.assertEqual(self.verify('0007',email='unknown@example.com').status_code, 400)
+
+    def test_reset_password_validation_and_signed_token_expiry_unchanged(self):
+        token = self.verify(self.issue()).data['reset_token']
+        for data in ({'new_password':'123','confirm_password':'123'},
+                     {'new_password':'Long-password-123','confirm_password':'Different-password-123'}):
+            self.assertEqual(self.client.post(self.reset_url, dict(reset_token=token, **data), format='json').status_code, 400)
+        with patch('django.core.signing.time.time', return_value=timezone.now().timestamp()+601):
+            response = self.client.post(self.reset_url, {'reset_token':token,'new_password':'Long-password-123',
+                'confirm_password':'Long-password-123'}, format='json')
+        self.assertEqual(response.status_code, 400)
+
+
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+class PasswordResetOTPLiveTests(LiveServerTestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(email='live-reset@example.com', name='Student',
+            password='Original-password-123!', role=Role.objects.get_or_create(name='student')[0])
+
+    def request(self, path, payload):
+        req = urllib.request.Request(self.live_server_url+'/api/v1/'+path,
+            data=json.dumps(payload).encode(), headers={'Content-Type':'application/json'})
+        with urllib.request.urlopen(req, timeout=20) as response:
+            return response.status, json.load(response)
+
+    def test_real_http_four_digit_request_verify_reset_login(self):
+        with patch('core.serializers.secrets.randbelow', return_value=7):
+            status, body = self.request('forgot-password/', {'email':self.user.email})
+        self.assertEqual(status, 200)
+        otp = re.search(r'OTP is ([0-9]{4})\.', mail.outbox[-1].body).group(1)
+        self.assertEqual(otp, '0007')
+        self.assertNotIn(otp, str(body))
+        status, body = self.request('forgot-password/verify-otp/', {'email':self.user.email,'otp':otp})
+        self.assertEqual(status, 200)
+        status, body = self.request('forgot-password/reset/', {'reset_token':body['reset_token'],
+            'new_password':'Changed-password-456!','confirm_password':'Changed-password-456!'})
+        self.assertEqual(status, 200)
+        status, body = self.request('login/', {'email':self.user.email,'password':'Changed-password-456!'})
+        self.assertEqual(status, 200)
+        self.assertIn('tokens', body)
 
 
 class ShortBookmarkTests(TestCase):

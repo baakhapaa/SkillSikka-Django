@@ -162,11 +162,11 @@ class RegistrationResponseMixin:
 			)
 
 		user = serializer.save()
-		if self.role_name == 'instructor':
+		if self.role_name in ('student', 'instructor'):
 			return Response({
 				'user': {
 					'id': str(user.id), 'email': user.email, 'name': user.name,
-					'role': 'instructor', 'verification_status': user.verification_status,
+					'role': self.role_name, 'verification_status': user.verification_status,
 					'email_verified': user.email_verified,
 				},
 				'detail': 'Verify your email to complete signup.',

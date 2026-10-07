@@ -21,7 +21,8 @@ class SignupVerifySerializer(SignupEmailSerializer):
     otp = serializers.RegexField(r'\A[0-9]{4}\Z', trim_whitespace=False, write_only=True)
 
 
-class VerifyInstructorSignupOTPAPIView(APIView):
+class VerifySignupOTPAPIView(APIView):
+    role_name = None
     authentication_classes = []
     permission_classes = [AllowAny]
     serializer_class = SignupVerifySerializer
@@ -33,7 +34,7 @@ class VerifyInstructorSignupOTPAPIView(APIView):
         with transaction.atomic():
             user = User.objects.select_for_update().filter(
                 email__iexact=serializer.validated_data['email'].strip(),
-                role__name='instructor', email_verified=False, is_active=True,
+                role__name=self.role_name, email_verified=False, is_active=True,
             ).first()
             if user is None:
                 return Response(invalid, status=status.HTTP_400_BAD_REQUEST)
@@ -58,14 +59,15 @@ class VerifyInstructorSignupOTPAPIView(APIView):
                 'detail': 'Email verified successfully.',
                 'user': {
                     'id': str(user.id), 'email': user.email, 'name': user.name,
-                    'role': 'instructor', 'verification_status': user.verification_status,
+                    'role': self.role_name, 'verification_status': user.verification_status,
                     'email_verified': True,
                 },
                 'tokens': {'refresh': str(refresh), 'access': str(refresh.access_token)},
             })
 
 
-class ResendInstructorSignupOTPAPIView(APIView):
+class ResendSignupOTPAPIView(APIView):
+    role_name = None
     authentication_classes = []
     permission_classes = [AllowAny]
     serializer_class = SignupEmailSerializer
@@ -76,7 +78,7 @@ class ResendInstructorSignupOTPAPIView(APIView):
         with transaction.atomic():
             user = User.objects.select_for_update().filter(
                 email__iexact=serializer.validated_data['email'].strip(),
-                role__name='instructor', email_verified=False, is_active=True,
+                role__name=self.role_name, email_verified=False, is_active=True,
             ).first()
             if user is not None:
                 latest = InstructorSignupOTP.objects.filter(user=user).first()
@@ -86,3 +88,19 @@ class ResendInstructorSignupOTPAPIView(APIView):
         return Response({
             'detail': 'If an eligible account exists and the resend cooldown has elapsed, a signup OTP has been sent.',
         })
+
+
+class VerifyInstructorSignupOTPAPIView(VerifySignupOTPAPIView):
+    role_name = 'instructor'
+
+
+class VerifyStudentSignupOTPAPIView(VerifySignupOTPAPIView):
+    role_name = 'student'
+
+
+class ResendInstructorSignupOTPAPIView(ResendSignupOTPAPIView):
+    role_name = 'instructor'
+
+
+class ResendStudentSignupOTPAPIView(ResendSignupOTPAPIView):
+    role_name = 'student'
