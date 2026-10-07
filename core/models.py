@@ -590,6 +590,7 @@ class PasswordResetOTP(models.Model):
 	created_at = models.DateTimeField(auto_now_add=True)
 	expires_at = models.DateTimeField()
 	is_used = models.BooleanField(default=False)
+	failed_attempts = models.PositiveSmallIntegerField(default=0)
 
 	class Meta:
 		db_table = 'password_reset_otps'

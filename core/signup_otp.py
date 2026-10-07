@@ -12,6 +12,9 @@ from .models import InstructorSignupOTP
 OTP_EXPIRY_SECONDS = 600
 OTP_COOLDOWN_SECONDS = 60
 OTP_MAX_ATTEMPTS = 5
+# A 4-digit code allows 5 guesses per code; capping codes per day keeps the
+# total guesses an attacker gets small.
+OTP_MAX_ISSUES_PER_DAY = 10
 
 
 def issue_signup_otp(user):

@@ -11,8 +11,13 @@ from django.core.mail import send_mail
 from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
 from django.db import transaction
 from django.utils import timezone
+from django.utils.crypto import constant_time_compare, salted_hmac
 from django.utils.text import slugify
 from rest_framework import serializers
+from rest_framework_simplejwt.token_blacklist.models import (
+	BlacklistedToken,
+	OutstandingToken,
+)
 from .signup_otp import issue_signup_otp
 from .student_onboarding import update_student_onboarding
 
@@ -812,6 +817,16 @@ class LoginSerializer(serializers.Serializer):
 		return attrs
 
 
+PASSWORD_RESET_OTP_MAX_ATTEMPTS = 5
+
+
+def _password_state(user):
+	return salted_hmac(
+		'skillsikka-password-reset-state',
+		user.password
+	).hexdigest()
+
+
 class ForgotPasswordSerializer(serializers.Serializer):
 	email = serializers.EmailField()
 
@@ -876,38 +891,47 @@ class VerifyPasswordResetOTPSerializer(serializers.Serializer):
 		email = attrs['email'].strip().lower()
 		otp = attrs['otp']
 
+		invalid = serializers.ValidationError({
+			'detail': 'Invalid or expired OTP.'
+		})
+
 		try:
 			user = User.objects.get(email__iexact=email)
 		except User.DoesNotExist:
-			raise serializers.ValidationError({
-				'detail': 'Invalid or expired OTP.'
-			})
+			raise invalid
 
-		otp_record = PasswordResetOTP.objects.filter(
-			user=user,
-			is_used=False
-		).order_by('-created_at').first()
+		# Decide inside the lock, raise outside it, so a failed attempt
+		# is committed rather than rolled back with the error.
+		with transaction.atomic():
+			otp_record = PasswordResetOTP.objects.select_for_update().filter(
+				user=user,
+				is_used=False
+			).order_by('-created_at').first()
 
-		if not otp_record:
-			raise serializers.ValidationError({
-				'detail': 'Invalid or expired OTP.'
-			})
+			verified = False
 
-		if otp_record.expires_at < timezone.now():
-			otp_record.is_used = True
-			otp_record.save(update_fields=['is_used'])
+			if otp_record is None:
+				pass
+			elif (
+				otp_record.expires_at < timezone.now()
+				or otp_record.failed_attempts >= PASSWORD_RESET_OTP_MAX_ATTEMPTS
+			):
+				otp_record.is_used = True
+				otp_record.save(update_fields=['is_used'])
+			elif not check_password(otp, otp_record.otp_hash):
+				otp_record.failed_attempts += 1
+				otp_record.is_used = (
+					otp_record.failed_attempts
+					>= PASSWORD_RESET_OTP_MAX_ATTEMPTS
+				)
+				otp_record.save(update_fields=['failed_attempts', 'is_used'])
+			else:
+				otp_record.is_used = True
+				otp_record.save(update_fields=['is_used'])
+				verified = True
 
-			raise serializers.ValidationError({
-				'detail': 'Invalid or expired OTP.'
-			})
-
-		if not check_password(otp, otp_record.otp_hash):
-			raise serializers.ValidationError({
-				'detail': 'Invalid or expired OTP.'
-			})
-
-		otp_record.is_used = True
-		otp_record.save(update_fields=['is_used'])
+		if not verified:
+			raise invalid
 
 		signer = TimestampSigner(
 			salt='skillsikka-password-reset'
@@ -916,6 +940,7 @@ class VerifyPasswordResetOTPSerializer(serializers.Serializer):
 		reset_token = signer.sign_object({
 			'user_id': str(user.pk),
 			'purpose': 'password_reset',
+			'state': _password_state(user),
 		})
 
 		attrs['reset_token'] = reset_token
@@ -968,16 +993,38 @@ class ResetPasswordSerializer(serializers.Serializer):
 				'detail': 'Invalid reset token.'
 			})
 
+		# The token is bound to the current password hash, so it stops
+		# working as soon as it has been used once.
+		if not constant_time_compare(
+			data.get('state', ''),
+			_password_state(user)
+		):
+			raise serializers.ValidationError({
+				'detail': 'Invalid or expired reset token.'
+			})
+
+		try:
+			validate_password(attrs['new_password'], user=user)
+		except DjangoValidationError as exc:
+			raise serializers.ValidationError({
+				'new_password': list(exc.messages)
+			})
+
 		attrs['user'] = user
 
 		return attrs
 
+	@transaction.atomic
 	def save(self):
 		user = self.validated_data['user']
 		new_password = self.validated_data['new_password']
 
 		user.set_password(new_password)
 		user.save(update_fields=['password'])
+
+		# Sign out every existing session for this account.
+		for token in OutstandingToken.objects.filter(user=user):
+			BlacklistedToken.objects.get_or_create(token=token)
 
 		return user
 

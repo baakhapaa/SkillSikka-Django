@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from django.contrib.auth.hashers import check_password
 from django.db import transaction
 from django.utils import timezone
@@ -9,7 +11,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import InstructorSignupOTP, User
 from .signup_otp import (
-    OTP_COOLDOWN_SECONDS, OTP_MAX_ATTEMPTS, issue_signup_otp,
+    OTP_COOLDOWN_SECONDS, OTP_MAX_ATTEMPTS, OTP_MAX_ISSUES_PER_DAY, issue_signup_otp,
 )
 
 
@@ -81,8 +83,13 @@ class ResendSignupOTPAPIView(APIView):
                 role__name=self.role_name, email_verified=False, is_active=True,
             ).first()
             if user is not None:
+                now = timezone.now()
                 latest = InstructorSignupOTP.objects.filter(user=user).first()
-                if latest is None or (timezone.now() - latest.created_at).total_seconds() >= OTP_COOLDOWN_SECONDS:
+                issued_today = InstructorSignupOTP.objects.filter(
+                    user=user, created_at__gte=now - timedelta(days=1),
+                ).count()
+                cooled_down = latest is None or (now - latest.created_at).total_seconds() >= OTP_COOLDOWN_SECONDS
+                if cooled_down and issued_today < OTP_MAX_ISSUES_PER_DAY:
                     issue_signup_otp(user)
         # Same response for absent/verified/inactive accounts and cooldown suppression.
         return Response({
