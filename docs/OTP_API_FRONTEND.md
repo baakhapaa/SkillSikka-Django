@@ -4,7 +4,7 @@ Contract for the three OTP flows: **student signup**, **instructor signup**, and
 **password reset**. Everything below was verified against the running backend on
 2026-10-07 (all flows end to end, with real emails).
 
-- **Base URL (dev):** `http://192.168.1.77:8000/api/v1`
+- **Base URL (dev):** `http://192.168.1.68:8000/api/v1`
 - **Format:** JSON request and response bodies (`Content-Type: application/json`).
 - **Auth:** none of the OTP endpoints need a token. Protected endpoints use
   `Authorization: Bearer <access>`.
