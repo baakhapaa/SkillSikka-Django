@@ -1,6 +1,7 @@
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
 from django.db import models
+from django.core.validators import MinValueValidator, MaxValueValidator
 
 
 class Role(models.Model):
@@ -508,7 +509,31 @@ class Chapter(models.Model):
 		return self.name
 
 
+class CourseQuerySet(models.QuerySet):
+	def with_review_stats(self):
+		return self.annotate(
+			average_rating=models.Avg('reviews__rating'),
+			review_count=models.Count('reviews', distinct=True),
+		)
+
+
+def with_instructor_review_stats(queryset=None):
+	"""Review-weighted aggregate across all courses for instructor rankings.
+
+	Pass a filtered User queryset to restrict instructors. Publication status
+	does not invalidate historical reviews; rankings can apply a publication
+	filter to the aggregate expressions if that product policy is desired.
+	"""
+	if queryset is None:
+		queryset = User.objects.filter(role__name='instructor')
+	return queryset.annotate(
+		average_rating=models.Avg('courses__reviews__rating'),
+		review_count=models.Count('courses__reviews', distinct=True),
+	)
+
+
 class Course(models.Model):
+	objects = CourseQuerySet.as_manager()
 	COURSE_TYPE_CHOICES = (
 		('academic', 'Academic'),
 		('skill', 'Skill Development'),
@@ -631,6 +656,23 @@ class Enrollment(models.Model):
 
 	def __str__(self):
 		return f'{self.student.name} - {self.course.title}'
+
+
+class CourseReview(models.Model):
+	student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='course_reviews')
+	course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='reviews')
+	rating = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(5)])
+	review = models.TextField(blank=True, default='')
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'course_reviews'
+		ordering = ['-created_at', '-pk']
+		constraints = [
+			models.UniqueConstraint(fields=['student', 'course'], name='unique_review_per_student_course'),
+			models.CheckConstraint(condition=models.Q(rating__gte=1, rating__lte=5), name='course_review_rating_1_to_5'),
+		]
 
 
 class LessonProgress(models.Model):

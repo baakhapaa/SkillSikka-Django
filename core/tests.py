@@ -26,6 +26,227 @@ from .signup_otp import OTP_EXPIRY_SECONDS
 from .models import Short, ShortBookmark, ShortComment, ShortLike, ShortView
 from .models import PasswordResetOTP
 from .serializers import ShortSerializer
+from .models import Course, CourseReview, Enrollment, Lesson, LessonProgress, with_instructor_review_stats
+from .serializers import CourseSerializer
+
+
+class CourseReviewTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.student = User.objects.create_user(email='reviewer@example.com', name='Reviewer', role=Role.objects.get(name='student'))
+        self.other = User.objects.create_user(email='other-reviewer@example.com', name='Other', role=Role.objects.get(name='student'))
+        self.instructor = User.objects.create_user(email='review-teacher@example.com', name='Teacher', role=Role.objects.get(name='instructor'))
+        self.admin = User.objects.create_user(email='review-admin@example.com', name='Admin', role=Role.objects.get(name='super_admin'))
+        self.course = Course.objects.create(title='Review course', instructor=self.instructor, course_type='skill', is_published=True)
+        self.enrollment = Enrollment.objects.create(student=self.student, course=self.course)
+        self.url = reverse('api-course-reviews', kwargs={'course_id': self.course.pk})
+        self.me = reverse('api-my-course-review', kwargs={'course_id': self.course.pk})
+        self.detail = reverse('api-course-detail', kwargs={'pk': self.course.pk})
+        self.client.force_authenticate(self.student)
+
+    def stats(self):
+        return self.client.get(self.detail).data
+
+    def test_rating_boundaries_and_optional_review(self):
+        for rating in [1, 5]:
+            with self.subTest(rating=rating):
+                response = self.client.post(self.url, {'rating': rating}, format='json')
+                self.assertEqual(response.status_code, 201)
+                self.assertEqual(response.data['review'], '')
+                self.assertEqual(self.client.delete(self.me).status_code, 204)
+        self.assertEqual(self.client.post(self.url, {'rating': 3, 'review': ''}, format='json').status_code, 201)
+
+    def test_invalid_ratings(self):
+        for rating in [0, 6, 2.5, 2.0, True, '2.5', '2.0', 'bad', None]:
+            with self.subTest(rating=rating):
+                self.assertEqual(self.client.post(self.url, {'rating': rating}, format='json').status_code, 400)
+        self.assertEqual(self.client.post(self.url, {}, format='json').status_code, 400)
+        self.assertEqual(self.client.post(self.url, [1, 2], format='json').status_code, 400)
+
+    def test_enrollment_rules(self):
+        self.client.force_authenticate(self.other)
+        self.assertEqual(self.client.post(self.url, {'rating': 4}, format='json').status_code, 403)
+        self.client.force_authenticate(self.student)
+        for state in ['pending_payment', 'cancelled', 'active', 'completed']:
+            self.enrollment.status = state
+            self.enrollment.save()
+            self.assertEqual(self.client.post(self.url, {'rating': 4}, format='json').status_code, 201 if state in ['active', 'completed'] else 403)
+            CourseReview.objects.all().delete()
+
+    def test_nonstudents_and_inactive_student(self):
+        for user in [self.instructor, self.admin]:
+            Enrollment.objects.create(student=user, course=self.course)
+            self.client.force_authenticate(user)
+            self.assertEqual(self.client.post(self.url, {'rating': 4}, format='json').status_code, 403)
+            self.assertEqual(self.client.patch(self.me, {'rating': 4}, format='json').status_code, 403)
+            self.assertEqual(self.client.delete(self.me).status_code, 403)
+            self.assertEqual(self.client.post(self.url, {'rating': 4, 'student_id': self.student.pk}, format='json').status_code, 400)
+        self.student.is_active = False
+        self.client.force_authenticate(self.student)
+        self.assertEqual(self.client.post(self.url, {'rating': 4}, format='json').status_code, 403)
+
+    def test_ownership_and_url_fields_rejected(self):
+        self.client.post(self.url, {'rating': 3}, format='json')
+        for field in ['student', 'student_id', 'user', 'user_id', 'course', 'course_id', 'instructor', 'instructor_id']:
+            with self.subTest(field=field):
+                data = {'rating': 5, field: self.other.pk}
+                self.assertEqual(self.client.post(self.url, data, format='json').status_code, 400)
+                self.assertEqual(self.client.patch(self.me, data, format='json').status_code, 400)
+                self.assertEqual(self.client.delete(self.me, data, format='json').status_code, 400)
+        self.assertEqual(CourseReview.objects.get().rating, 3)
+
+    def test_duplicate_api_and_database_constraints(self):
+        self.assertEqual(self.client.post(self.url, {'rating': 2}, format='json').status_code, 201)
+        self.assertEqual(self.client.post(self.url, {'rating': 4}, format='json').status_code, 400)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            CourseReview.objects.create(student=self.student, course=self.course, rating=4)
+        for rating in [0, 6]:
+            with self.assertRaises(IntegrityError), transaction.atomic():
+                CourseReview.objects.create(student=self.other, course=self.course, rating=rating)
+
+    def test_own_update_delete_and_other_student_isolation(self):
+        self.client.post(self.url, {'rating': 2, 'review': 'Original'}, format='json')
+        self.client.force_authenticate(self.other)
+        Enrollment.objects.create(student=self.other, course=self.course)
+        self.assertEqual(self.client.patch(self.me, {'rating': 5}, format='json').status_code, 404)
+        self.assertEqual(self.client.delete(self.me).status_code, 404)
+        self.assertEqual(CourseReview.objects.get().rating, 2)
+        self.client.post(self.url, {'rating': 1}, format='json')
+        self.assertEqual(self.client.patch(self.me, {'rating': 4}, format='json').status_code, 200)
+        self.assertEqual(self.client.delete(self.me).status_code, 204)
+        self.assertEqual(CourseReview.objects.get().student_id, self.student.pk)
+        self.client.force_authenticate(self.student)
+        self.assertEqual(self.client.patch(self.me, {'rating': 5, 'review': 'Changed'}, format='json').status_code, 200)
+        self.assertEqual(CourseReview.objects.get().review, 'Changed')
+        self.assertEqual(self.client.delete(self.me).status_code, 204)
+
+    def test_aggregates_change_after_update_and_delete(self):
+        self.assertIsNone(self.stats()['average_rating'])
+        self.assertEqual(self.stats()['review_count'], 0)
+        self.client.post(self.url, {'rating': 1}, format='json')
+        CourseReview.objects.create(student=self.other, course=self.course, rating=5)
+        another = Course.objects.create(title='Second', course_type='skill', instructor=self.instructor, is_published=True)
+        CourseReview.objects.create(student=self.other, course=another, rating=3)
+        self.assertEqual(self.stats()['average_rating'], 3)
+        self.assertEqual(self.stats()['review_count'], 2)
+        instructor = with_instructor_review_stats().get(pk=self.instructor.pk)
+        self.assertEqual(instructor.average_rating, 3)
+        self.assertEqual(instructor.review_count, 3)
+        self.client.patch(self.me, {'rating': 3}, format='json')
+        self.assertEqual(self.stats()['average_rating'], 4)
+        self.assertAlmostEqual(with_instructor_review_stats().get(pk=self.instructor.pk).average_rating, 11 / 3)
+        self.client.delete(self.me)
+        self.assertEqual(self.stats()['average_rating'], 5)
+        self.assertEqual(self.stats()['review_count'], 1)
+        self.assertEqual(with_instructor_review_stats().get(pk=self.instructor.pk).average_rating, 4)
+        self.assertEqual(with_instructor_review_stats().get(pk=self.instructor.pk).review_count, 2)
+
+    def test_review_list_safe_identity_and_no_n_plus_one(self):
+        CourseReview.objects.create(student=self.student, course=self.course, rating=3)
+        CourseReview.objects.create(student=self.other, course=self.course, rating=5)
+        with self.assertNumQueries(2):
+            response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 2)
+        for review in response.data:
+            self.assertEqual(set(review), {'id', 'rating', 'review', 'student', 'created_at', 'updated_at'})
+            self.assertEqual(set(review['student']), {'id', 'name'})
+        with self.assertNumQueries(1):
+            data = CourseSerializer(Course.objects.with_review_stats().select_related('instructor', 'subject', 'grade'), many=True).data
+            self.assertEqual(data[0]['review_count'], 2)
+
+    def test_visibility_and_authentication(self):
+        self.client.force_authenticate(None)
+        for method, url in [('get', self.url), ('post', self.url), ('patch', self.me), ('delete', self.me)]:
+            self.assertEqual(getattr(self.client, method)(url).status_code, 401)
+        self.course.is_published = False
+        self.course.save()
+        self.client.force_authenticate(self.student)
+        for method, url in [('get', self.url), ('post', self.url), ('patch', self.me), ('delete', self.me)]:
+            self.assertEqual(getattr(self.client, method)(url, {'rating': 3}, format='json').status_code, 404)
+        self.assertEqual(self.client.get(self.detail).status_code, 404)
+        self.assertEqual(self.client.get(reverse('api-course-list-create')).data, [])
+        for user in [self.instructor, self.admin]:
+            self.client.force_authenticate(user)
+            self.assertEqual(self.client.get(self.url).status_code, 200)
+            self.assertEqual(self.client.get(self.detail).status_code, 200)
+            self.assertEqual(len(self.client.get(reverse('api-course-list-create')).data), 1)
+        outsider = User.objects.create_user(email='outsider@example.com', role=self.instructor.role)
+        self.client.force_authenticate(outsider)
+        self.assertEqual(self.client.get(self.url).status_code, 404)
+
+    def test_cancelled_enrollment_can_delete_but_not_update(self):
+        self.client.post(self.url, {'rating': 4}, format='json')
+        self.enrollment.status = 'cancelled'
+        self.enrollment.save()
+        self.assertEqual(self.client.patch(self.me, {'rating': 5}, format='json').status_code, 403)
+        self.assertEqual(self.client.delete(self.me).status_code, 204)
+
+    def test_deletion_conventions(self):
+        CourseReview.objects.create(student=self.other, course=self.course, rating=3)
+        self.other.delete()
+        self.assertFalse(CourseReview.objects.exists())
+        CourseReview.objects.create(student=self.student, course=self.course, rating=3)
+        self.course.delete()
+        self.assertFalse(CourseReview.objects.exists())
+
+    def test_enrollment_and_progress_regression(self):
+        lesson = Lesson.objects.create(course=self.course, title='Lesson', content_type='text')
+        response = self.client.post(reverse('api-complete-lesson', kwargs={'lesson_id': lesson.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(LessonProgress.objects.get(student=self.student, lesson=lesson).is_completed)
+        response = self.client.get(reverse('api-course-progress', kwargs={'course_id': self.course.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.enrollment.refresh_from_db()
+        self.assertEqual(self.enrollment.status, 'completed')
+
+    def test_course_and_enrollment_regression(self):
+        self.client.force_authenticate(self.instructor)
+        response = self.client.post(reverse('api-course-list-create'), {'title': 'New course', 'course_type': 'skill'}, format='json')
+        self.assertEqual(response.status_code, 201)
+        self.assertIsNone(response.data['average_rating'])
+        self.assertEqual(response.data['review_count'], 0)
+        self.assertFalse(response.data['is_published'])
+        new_course = Course.objects.get(pk=response.data['id'])
+        new_course.is_published = True
+        new_course.save()
+        self.client.force_authenticate(self.student)
+        enroll_url = reverse('api-enroll-course', kwargs={'course_id': new_course.pk})
+        self.assertEqual(self.client.post(enroll_url).status_code, 201)
+        self.assertEqual(self.client.post(enroll_url).status_code, 400)
+        self.assertEqual(self.client.get(reverse('api-my-enrollments')).status_code, 200)
+        with self.assertNumQueries(1):
+            self.assertEqual(self.client.get(reverse('api-course-list-create')).status_code, 200)
+
+    def test_reviews_do_not_change_rewards(self):
+        from .models import PointTransaction, Reward, Redemption
+        PointTransaction.objects.create(student=self.student, points=100, event_type='quiz_correct')
+        reward = Reward.objects.create(name='Test reward', points_required=25, stock=2)
+        self.client.post(self.url, {'rating': 4}, format='json')
+        self.client.patch(self.me, {'rating': 5}, format='json')
+        self.client.delete(self.me)
+        self.assertEqual(PointTransaction.objects.filter(student=self.student).count(), 1)
+        self.assertEqual(self.client.get(reverse('api-rewards')).status_code, 200)
+        response = self.client.post(reverse('api-redeem-reward'), {'reward_id': reward.pk}, format='json')
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['remaining_points'], 75)
+        self.assertEqual(Redemption.objects.filter(student=self.student).count(), 1)
+        reward.refresh_from_db()
+        self.assertEqual(reward.stock, 1)
+
+    def test_jwt_authentication_rules(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        self.client.force_authenticate(None)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(self.student).access_token}')
+        self.assertEqual(self.client.get(self.url).status_code, 200)
+        self.student.email_verified = False
+        self.student.save()
+        self.assertEqual(self.client.post(self.url, {'rating': 3}, format='json').status_code, 401)
+        self.student.email_verified = True
+        self.student.is_active = False
+        self.student.save()
+        self.assertEqual(self.client.get(self.url).status_code, 401)
 
 
 class AuthenticationFlowTests(TestCase):

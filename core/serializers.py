@@ -1,4 +1,5 @@
 from datetime import timedelta
+from collections.abc import Mapping
 from pathlib import Path
 import secrets
 
@@ -36,6 +37,7 @@ from .models import (
 	ChallengeParticipant,
 	Chapter,
 	Course,
+	CourseReview,
 	District,
 	Enrollment,
 	Grade,
@@ -1033,7 +1035,58 @@ class TopicSerializer(serializers.ModelSerializer):
 		]
 
 
+class CourseReviewSerializer(serializers.ModelSerializer):
+	student = serializers.SerializerMethodField()
+	rating = serializers.IntegerField(min_value=1, max_value=5)
+
+	class Meta:
+		model = CourseReview
+		fields = ['id', 'rating', 'review', 'student', 'created_at', 'updated_at']
+		read_only_fields = ['id', 'student', 'created_at', 'updated_at']
+
+	def get_student(self, obj):
+		return {'id': obj.student_id, 'name': obj.student.name}
+
+	def reject_identity_fields(self, data):
+		if not isinstance(data, Mapping):
+			raise serializers.ValidationError({'detail': 'Expected an object.'})
+		forbidden = set(data) & {
+			'student', 'student_id', 'user', 'user_id',
+			'course', 'course_id', 'instructor', 'instructor_id',
+		}
+		if forbidden:
+			raise serializers.ValidationError({key: 'This field cannot be supplied.' for key in sorted(forbidden)})
+
+	def to_internal_value(self, data):
+		self.reject_identity_fields(data)
+		if 'rating' in data:
+			rating = data['rating']
+			# DRF accepts whole floats; reviews deliberately require integers.
+			if (
+				isinstance(rating, bool)
+				or not isinstance(rating, (int, str))
+				or (isinstance(rating, str) and not rating.strip().isdigit())
+			):
+				raise serializers.ValidationError({'rating': 'A valid integer is required.'})
+		return super().to_internal_value(data)
+
+
 class CourseSerializer(serializers.ModelSerializer):
+	average_rating = serializers.SerializerMethodField()
+	review_count = serializers.SerializerMethodField()
+
+	def _review_stats(self, obj):
+		if not hasattr(obj, '_serialized_review_stats'):
+			from django.db.models import Avg, Count
+			obj._serialized_review_stats = obj.reviews.aggregate(average_rating=Avg('rating'), review_count=Count('pk'))
+		return obj._serialized_review_stats
+
+	def get_average_rating(self, obj):
+		return obj.average_rating if hasattr(obj, 'average_rating') else self._review_stats(obj)['average_rating']
+
+	def get_review_count(self, obj):
+		return obj.review_count if hasattr(obj, 'review_count') else self._review_stats(obj)['review_count']
+
 	instructor_name = serializers.CharField(
 		source='instructor.name',
 		read_only=True
@@ -1051,6 +1104,8 @@ class CourseSerializer(serializers.ModelSerializer):
 		model = Course
 		fields = [
 			'id',
+			'average_rating',
+			'review_count',
 			'title',
 			'description',
 			'instructor',

@@ -1,7 +1,7 @@
 ﻿from django.db.models import Count, Prefetch, Q, QuerySet
 from django.utils import timezone
 from django.db.models import Exists, OuterRef
-from django.db import transaction
+from django.db import transaction, IntegrityError
 from decimal import Decimal
 from django.db.models import Sum, Count, Avg
 from django.core.exceptions import ObjectDoesNotExist
@@ -29,6 +29,7 @@ from .models import (
 	ChallengeParticipant,
 	Chapter,
 	Course,
+	CourseReview,
 	District,
 	EBook,
 	Enrollment,
@@ -85,6 +86,7 @@ from .serializers import (
 	ChapterSerializer,
 	CompleteStudentProfileSerializer,
 	CourseSerializer,
+	CourseReviewSerializer,
 	DistrictSerializer,
 	EBookSerializer,
 	EnrollCourseSerializer,
@@ -633,6 +635,15 @@ def _is_student(user):
 	return _role_name(user) == 'student'
 
 
+def _visible_courses(user, queryset):
+	"""Shared course visibility for course consumers and review endpoints."""
+	if _is_admin(user):
+		return queryset
+	if _is_instructor(user):
+		return queryset.filter(Q(is_published=True) | Q(instructor=user))
+	return queryset.filter(is_published=True)
+
+
 def _is_verified_instructor(user):
 	return (
 		_is_instructor(user)
@@ -1034,27 +1045,13 @@ class CourseListCreateAPIView(generics.ListCreateAPIView):
 	permission_classes = [IsAuthenticated]
 
 	def get_queryset(self):
-		queryset = Course.objects.select_related(
+		queryset = Course.objects.with_review_stats().select_related(
 			'instructor',
 			'subject',
 			'grade',
 		)
 
-		user = self.request.user
-
-		if _is_admin(user):
-			pass
-
-		elif _is_instructor(user):
-			queryset = queryset.filter(
-				Q(is_published=True) |
-				Q(instructor=user)
-			)
-
-		else:
-			queryset = queryset.filter(
-				is_published=True
-			)
+		queryset = _visible_courses(self.request.user, queryset)
 
 		course_type = self.request.query_params.get(
 			'course_type'
@@ -1142,26 +1139,13 @@ class CourseDetailAPIView(
 	permission_classes = [IsAuthenticated]
 
 	def get_queryset(self):
-		queryset = Course.objects.select_related(
+		queryset = Course.objects.with_review_stats().select_related(
 			'instructor',
 			'subject',
 			'grade',
 		)
 
-		user = self.request.user
-
-		if _is_admin(user):
-			return queryset
-
-		if _is_instructor(user):
-			return queryset.filter(
-				Q(is_published=True)
-				| Q(instructor=user)
-			)
-
-		return queryset.filter(
-			is_published=True
-		)
+		return _visible_courses(self.request.user, queryset)
 
 	def _check_owner_or_admin(self, course):
 		user = self.request.user
@@ -7638,4 +7622,69 @@ class MyRedemptionListAPIView(APIView):
 			).data,
 			status=status.HTTP_200_OK
 		)
-	
+
+
+# =========================================================
+# Course Ratings & Reviews
+# =========================================================
+
+class CourseReviewAccessMixin:
+	authentication_classes = [JWTAuthentication, SessionAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def get_course(self):
+		course = _visible_courses(self.request.user, Course.objects.all()).filter(
+			pk=self.kwargs['course_id'],
+		).first()
+		if course is None:
+			raise NotFound('Course not found.')
+		return course
+
+	def check_student(self):
+		if not self.request.user.is_active or not _is_student(self.request.user) or _is_admin(self.request.user):
+			raise PermissionDenied('Only active students can manage course reviews.')
+
+	def check_enrollment(self, course):
+		if not Enrollment.objects.filter(student=self.request.user, course=course, status__in=['active', 'completed']).exists():
+			raise PermissionDenied('An active or completed enrollment is required to review this course.')
+
+
+class CourseReviewListCreateAPIView(CourseReviewAccessMixin, generics.ListCreateAPIView):
+	serializer_class = CourseReviewSerializer
+
+	def get_queryset(self):
+		return CourseReview.objects.filter(course=self.get_course()).select_related('student')
+
+	def perform_create(self, serializer):
+		self.check_student()
+		course = self.get_course()
+		self.check_enrollment(course)
+		if CourseReview.objects.filter(student=self.request.user, course=course).exists():
+			raise ValidationError({'detail': 'You have already reviewed this course.'})
+		try:
+			with transaction.atomic():
+				serializer.save(student=self.request.user, course=course)
+		except IntegrityError:
+			if CourseReview.objects.filter(student=self.request.user, course=course).exists():
+				raise ValidationError({'detail': 'You have already reviewed this course.'})
+			raise
+
+
+class MyCourseReviewAPIView(CourseReviewAccessMixin, generics.UpdateAPIView, generics.DestroyAPIView):
+	serializer_class = CourseReviewSerializer
+	http_method_names = ['patch', 'delete', 'options']
+
+	def delete(self, request, *args, **kwargs):
+		# Reject ownership/course overrides on DELETE as well as POST/PATCH.
+		CourseReviewSerializer().reject_identity_fields(request.data)
+		return super().delete(request, *args, **kwargs)
+
+	def get_object(self):
+		self.check_student()
+		course = self.get_course()
+		if self.request.method == 'PATCH':
+			self.check_enrollment(course)
+		review = CourseReview.objects.select_related('student').filter(course=course, student=self.request.user).first()
+		if review is None:
+			raise NotFound('You have not reviewed this course.')
+		return review

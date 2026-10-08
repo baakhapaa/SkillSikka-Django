@@ -35,6 +35,8 @@ from .api_views import (
 	CompleteLessonAPIView,
 	CompleteStudentProfileAPIView,
 	CourseDetailAPIView,
+	CourseReviewListCreateAPIView,
+	MyCourseReviewAPIView,
 	CourseListCreateAPIView,
 	CourseProgressAPIView,
 	CurrentUserAPIView,
@@ -329,6 +331,17 @@ urlpatterns = [
 	# =========================
 	# Course Management
 	# =========================
+
+	path(
+		'courses/<int:course_id>/reviews/',
+		CourseReviewListCreateAPIView.as_view(),
+		name='api-course-reviews',
+	),
+	path(
+		'courses/<int:course_id>/reviews/me/',
+		MyCourseReviewAPIView.as_view(),
+		name='api-my-course-review',
+	),
 
 	path(
 		'courses/',
