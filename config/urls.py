@@ -14,13 +14,20 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
+import re
+
 from django.conf import settings
 from django.conf.urls.static import static
-from django.urls import include, path
+from django.http import Http404
+from django.urls import include, path, re_path
 
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 from core.api_views import InstructorRegistrationAPIView, StudentRegistrationAPIView
+
+
+def _not_found(request):
+    raise Http404
 
 urlpatterns = [
     path('', include('core.urls')),
@@ -32,5 +39,12 @@ urlpatterns = [
 ]
 
 # nginx serves /media/ in deployment; this covers runserver. No-op unless DEBUG.
+# Verification documents stay private here too, as in nginx.conf.
 if getattr(settings, 'MEDIA_URL', None):
+    urlpatterns += [
+        re_path(
+            r'^%sverification-documents/' % re.escape(settings.MEDIA_URL.lstrip('/')),
+            _not_found,
+        ),
+    ]
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

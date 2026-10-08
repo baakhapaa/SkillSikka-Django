@@ -52,7 +52,7 @@
                         {% for user in pending_users %}
                         <tr>
                             <td>
-                                <div class="person">{% if user.profile_photo_url %}<a href="{{ user.profile_photo_url }}" target="_blank" rel="noopener"><img class="table-avatar" src="{{ user.profile_photo_url }}" alt="Profile photo of {{ user.name }}" style="object-fit:cover"></a>{% else %}<span class="table-avatar">{{ user.name|slice:':1'|upper }}</span>{% endif %}<span><strong>{{ user.name }}</strong><small>{{ user.email }}</small></span></div>
+                                <div class="person">{% if user.profile_photo_url %}<a href="{{ user.profile_photo_src }}" target="_blank" rel="noopener"><img class="table-avatar" src="{{ user.profile_photo_src }}" alt="Profile photo of {{ user.name }}" style="object-fit:cover"></a>{% else %}<span class="table-avatar">{{ user.name|slice:':1'|upper }}</span>{% endif %}<span><strong>{{ user.name }}</strong><small>{{ user.email }}</small></span></div>
                             </td>
                             <td>{{ user.role.name|default:'Unassigned'|title }}</td>
                             <td>

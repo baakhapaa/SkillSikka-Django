@@ -17,7 +17,7 @@ Contract for the three OTP flows: **student signup**, **instructor signup**, and
 |---|---|
 | Length | exactly **4 digits**, `0000`–`9999` |
 | Type | **always send as a JSON string** (`"0042"`, never `42`), leading zeros matter |
-| Expiry | 10 minutes |
+| Expiry | **1 minute** (the code in the email is dead 60 s after it was sent) |
 | Wrong guesses | 5 per code; after the 5th the code is dead even if correct later |
 | New code | requesting a new code invalidates the previous one |
 | Error message | wrong, expired, used-up and dead codes all return the same message, by design |

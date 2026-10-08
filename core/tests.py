@@ -1,3 +1,4 @@
+import io
 import shutil
 import tempfile
 import json
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
+from PIL import Image
 from django.test import TestCase, LiveServerTestCase, override_settings
 from django.db import connection, IntegrityError, transaction
 from django.core.cache import cache
@@ -20,6 +22,7 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from .models import District, Grade, InstructorProfile, Municipality, Permission, Province, Role, School, StudentProfile, User, VerificationDocument
+from .signup_otp import OTP_EXPIRY_SECONDS
 from .models import Short, ShortBookmark, ShortComment, ShortLike, ShortView
 from .models import PasswordResetOTP
 from .serializers import ShortSerializer
@@ -193,6 +196,12 @@ class RegistrationApiTests(TestCase):
 		self.assertEqual(profile.province, self.province)
 
 
+def png_upload(name):
+	buffer = io.BytesIO()
+	Image.new('RGB', (8, 8), 'teal').save(buffer, format='PNG')
+	return SimpleUploadedFile(name, buffer.getvalue(), content_type='image/png')
+
+
 TEST_MEDIA_ROOT = tempfile.mkdtemp()
 
 
@@ -302,7 +311,7 @@ class CurrentUserProfileFieldsTests(TestCase):
 		self.client.force_authenticate(self.student)
 		response = self.client.patch('/api/v1/me/', {
 			'name': 'Renamed',
-			'profile_photo': SimpleUploadedFile('me.png', b'png-bytes', content_type='image/png'),
+			'profile_photo': png_upload('me.png'),
 			'student_id_card': SimpleUploadedFile('card.pdf', b'%PDF-1.4 card', content_type='application/pdf'),
 		}, format='multipart')
 		self.assertEqual(response.status_code, 200, response.content)
@@ -329,10 +338,10 @@ class CurrentUserProfileFieldsTests(TestCase):
 	def test_instructor_uploads_cv_and_certificates(self):
 		self.client.force_authenticate(self.instructor)
 		response = self.client.patch('/api/v1/me/', {
-			'cv_resume': SimpleUploadedFile('cv.pdf', b'cv', content_type='application/pdf'),
+			'cv_resume': SimpleUploadedFile('cv.pdf', b'%PDF-1.4 cv', content_type='application/pdf'),
 			'certificates_and_recommendations': [
-				SimpleUploadedFile('a.pdf', b'a', content_type='application/pdf'),
-				SimpleUploadedFile('b.pdf', b'b', content_type='application/pdf'),
+				SimpleUploadedFile('a.pdf', b'%PDF-1.4 a', content_type='application/pdf'),
+				SimpleUploadedFile('b.pdf', b'%PDF-1.4 b', content_type='application/pdf'),
 			],
 		}, format='multipart')
 		self.assertEqual(response.status_code, 200, response.content)
@@ -343,7 +352,7 @@ class CurrentUserProfileFieldsTests(TestCase):
 	def test_document_slots_are_role_specific(self):
 		self.client.force_authenticate(self.instructor)
 		response = self.client.patch('/api/v1/me/', {
-			'student_id_card': SimpleUploadedFile('card.pdf', b'x', content_type='application/pdf'),
+			'student_id_card': SimpleUploadedFile('card.pdf', b'%PDF-1.4 x', content_type='application/pdf'),
 		}, format='multipart')
 		self.assertEqual(response.status_code, 400)
 		self.assertIn('student_id_card', response.json())
@@ -351,8 +360,8 @@ class CurrentUserProfileFieldsTests(TestCase):
 	def upload_cv_as_instructor(self):
 		self.client.force_authenticate(self.instructor)
 		response = self.client.patch('/api/v1/me/', {
-			'profile_photo': SimpleUploadedFile('me.png', b'png-bytes', content_type='image/png'),
-			'cv_resume': SimpleUploadedFile('cv.pdf', b'%PDF cv', content_type='application/pdf'),
+			'profile_photo': png_upload('me.png'),
+			'cv_resume': SimpleUploadedFile('cv.pdf', b'%PDF-1.4 cv', content_type='application/pdf'),
 		}, format='multipart')
 		self.assertEqual(response.status_code, 200, response.content)
 		self.client.force_authenticate(user=None)
@@ -376,7 +385,7 @@ class CurrentUserProfileFieldsTests(TestCase):
 
 		response = self.client.get(data['documents'][0]['url'])
 		self.assertEqual(response.status_code, 200)
-		self.assertEqual(b''.join(response.streaming_content), b'%PDF cv')
+		self.assertEqual(b''.join(response.streaming_content), b'%PDF-1.4 cv')
 
 		listed = self.client.get('/api/v1/admin/users/', {'role': 'instructor'}).json()['results']
 		self.assertIsNotNone(next(u for u in listed if u['id'] == self.instructor.pk)['profile_photo_url'])
@@ -404,7 +413,7 @@ class CurrentUserProfileFieldsTests(TestCase):
 		web.force_login(self.make_super_admin())
 		response = web.get(reverse('view_document', args=[document.pk]))
 		self.assertEqual(response.status_code, 200)
-		self.assertEqual(b''.join(response.streaming_content), b'%PDF cv')
+		self.assertEqual(b''.join(response.streaming_content), b'%PDF-1.4 cv')
 
 		page = web.get(reverse('edit_user', args=[self.instructor.pk]))
 		self.assertContains(page, reverse('view_document', args=[document.pk]))
@@ -450,8 +459,8 @@ class PasswordResetOTPTests(TestCase):
                 record = PasswordResetOTP.objects.filter(user=self.user).latest('pk')
                 self.assertNotEqual(record.otp_hash, otp)
                 self.assertTrue(check_password(otp, record.otp_hash))
-                self.assertGreaterEqual(record.expires_at, before+timedelta(minutes=10))
-                self.assertLessEqual(record.expires_at, timezone.now()+timedelta(minutes=10))
+                self.assertGreaterEqual(record.expires_at, before+timedelta(seconds=OTP_EXPIRY_SECONDS))
+                self.assertLessEqual(record.expires_at, timezone.now()+timedelta(seconds=OTP_EXPIRY_SECONDS))
 
     def test_valid_leading_zero_otp_verifies_once_and_full_reset_login_works(self):
         otp = self.issue()

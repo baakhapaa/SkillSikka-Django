@@ -18,7 +18,14 @@ from rest_framework_simplejwt.token_blacklist.models import (
 	BlacklistedToken,
 	OutstandingToken,
 )
-from .signup_otp import issue_signup_otp
+from .documents import (
+	save_upload,
+	validate_certificate_files,
+	validate_cv_resume_file,
+	validate_profile_photo_file,
+	validate_student_id_card_file,
+)
+from .signup_otp import OTP_EXPIRY_SECONDS, OTP_EXPIRY_TEXT, issue_signup_otp
 from .student_onboarding import update_student_onboarding
 
 from .models import (
@@ -130,74 +137,6 @@ def _validate_location_chain(province, district, municipality, school):
 				'school_id':
 					'School does not belong to the selected municipality.'
 			})
-
-
-def validate_profile_photo_file(uploaded_file):
-	allowed_extensions = {'.jpg', '.jpeg', '.png'}
-	allowed_content_types = {'image/jpeg', 'image/png'}
-	max_size = 5 * 1024 * 1024
-
-	extension = Path(uploaded_file.name).suffix.lower()
-
-	if extension not in allowed_extensions:
-		raise serializers.ValidationError(
-			'Profile photo must be a JPG, JPEG, or PNG file.'
-		)
-
-	content_type = getattr(uploaded_file, 'content_type', None)
-	if content_type and content_type not in allowed_content_types:
-		raise serializers.ValidationError(
-			'Profile photo must be a JPG, JPEG, or PNG image.'
-		)
-
-	if uploaded_file.size > max_size:
-		raise serializers.ValidationError(
-			'Profile photo must not exceed 5 MB.'
-		)
-
-	return uploaded_file
-
-
-def validate_student_id_card_file(uploaded_file):
-	allowed_extensions = {'.jpg', '.jpeg', '.png', '.pdf'}
-	allowed_content_types = {
-		'image/jpeg',
-		'image/png',
-		'application/pdf',
-	}
-	max_size = 10 * 1024 * 1024
-
-	extension = Path(uploaded_file.name).suffix.lower()
-
-	if extension not in allowed_extensions:
-		raise serializers.ValidationError(
-			'Student ID card must be a JPG, JPEG, PNG, or PDF file.'
-		)
-
-	content_type = getattr(uploaded_file, 'content_type', None)
-	if content_type and content_type not in allowed_content_types:
-		raise serializers.ValidationError(
-			'Student ID card must be a JPG, JPEG, PNG, or PDF file.'
-		)
-
-	if uploaded_file.size > max_size:
-		raise serializers.ValidationError(
-			'Student ID card must not exceed 10 MB.'
-		)
-
-	return uploaded_file
-
-
-def save_upload(uploaded_file, folder, user_id):
-	filename = (
-		f'{folder}/{user_id}/'
-		f'{slugify(Path(uploaded_file.name).stem)}'
-		f'{Path(uploaded_file.name).suffix.lower()}'
-	)
-
-	return default_storage.url(
-		default_storage.save(filename, uploaded_file)
-	)
 
 
 class RegistrationSerializer(serializers.Serializer):
@@ -425,6 +364,14 @@ class InstructorRegistrationSerializer(RegistrationSerializer):
 		required=False,
 		write_only=True,
 	)
+
+	def validate_cv_resume(self, uploaded_file):
+		if uploaded_file is None:
+			return None
+		return validate_cv_resume_file(uploaded_file)
+
+	def validate_certificates_and_recommendations(self, uploaded_files):
+		return validate_certificate_files(uploaded_files)
 
 	def validate(self, attrs):
 		attrs = super().validate(attrs)
@@ -695,6 +642,12 @@ class CurrentUserUpdateSerializer(serializers.Serializer):
 	def validate_student_id_card(self, uploaded_file):
 		return validate_student_id_card_file(uploaded_file)
 
+	def validate_cv_resume(self, uploaded_file):
+		return validate_cv_resume_file(uploaded_file)
+
+	def validate_certificates_and_recommendations(self, uploaded_files):
+		return validate_certificate_files(uploaded_files)
+
 	def validate(self, attrs):
 		user = self.context['request'].user
 		role_name = user.role.name if user.role else None
@@ -851,14 +804,14 @@ class ForgotPasswordSerializer(serializers.Serializer):
 		PasswordResetOTP.objects.create(
 			user=user,
 			otp_hash=make_password(otp),
-			expires_at=timezone.now() + timedelta(minutes=10),
+			expires_at=timezone.now() + timedelta(seconds=OTP_EXPIRY_SECONDS),
 		)
 
 		send_mail(
 			subject='SkillSikka Password Reset OTP',
 			message=(
 				f'Your SkillSikka password reset OTP is {otp}. '
-				'This OTP will expire in 10 minutes.'
+				f'This OTP will expire in {OTP_EXPIRY_TEXT}.'
 			),
 			from_email=getattr(
 				settings,

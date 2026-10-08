@@ -323,7 +323,7 @@ def _current_user_payload(request, user):
 		'experience_years': experience_years,
 
 		'profile_photo_url': (
-			request.build_absolute_uri(user.profile_photo_url)
+			request.build_absolute_uri(user.profile_photo_src)
 			if user.profile_photo_url else None
 		),
 		'student_id_card_url': _document_url(request, student_id_card),
@@ -6415,7 +6415,7 @@ class SuperAdminUserListAPIView(
 				'phone_number': user.phone_number,
 				'profile_photo_url': _absolute_or_none(
 					request,
-					user.profile_photo_url
+					user.profile_photo_src
 				),
 				'role': (
 					user.role.name
@@ -6487,7 +6487,7 @@ class SuperAdminUserDetailAPIView(
 			'location': user.location,
 			'profile_photo_url': _absolute_or_none(
 				request,
-				user.profile_photo_url
+				user.profile_photo_src
 			),
 			'documents': _admin_documents_payload(request, user),
 			'role': (

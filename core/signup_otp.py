@@ -9,7 +9,9 @@ from django.utils import timezone
 
 from .models import InstructorSignupOTP
 
-OTP_EXPIRY_SECONDS = 600
+# Shared by signup and password-reset OTPs.
+OTP_EXPIRY_SECONDS = 60
+OTP_EXPIRY_TEXT = '1 minute'
 OTP_COOLDOWN_SECONDS = 60
 OTP_MAX_ATTEMPTS = 5
 # A 4-digit code allows 5 guesses per code; capping codes per day keeps the
@@ -27,6 +29,6 @@ def issue_signup_otp(user):
     )
     send_mail(
         f'SkillSikka {user.role.name.title()} Signup OTP',
-        f'Your SkillSikka signup OTP is {otp}. This OTP expires in 10 minutes.',
+        f'Your SkillSikka signup OTP is {otp}. This OTP expires in {OTP_EXPIRY_TEXT}.',
         settings.DEFAULT_FROM_EMAIL, [user.email], fail_silently=False,
     )

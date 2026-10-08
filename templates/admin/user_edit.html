@@ -54,7 +54,7 @@
             <div class="section-heading"><div><p class="eyebrow">Uploads</p><h2>Photo &amp; documents</h2></div></div>
             <div class="ue-photo">
                 {% if target.profile_photo_url %}
-                <a href="{{ target.profile_photo_url }}" target="_blank" rel="noopener"><img src="{{ target.profile_photo_url }}" alt="Profile photo of {{ target_name }}"></a>
+                <a href="{{ target.profile_photo_src }}" target="_blank" rel="noopener"><img src="{{ target.profile_photo_src }}" alt="Profile photo of {{ target_name }}"></a>
                 {% else %}
                 <span>{{ target_name|slice:':1'|upper }}</span>
                 <small>No profile photo uploaded.</small>

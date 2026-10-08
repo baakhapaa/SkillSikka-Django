@@ -257,6 +257,13 @@ class User(AbstractBaseUser, PermissionsMixin):
 			).exists()
 		)
 
+	@property
+	def profile_photo_src(self):
+		# profile_photo_url holds a storage name (older rows: a URL); resolve
+		# it on read so the URL never goes stale, e.g. signed S3 links.
+		from .documents import media_src
+		return media_src(self.profile_photo_url)
+
 
 class VerificationDocument(models.Model):
 	DOCUMENT_TYPE_CHOICES = (

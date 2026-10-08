@@ -19,6 +19,7 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import District, InstructorSignupOTP, Municipality, PasswordResetOTP, Province, Role, User
+from .signup_otp import OTP_EXPIRY_SECONDS
 
 
 @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
@@ -70,7 +71,7 @@ class InstructorSignupOTPTests(TestCase):
         record = self.user.instructor_signup_otps.get()
         self.assertNotEqual(record.otp_hash, self.otp)
         self.assertTrue(check_password(self.otp, record.otp_hash))
-        self.assertAlmostEqual((record.expires_at - record.created_at).total_seconds(), 600, delta=2)
+        self.assertAlmostEqual((record.expires_at - record.created_at).total_seconds(), OTP_EXPIRY_SECONDS, delta=2)
         self.assertEqual(mail.outbox[-1].to, [self.user.email])
         self.assertNotIn(self.otp, str(response.data))
 
@@ -312,7 +313,7 @@ class StudentSignupOTPTests(TestCase):
         record = InstructorSignupOTP.objects.get(user=self.user)
         self.assertTrue(check_password(self.otp, record.otp_hash))
         self.assertNotEqual(record.otp_hash, self.otp)
-        self.assertAlmostEqual((record.expires_at-record.created_at).total_seconds(),600,delta=2)
+        self.assertAlmostEqual((record.expires_at-record.created_at).total_seconds(),OTP_EXPIRY_SECONDS,delta=2)
         self.assertEqual(record.failed_attempts, 0)
         self.assertEqual(self.user.student_profile.onboarding_flow_version, 2)
         self.assertFalse(self.user.student_profile.profile_completed)
