@@ -1,6 +1,7 @@
 ﻿from django.db.models import Count, Prefetch, Q, QuerySet
 from django.utils import timezone
-from django.db.models import Exists, OuterRef, Subquery, F
+from django.shortcuts import get_object_or_404
+from django.db.models import Exists, OuterRef, Subquery, F, Max
 from django.db.models.functions import Coalesce
 from django.db import transaction, IntegrityError
 from decimal import Decimal
@@ -88,6 +89,7 @@ from .serializers import (
 	ChapterSerializer,
 	CompleteStudentProfileSerializer,
 	CourseSerializer,
+	HomeCourseSerializer,
 	CourseReviewSerializer,
 	PublicInstructorSerializer,
 	DistrictSerializer,
@@ -103,6 +105,7 @@ from .serializers import (
 	InstructorRegistrationSerializer,
 	LeaderboardEntrySerializer,
 	LearningStreakSerializer,
+	LearningCourseSerializer,
 	LessonProgressSerializer,
 	LessonSerializer,
 	LoginSerializer,
@@ -127,6 +130,9 @@ from .serializers import (
 	PointTransactionSerializer,
 	RedemptionSerializer,
 	RewardSerializer,
+	AdminRewardSerializer,
+	AdminRedemptionSerializer,
+	RedemptionTransitionSerializer,
 	ShortCommentSerializer,
 	ShortLikeSerializer,
 	ShortSerializer,
@@ -828,15 +834,20 @@ def _notify(
 	message,
 	related_type='',
 	related_id=None,
+	batch=None,
 ):
-	Notification.objects.create(
-		recipient=recipient,
+	notification = Notification(
+		recipient_id=getattr(recipient, 'pk', recipient),
 		notification_type=notification_type,
 		title=title,
 		message=message,
 		related_type=related_type,
 		related_id=related_id,
 	)
+	if batch is None:
+		notification.save()
+	else:
+		batch.append(notification)
 
 
 # =========================================================
@@ -1054,16 +1065,65 @@ def _public_instructors():
 	)
 
 
+def _ranked_public_instructors():
+	return _public_instructors().order_by(
+		F('average_rating').desc(nulls_last=True), '-review_count',
+		'-total_students', '-total_courses', 'pk',
+	)
+
+
+class HomeFeedAPIView(APIView):
+	authentication_classes = [JWTAuthentication, SessionAuthentication]
+	permission_classes = [IsAuthenticated]
+	COURSE_LIMIT = 6
+	EVENT_LIMIT = 3
+	ADVERTISEMENT_LIMIT = 3
+	INSTRUCTOR_LIMIT = 6
+
+	def get(self, request):
+		if not request.user.is_active or not _is_student(request.user) or _is_admin(request.user):
+			raise PermissionDenied('Only active students can access the Home Feed.')
+		# Local imports avoid cycles: these existing views use shared API helpers.
+		from .advertisement_views import visible_advertisements
+		from .advertisement_serializers import AdvertisementDisplaySerializer
+		from .event_views import _published_events, _viewer_context
+		from .event_serializers import EventSerializer
+
+		now = timezone.now()
+		profile = _related_or_none(request.user, 'student_profile')
+		enrolled = Enrollment.objects.filter(
+			student=request.user, course_id=OuterRef('pk'), status__in=['active', 'completed'],
+		)
+		def course_cards(courses):
+			courses = courses.with_review_stats().annotate(is_enrolled=Exists(enrolled))[:self.COURSE_LIMIT]
+			return HomeCourseSerializer(courses, many=True, context={'request': request}).data
+
+		courses = GeminiService.course_candidates().with_review_stats()
+		featured = courses.order_by(
+			F('average_rating').desc(nulls_last=True), '-review_count', '-created_at', 'pk',
+		)
+		events = list(_published_events().filter(end_at__gte=now).order_by('start_at', 'pk')[:self.EVENT_LIMIT])
+		return Response({
+			'featured_courses': course_cards(featured),
+			'recommended_courses': course_cards(GeminiService.home_course_candidates(request.user, profile)),
+			'skill_courses': course_cards(courses.filter(course_type='skill').order_by('-created_at', 'pk')),
+			'events': EventSerializer(events, many=True, context=_viewer_context(request, events)).data,
+			'advertisements': AdvertisementDisplaySerializer(
+				visible_advertisements(now)[:self.ADVERTISEMENT_LIMIT], many=True, context={'request': request},
+			).data,
+			'top_instructors': PublicInstructorSerializer(
+				_ranked_public_instructors()[:self.INSTRUCTOR_LIMIT], many=True, context={'request': request},
+			).data,
+		})
+
+
 class TopInstructorsAPIView(generics.ListAPIView):
 	authentication_classes = [JWTAuthentication, SessionAuthentication]
 	permission_classes = [IsAuthenticated]
 	serializer_class = PublicInstructorSerializer
 
 	def get_queryset(self):
-		return _public_instructors().order_by(
-			F('average_rating').desc(nulls_last=True), '-review_count',
-			'-total_students', '-total_courses', 'pk',
-		)
+		return _ranked_public_instructors()
 
 
 class PublicInstructorDetailAPIView(generics.RetrieveAPIView):
@@ -1373,7 +1433,11 @@ class EnrollCourseAPIView(APIView):
 
 		serializer = EnrollCourseSerializer(data={}, context={'course': course, 'request': request})
 		serializer.is_valid(raise_exception=True)
-		enrollment = serializer.save()
+		with transaction.atomic():
+			enrollment = serializer.save()
+			if enrollment.status == 'active':
+				_notify(request.user, Notification.TYPE_COURSE_UPDATE, 'Course access confirmed',
+					f'You can now start "{course.title}".', 'course', course.pk)
 
 		return Response(
 			EnrollmentSerializer(enrollment).data,
@@ -1457,6 +1521,135 @@ class CompleteLessonAPIView(APIView):
 		return Response(LessonProgressSerializer(progress).data, status=status.HTTP_200_OK)
 
 
+def _course_progress_summary(course_id, total_lessons, completed_lessons):
+	return {
+		'course_id': course_id,
+		'total_lessons': total_lessons,
+		'completed_lessons': completed_lessons,
+		'progress_percentage': round(completed_lessons / total_lessons * 100, 2) if total_lessons else 0.0,
+		'is_completed': total_lessons > 0 and completed_lessons == total_lessons,
+	}
+
+
+def _apply_course_completion(enrollment, is_completed, completed_at=None):
+	"""Apply the existing completion transition; callers persist individually or in bulk."""
+	if is_completed and enrollment.status != 'completed':
+		enrollment.status = 'completed'
+		enrollment.completed_at = completed_at or timezone.now()
+		return True
+	return False
+
+
+def _student_certificates(student):
+	return Certificate.objects.filter(student=student).select_related('course', 'grade').order_by('-issued_at')
+
+
+def _persist_course_completions(enrollments):
+	"""Notify only the winning completion transition, including concurrent reads."""
+	if not enrollments:
+		return
+	with transaction.atomic():
+		eligible_ids = set(Enrollment.objects.select_for_update().filter(
+			pk__in=[enrollment.pk for enrollment in enrollments], status='active',
+		).order_by('pk').values_list('pk', flat=True))
+		transitions = [enrollment for enrollment in enrollments if enrollment.pk in eligible_ids]
+		Enrollment.objects.bulk_update(transitions, ['status', 'completed_at'])
+		notifications = []
+		for enrollment in transitions:
+			_notify(enrollment.student_id, Notification.TYPE_COURSE_UPDATE, 'Course completed',
+				f'You completed "{enrollment.course.title}".', 'course', enrollment.course_id, batch=notifications)
+		Notification.objects.bulk_create(notifications)
+
+
+def _issue_certificate(student, certificate_type, **target):
+	with transaction.atomic():
+		certificate, created = Certificate.objects.get_or_create(
+			student=student, certificate_type=certificate_type, **target,
+		)
+		if created:
+			label = target['course'].title if certificate_type == 'course' else target['grade'].name
+			_notify(student, Notification.TYPE_CERTIFICATE, 'Certificate issued',
+				f'Your certificate for "{label}" has been issued.', 'certificate', certificate.pk)
+	return certificate, created
+
+
+class MyLearningAPIView(APIView):
+	authentication_classes = [JWTAuthentication, SessionAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def get(self, request):
+		student = request.user
+		if not student.is_active or not _is_student(student) or _is_admin(student):
+			raise PermissionDenied('Only active students can access My Learning.')
+		ownership_fields = {'student', 'student_id', 'user', 'user_id'}
+		if ownership_fields & set(request.query_params) or (isinstance(request.data, dict) and ownership_fields & set(request.data)):
+			raise ValidationError({'detail': 'Ownership is derived from the authenticated student.'})
+		enrollments = list(Enrollment.objects.filter(
+			student=student, status__in=['active', 'completed'],
+		).prefetch_related(Prefetch(
+			'course', queryset=Course.objects.with_review_stats().select_related('instructor', 'subject', 'grade'),
+		)))
+		course_ids = [enrollment.course_id for enrollment in enrollments]
+		# Compact bulk metadata avoids loading lesson content or querying each course.
+		lessons = {}
+		for lesson in Lesson.objects.filter(course_id__in=course_ids).order_by('order', 'title', 'pk').values(
+			'id', 'course_id', 'title', 'content_type', 'order',
+		):
+			lessons.setdefault(lesson['course_id'], []).append(lesson)
+		completed_ids = {}
+		last_activity = {}
+		for progress in LessonProgress.objects.filter(
+			student=student, lesson__course_id__in=course_ids, is_completed=True,
+		).values('lesson_id', 'lesson__course_id', 'completed_at'):
+			course_id = progress['lesson__course_id']
+			completed_ids.setdefault(course_id, set()).add(progress['lesson_id'])
+			if progress['completed_at'] and (course_id not in last_activity or progress['completed_at'] > last_activity[course_id]):
+				last_activity[course_id] = progress['completed_at']
+		# Analytics already regards completed quizzes as learning activity too.
+		for attempt in QuizAttempt.objects.filter(
+			student=student, quiz__course_id__in=course_ids, completed_at__isnull=False,
+		).order_by().values('quiz__course_id').annotate(last=Max('completed_at')):
+			course_id = attempt['quiz__course_id']
+			if course_id not in last_activity or attempt['last'] > last_activity[course_id]:
+				last_activity[course_id] = attempt['last']
+
+		active, completed, transitions = [], [], []
+		now = timezone.now()
+		for enrollment in enrollments:
+			course_lessons = lessons.get(enrollment.course_id, [])
+			done = completed_ids.get(enrollment.course_id, set())
+			summary = _course_progress_summary(enrollment.course_id, len(course_lessons), len(done))
+			if _apply_course_completion(enrollment, summary['is_completed'], now):
+				transitions.append(enrollment)
+			next_lesson = next((dict(lesson, lesson_number=index) for index, lesson in enumerate(course_lessons, 1)
+				if lesson['id'] not in done), None)
+			row = dict(summary,
+				enrollment_id=enrollment.pk, enrollment_status=enrollment.status,
+				enrolled_at=enrollment.enrolled_at, completed_at=enrollment.completed_at,
+				course=enrollment.course, next_lesson=next_lesson,
+				resume_url=request.build_absolute_uri(reverse('api-lesson-detail', kwargs={'pk': next_lesson['id']})) if next_lesson else None,
+				last_learning_activity=last_activity.get(enrollment.course_id),
+			)
+			(completed if enrollment.status == 'completed' else active).append(row)
+		_persist_course_completions(transitions)
+		def activity_order(row):
+			return (row['last_learning_activity'] is not None,
+				row['last_learning_activity'] or row['enrolled_at'], row['enrolled_at'], row['enrollment_id'])
+		active.sort(key=activity_order, reverse=True)
+		completed.sort(key=lambda row: (row['completed_at'] or row['enrolled_at'], row['enrollment_id']), reverse=True)
+		continue_learning = next((row for row in active if row['next_lesson'] is not None), None)
+		other_courses = [row for row in active if row is not continue_learning]
+		streak = LearningStreak.objects.filter(student=student).first()
+		context = {'request': request}
+		return Response({
+			'continue_learning': LearningCourseSerializer(continue_learning, context=context).data if continue_learning else None,
+			'courses': LearningCourseSerializer(other_courses, many=True, context=context).data,
+			'completed_courses': LearningCourseSerializer(completed, many=True, context=context).data,
+			'stats': {'courses_completed': len(completed), 'day_streak': streak.current_streak if streak else 0, 'hours_learned': None},
+			'certificates': CertificateSerializer(_student_certificates(student), many=True, context=context).data,
+		})
+
+
 class CourseProgressAPIView(APIView):
 	authentication_classes = [JWTAuthentication]
 	permission_classes = [IsAuthenticated]
@@ -1483,21 +1676,12 @@ class CourseProgressAPIView(APIView):
 			student=student, lesson__course=course, is_completed=True,
 		).count()
 
-		progress_percentage = round((completed_lessons / total_lessons) * 100, 2) if total_lessons > 0 else 0.0
-		is_completed = total_lessons > 0 and completed_lessons == total_lessons
+		summary = _course_progress_summary(course.id, total_lessons, completed_lessons)
+		if _apply_course_completion(enrollment, summary['is_completed']):
+			enrollment.course = course
+			_persist_course_completions([enrollment])
 
-		if is_completed and enrollment.status != 'completed':
-			enrollment.status = 'completed'
-			enrollment.completed_at = timezone.now()
-			enrollment.save(update_fields=['status', 'completed_at'])
-
-		return Response({
-			'course_id': course.id,
-			'total_lessons': total_lessons,
-			'completed_lessons': completed_lessons,
-			'progress_percentage': progress_percentage,
-			'is_completed': is_completed,
-		}, status=status.HTTP_200_OK)
+		return Response(summary, status=status.HTTP_200_OK)
 
 
 # =========================================================
@@ -1651,8 +1835,8 @@ class CheckCourseCertificateAPIView(APIView):
 		if not _check_course_certificate_eligibility(student, course):
 			return Response({'detail': 'You have not yet met the criteria for this certificate.'}, status=status.HTTP_400_BAD_REQUEST)
 
-		certificate = Certificate.objects.create(student=student, certificate_type='course', course=course)
-		return Response(CertificateSerializer(certificate).data, status=status.HTTP_201_CREATED)
+		certificate, created = _issue_certificate(student, 'course', course=course)
+		return Response(CertificateSerializer(certificate).data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
 
 class CheckGradeCertificateAPIView(APIView):
@@ -1673,8 +1857,8 @@ class CheckGradeCertificateAPIView(APIView):
 		if not _check_grade_certificate_eligibility(student, student_grade):
 			return Response({'detail': 'You have not yet met the criteria for this certificate.'}, status=status.HTTP_400_BAD_REQUEST)
 
-		certificate = Certificate.objects.create(student=student, certificate_type='grade', grade=student_grade)
-		return Response(CertificateSerializer(certificate).data, status=status.HTTP_201_CREATED)
+		certificate, created = _issue_certificate(student, 'grade', grade=student_grade)
+		return Response(CertificateSerializer(certificate).data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
 
 class MyCertificatesAPIView(generics.ListAPIView):
@@ -1683,7 +1867,7 @@ class MyCertificatesAPIView(generics.ListAPIView):
 	serializer_class = CertificateSerializer
 
 	def get_queryset(self):
-		return Certificate.objects.filter(student=self.request.user).select_related('course', 'grade').order_by('-issued_at')
+		return _student_certificates(self.request.user)
 
 
 # =========================================================
@@ -4685,13 +4869,7 @@ class AIRecommendationAPIView(APIView):
 
 		# Only published courses are eligible for recommendation.
 		courses = list(
-			Course.objects.filter(
-				is_published=True
-			).select_related(
-				'subject',
-				'grade',
-				'instructor',
-			).order_by(
+			GeminiService.course_candidates().order_by(
 				'-created_at'
 			)[:100]
 		)
@@ -7472,6 +7650,121 @@ class SuperAdminAuditLogDetailAPIView(
 # =========================================================
 
 
+class RewardAdminAPIView(SuperAdminRequiredMixin, APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def initial(self, request, *args, **kwargs):
+		super().initial(request, *args, **kwargs)
+		self.check_super_admin(request)
+
+
+class AdminRewardListAPIView(RewardAdminAPIView):
+	def get(self, request):
+		return Response(RewardSerializer(Reward.objects.order_by('points_required', 'name', 'pk'), many=True).data)
+
+	def post(self, request):
+		serializer = AdminRewardSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		with transaction.atomic():
+			reward = serializer.save()
+			_create_audit_log(request, 'create', 'reward', reward.pk, reward.name)
+		return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class AdminRewardDetailAPIView(RewardAdminAPIView):
+	def get(self, request, reward_id):
+		return Response(RewardSerializer(get_object_or_404(Reward, pk=reward_id)).data)
+
+	def patch(self, request, reward_id):
+		with transaction.atomic():
+			reward = get_object_or_404(Reward.objects.select_for_update(), pk=reward_id)
+			serializer = AdminRewardSerializer(reward, data=request.data, partial=True)
+			serializer.is_valid(raise_exception=True)
+			new_stock = serializer.validated_data.get('stock', reward.stock)
+			if (new_stock is None) != (reward.stock is None) and reward.redemptions.filter(status__in=['pending', 'approved']).exists():
+				raise ValidationError({'stock': 'Cannot change finite/unlimited stock while redemptions are pending or approved.'})
+			changed = [field for field, value in serializer.validated_data.items() if getattr(reward, field) != value]
+			if changed:
+				serializer.save()
+				_create_audit_log(request, 'update', 'reward', reward.pk, reward.name, metadata={'changed_fields': changed})
+		return Response(serializer.data)
+
+	def delete(self, request, reward_id):
+		with transaction.atomic():
+			reward = get_object_or_404(Reward.objects.select_for_update(), pk=reward_id)
+			if reward.is_active:
+				reward.is_active = False
+				reward.save(update_fields=['is_active', 'updated_at'])
+				_create_audit_log(request, 'deactivate', 'reward', reward.pk, reward.name)
+		return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# Terminal states cannot be reopened; status is the atomic refund/restoration guard.
+REDEMPTION_TRANSITIONS = {
+	'pending': {'approved', 'rejected', 'cancelled'},
+	'approved': {'fulfilled', 'rejected', 'cancelled'},
+	'fulfilled': set(), 'rejected': set(), 'cancelled': set(),
+}
+
+
+def _transition_redemption(request, redemption_id, status_value, note=None):
+	with transaction.atomic():
+		redemption = get_object_or_404(Redemption.objects.select_for_update(), pk=redemption_id)
+		previous = redemption.status
+		if status_value == previous:
+			return redemption
+		if status_value not in REDEMPTION_TRANSITIONS[previous]:
+			raise ValidationError({'status': f'Cannot transition from {previous} to {status_value}.'})
+		# Same reward -> student lock order as the existing student redeem endpoint.
+		reward = Reward.objects.select_for_update().get(pk=redemption.reward_id)
+		student = User.objects.select_for_update().get(pk=redemption.student_id)
+		refund = None
+		if status_value in {'rejected', 'cancelled'}:
+			refund = PointTransaction.objects.create(
+				student=student, points=redemption.points_spent, event_type='manual_adjustment',
+				description=f'Refund for reward redemption #{redemption.pk} ({status_value})',
+			)
+			if reward.stock is not None:
+				reward.stock += 1
+				reward.save(update_fields=['stock', 'updated_at'])
+		redemption.status = status_value
+		if note is not None:
+			redemption.note = note
+		redemption.save(update_fields=['status', 'note', 'updated_at'])
+		_create_audit_log(request, 'update', 'redemption', redemption.pk, f'Redemption #{redemption.pk}',
+			metadata={'previous_status': previous, 'status': status_value, 'refund_transaction_id': refund.pk if refund else None})
+		redemption.reward, redemption.student = reward, student
+		_notify(student, Notification.TYPE_SYSTEM, f'Reward redemption {status_value}',
+			f'Your redemption of "{reward.name}" was {status_value}.' +
+			(f' {redemption.points_spent} points have been refunded.' if refund else ''),
+			'redemption', redemption.pk)
+		return redemption
+
+
+class AdminRedemptionListAPIView(RewardAdminAPIView):
+	def get(self, request):
+		redemptions = Redemption.objects.select_related('reward', 'student').order_by('-created_at', '-pk')
+		status_filter = request.query_params.get('status')
+		if status_filter is not None:
+			if status_filter not in REDEMPTION_TRANSITIONS:
+				raise ValidationError({'status': 'Invalid redemption status.'})
+			redemptions = redemptions.filter(status=status_filter)
+		return Response(AdminRedemptionSerializer(redemptions, many=True).data)
+
+
+class AdminRedemptionDetailAPIView(RewardAdminAPIView):
+	def get(self, request, redemption_id):
+		redemption = get_object_or_404(Redemption.objects.select_related('reward', 'student'), pk=redemption_id)
+		return Response(AdminRedemptionSerializer(redemption).data)
+
+	def patch(self, request, redemption_id):
+		serializer = RedemptionTransitionSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		redemption = _transition_redemption(request, redemption_id, serializer.validated_data['status'], serializer.validated_data.get('note'))
+		return Response(AdminRedemptionSerializer(redemption).data)
+
+
 class RewardListAPIView(APIView):
 	authentication_classes = [JWTAuthentication]
 	permission_classes = [IsAuthenticated]
@@ -7623,6 +7916,8 @@ class RedeemRewardAPIView(APIView):
 				current_points -
 				reward.points_required
 			)
+			_notify(user, Notification.TYPE_SYSTEM, 'Reward redemption submitted',
+				f'Your redemption of "{reward.name}" is pending review.', 'redemption', redemption.pk)
 
 		return Response(
 			{

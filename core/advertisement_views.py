@@ -19,16 +19,20 @@ from .models import Advertisement, advertisement_image_path
 logger = logging.getLogger(__name__)
 
 
+def visible_advertisements(now=None):
+    now = now or timezone.now()
+    return Advertisement.objects.filter(is_active=True, archived_at__isnull=True).filter(
+        Q(starts_at__isnull=True) | Q(starts_at__lte=now),
+        Q(ends_at__isnull=True) | Q(ends_at__gte=now),
+    ).order_by('display_order', 'id')
+
+
 class AdvertisementListAPIView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = AdvertisementDisplaySerializer
 
     def get_queryset(self):
-        now = timezone.now()
-        return Advertisement.objects.filter(is_active=True, archived_at__isnull=True).filter(
-            Q(starts_at__isnull=True) | Q(starts_at__lte=now),
-            Q(ends_at__isnull=True) | Q(ends_at__gte=now),
-        ).order_by('display_order', 'id')
+        return visible_advertisements()
 
 
 def advertisement_snapshot(advertisement):

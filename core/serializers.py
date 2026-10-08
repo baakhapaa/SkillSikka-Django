@@ -1202,6 +1202,13 @@ class CourseSerializer(serializers.ModelSerializer):
 		return attrs
 
 
+class HomeCourseSerializer(CourseSerializer):
+	is_enrolled = serializers.BooleanField(read_only=True)
+
+	class Meta(CourseSerializer.Meta):
+		fields = CourseSerializer.Meta.fields + ['is_enrolled']
+
+
 class LessonSerializer(serializers.ModelSerializer):
 	topic_name = serializers.CharField(
 		source='topic.name',
@@ -1359,6 +1366,29 @@ class EnrollCourseSerializer(serializers.Serializer):
 			status=enrollment_status,
 			amount_paid=course.price if not course.is_paid else None,
 		)
+
+
+class ResumeLessonSerializer(serializers.Serializer):
+	id = serializers.IntegerField(read_only=True)
+	title = serializers.CharField(read_only=True)
+	content_type = serializers.CharField(read_only=True)
+	order = serializers.IntegerField(read_only=True)
+	lesson_number = serializers.IntegerField(read_only=True)
+
+
+class LearningCourseSerializer(serializers.Serializer):
+	enrollment_id = serializers.IntegerField(read_only=True)
+	enrollment_status = serializers.CharField(read_only=True)
+	enrolled_at = serializers.DateTimeField(read_only=True)
+	completed_at = serializers.DateTimeField(read_only=True, allow_null=True)
+	course = CourseSerializer(read_only=True)
+	progress_percentage = serializers.FloatField(read_only=True)
+	completed_lessons = serializers.IntegerField(read_only=True)
+	total_lessons = serializers.IntegerField(read_only=True)
+	is_completed = serializers.BooleanField(read_only=True)
+	next_lesson = ResumeLessonSerializer(read_only=True, allow_null=True)
+	resume_url = serializers.CharField(read_only=True, allow_null=True)
+	last_learning_activity = serializers.DateTimeField(read_only=True, allow_null=True)
 
 
 class LessonProgressSerializer(serializers.ModelSerializer):
@@ -2365,6 +2395,41 @@ class RewardSerializer(serializers.ModelSerializer):
 			obj.is_active
 			and (obj.stock is None or obj.stock > 0)
 		)
+
+
+class AdminRewardSerializer(RewardSerializer):
+	points_required = serializers.IntegerField(min_value=1, max_value=2147483647)
+	stock = serializers.IntegerField(min_value=0, max_value=2147483647, allow_null=True, required=False)
+
+	def validate(self, attrs):
+		unknown = set(self.initial_data) - {'name', 'description', 'points_required', 'stock', 'is_active'}
+		if unknown:
+			raise serializers.ValidationError({field: 'This field cannot be supplied.' for field in sorted(unknown)})
+		return attrs
+
+
+class RedemptionTransitionSerializer(serializers.Serializer):
+	status = serializers.ChoiceField(choices=Redemption.STATUS_CHOICES)
+	note = serializers.CharField(required=False, allow_blank=True)
+
+	def validate(self, attrs):
+		unknown = set(self.initial_data) - {'status', 'note'}
+		if unknown:
+			raise serializers.ValidationError({field: 'This field cannot be supplied.' for field in sorted(unknown)})
+		return attrs
+
+
+class AdminRedemptionSerializer(serializers.ModelSerializer):
+	reward = RewardSerializer(read_only=True)
+	student = serializers.SerializerMethodField()
+
+	class Meta:
+		model = Redemption
+		fields = ['id', 'student', 'reward', 'points_spent', 'status', 'note', 'created_at', 'updated_at']
+		read_only_fields = fields
+
+	def get_student(self, obj):
+		return {'id': obj.student_id, 'name': obj.student.name}
 
 
 class RedemptionSerializer(serializers.ModelSerializer):

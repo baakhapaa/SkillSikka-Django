@@ -14,9 +14,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .api_views import SuperAdminRequiredMixin, _create_audit_log
+from .api_views import SuperAdminRequiredMixin, _create_audit_log, _notify
 from .event_serializers import EventAdminSerializer, EventSerializer
-from .models import Event, EventBookmark, EventRegistration, event_image_path
+from .models import Event, EventBookmark, EventRegistration, Notification, event_image_path
 
 
 DEFAULT_RADIUS_KM = 25
@@ -242,6 +242,10 @@ class EventRegistrationAPIView(APIView):
 				event=event, user=request.user,
 				status='waitlisted' if full else 'registered',
 			)
+			_notify(request.user, Notification.TYPE_SYSTEM,
+				'Event waitlisted' if full else 'Event registration confirmed',
+				f'You are on the waitlist for "{event.title}".' if full else f'You are registered for "{event.title}".',
+				'event', event.pk)
 
 		return _event_response(request, event, status.HTTP_201_CREATED)
 
@@ -252,11 +256,15 @@ class EventRegistrationAPIView(APIView):
 			if registration is not None:
 				freed_seat = registration.status == 'registered'
 				registration.delete()
+				_notify(request.user, Notification.TYPE_SYSTEM, 'Event registration cancelled',
+					f'Your registration for "{event.title}" was cancelled.', 'event', event.pk)
 				if freed_seat:
 					next_in_line = EventRegistration.objects.filter(event=event, status='waitlisted').first()
 					if next_in_line is not None:
 						next_in_line.status = 'registered'
 						next_in_line.save(update_fields=['status'])
+						_notify(next_in_line.user, Notification.TYPE_SYSTEM, 'Event registration confirmed',
+							f'A place is now available: you are registered for "{event.title}".', 'event', event.pk)
 
 		return _event_response(request, event)
 

@@ -528,6 +528,47 @@ class GeminiService:
     # =========================
 
     @classmethod
+    def course_candidates(cls):
+        """The public course pool shared by AI recommendations and Home."""
+        from .models import Course
+        return Course.objects.filter(is_published=True).select_related('subject', 'grade', 'instructor')
+
+    @classmethod
+    def home_course_candidates(cls, student, profile=None):
+        """Offline fallback for Home; no Gemini request or stored recommendation.
+
+        Interests have no course relation. Match their literal names/slugs to
+        public course text, then fall back to the existing newest-course order.
+        """
+        from django.db.models import Case, Exists, IntegerField, OuterRef, Q, Value, When
+        from .models import Enrollment
+
+        current_enrollment = Enrollment.objects.filter(
+            student=student, course_id=OuterRef('pk'),
+            status__in=['pending_payment', 'active', 'completed'],
+        )
+        courses = cls.course_candidates().filter(~Exists(current_enrollment))
+        ordering = []
+        if profile is not None:
+            if profile.grade_id:
+                courses = courses.filter(Q(course_type='skill') | Q(grade_id=profile.grade_id) | Q(grade__isnull=True))
+                courses = courses.annotate(home_grade_match=Case(
+                    When(course_type='academic', grade_id=profile.grade_id, then=Value(1)),
+                    default=Value(0), output_field=IntegerField(),
+                ))
+                ordering.append('-home_grade_match')
+            interest_match = Q()
+            for interest in profile.learning_interests.filter(is_active=True):
+                for term in {interest.name.strip(), interest.slug.replace('-', ' ').strip()} - {''}:
+                    interest_match |= Q(title__icontains=term) | Q(description__icontains=term) | Q(subject__name__icontains=term)
+            if interest_match:
+                courses = courses.annotate(home_interest_match=Case(
+                    When(interest_match, then=Value(1)), default=Value(0), output_field=IntegerField(),
+                ))
+                ordering.insert(0, '-home_interest_match')
+        return courses.order_by(*ordering, '-created_at', 'pk')
+
+    @classmethod
     def recommend_learning_content(
         cls,
         learning_goal,

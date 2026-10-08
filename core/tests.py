@@ -30,6 +30,1168 @@ from .models import Course, CourseReview, Enrollment, Lesson, LessonProgress, wi
 from .serializers import CourseSerializer
 
 
+class NotificationIntegrationTests(TestCase):
+    def setUp(self):
+        from .models import Notification, Reward, PointTransaction
+        self.notifications = Notification.objects
+        self.client = APIClient()
+        self.student = self.user('NotifyStudent', 'student')
+        self.other = self.user('NotifyOther', 'student')
+        self.teacher = self.user('NotifyTeacher', 'instructor')
+        self.admin = self.user('NotifyAdmin', 'super_admin')
+        self.course = Course.objects.create(title='Notification course', course_type='skill',
+            instructor=self.teacher, is_published=True)
+        self.lesson = Lesson.objects.create(course=self.course, title='Lesson', content_type='text', order=1)
+        self.reward = Reward.objects.create(name='Book', points_required=40, stock=3)
+        PointTransaction.objects.create(student=self.student, points=100, event_type='manual_adjustment')
+        self.client.force_authenticate(self.student)
+
+    def user(self, name, role):
+        return User.objects.create_user(email=f'{name.lower()}@example.com', name=name,
+            role=Role.objects.get(name=role))
+
+    def notice(self, recipient=None, **fields):
+        return self.notifications.create(recipient=recipient or self.student, notification_type='system',
+            title='Notice', message='Safe message', **fields)
+
+    def enroll_completed(self, course=None):
+        course = course or self.course
+        enrollment = Enrollment.objects.create(student=self.student, course=course)
+        lesson = self.lesson if course == self.course else Lesson.objects.create(course=course, title='Lesson', content_type='text')
+        LessonProgress.objects.create(student=self.student, lesson=lesson, enrollment=enrollment,
+            is_completed=True, completed_at=timezone.now())
+        return enrollment
+
+    def redeem(self):
+        self.client.force_authenticate(self.student)
+        response = self.client.post(reverse('api-redeem-reward'), {'reward_id': self.reward.pk}, format='json')
+        self.assertEqual(response.status_code, 201)
+        return response.data['redemption']['id']
+
+    def transition(self, redemption_id, state, **fields):
+        self.client.force_authenticate(self.admin)
+        return self.client.patch(reverse('api-admin-redemption-detail', args=[redemption_id]),
+            {'status': state, **fields}, format='json')
+
+    def event(self, **fields):
+        from .models import Event
+        now = timezone.now()
+        return Event.objects.create(title='Bootcamp', host=self.teacher, is_published=True,
+            start_at=now + timedelta(days=1), end_at=now + timedelta(days=2), **fields)
+
+    def test_list_ownership_fields_and_constant_queries(self):
+        own = self.notice()
+        self.notice(self.other)
+        with self.assertNumQueries(1):
+            response = self.client.get(reverse('notification-list'), {'user_id': self.other.pk})
+        self.assertEqual([n['id'] for n in response.data], [own.pk])
+        self.assertEqual(set(response.data[0]), {'id', 'notification_type', 'title', 'message',
+            'related_type', 'related_id', 'is_read', 'read_at', 'created_at'})
+        for _ in range(10):
+            self.notice()
+        with self.assertNumQueries(1):
+            self.assertEqual(len(self.client.get(reverse('notification-list')).data), 11)
+
+    def test_read_filter_count_mark_one_and_idempotency(self):
+        unread = self.notice()
+        read = self.notice(is_read=True, read_at=timezone.now())
+        self.notice(self.other)
+        self.assertEqual(self.client.get(reverse('notification-unread-count')).data, {'unread_count': 1})
+        self.assertEqual([n['id'] for n in self.client.get(reverse('notification-list'), {'is_read': 'false'}).data], [unread.pk])
+        self.assertEqual([n['id'] for n in self.client.get(reverse('notification-list'), {'is_read': 'true'}).data], [read.pk])
+        url = reverse('notification-mark-read', args=[unread.pk])
+        first = self.client.post(url).data
+        self.assertTrue(first['is_read'])
+        self.assertIsNotNone(first['read_at'])
+        self.assertEqual(self.client.post(url).data, first)
+        self.assertEqual(self.client.get(reverse('notification-unread-count')).data, {'unread_count': 0})
+
+    def test_mark_all_read_scoped_and_repeated_safe(self):
+        own = [self.notice(), self.notice()]
+        other = self.notice(self.other)
+        response = self.client.post(reverse('notification-mark-all-read'), {'user_id': self.other.pk})
+        self.assertEqual(response.data, {'detail': '2 notification(s) marked as read.'})
+        timestamps = []
+        for notice in own:
+            notice.refresh_from_db()
+            self.assertTrue(notice.is_read)
+            timestamps.append(notice.read_at)
+        self.assertEqual(self.client.post(reverse('notification-mark-all-read')).data, {'detail': '0 notification(s) marked as read.'})
+        self.assertEqual(list(self.notifications.filter(pk__in=[n.pk for n in own]).order_by('pk').values_list('read_at', flat=True)), timestamps)
+        other.refresh_from_db()
+        self.assertFalse(other.is_read)
+
+    def test_cannot_read_or_update_another_users_notification(self):
+        other = self.notice(self.other)
+        self.assertEqual(self.client.post(reverse('notification-mark-read', args=[other.pk])).status_code, 404)
+        self.assertEqual(self.client.patch(reverse('notification-mark-read', args=[other.pk]), {'is_read': True}).status_code, 405)
+        other.refresh_from_db()
+        self.assertFalse(other.is_read)
+
+    def test_anonymous_notification_access_denied(self):
+        self.client.force_authenticate(None)
+        for name in ['notification-list', 'notification-unread-count']:
+            self.assertEqual(self.client.get(reverse(name)).status_code, 401)
+        self.assertEqual(self.client.post(reverse('notification-mark-all-read')).status_code, 401)
+        self.assertEqual(self.client.post(reverse('notification-mark-read', args=[1])).status_code, 401)
+
+    def test_reward_submission_approval_fulfillment_notify_once_each(self):
+        redemption_id = self.redeem()
+        for state in ['approved', 'fulfilled']:
+            for _ in range(2):
+                self.assertEqual(self.transition(redemption_id, state, note='PRIVATE ADMIN NOTE').status_code, 200)
+        notices = self.notifications.filter(recipient=self.student, related_type='redemption', related_id=redemption_id).order_by('pk')
+        self.assertEqual(list(notices.values_list('title', flat=True)), ['Reward redemption submitted', 'Reward redemption approved', 'Reward redemption fulfilled'])
+        self.assertTrue(all(n.notification_type == 'system' for n in notices))
+        self.assertNotIn('PRIVATE ADMIN NOTE', ' '.join(n.message for n in notices))
+        self.assertEqual(self.notifications.exclude(recipient=self.student).count(), 0)
+
+    def test_reward_rejection_and_cancellation_notify_once(self):
+        for state in ['rejected', 'cancelled']:
+            redemption_id = self.redeem()
+            for _ in range(3):
+                self.assertEqual(self.transition(redemption_id, state).status_code, 200)
+            notices = self.notifications.filter(related_type='redemption', related_id=redemption_id)
+            self.assertEqual(notices.count(), 2)
+            self.assertIn('40 points have been refunded.', notices.get(title=f'Reward redemption {state}').message)
+            self.assertEqual(self.transition(redemption_id, 'approved').status_code, 400)
+            self.assertEqual(notices.count(), 2)
+
+    def test_reward_notification_rollback_and_failure_atomicity(self):
+        from .models import Redemption, PointTransaction
+        redemption_id = self.redeem()
+        with self.assertRaises(RuntimeError):
+            with transaction.atomic():
+                self.assertEqual(self.transition(redemption_id, 'rejected').status_code, 200)
+                raise RuntimeError('Rollback outer transaction')
+        self.assertEqual(Redemption.objects.get(pk=redemption_id).status, 'pending')
+        self.assertEqual(self.notifications.filter(related_id=redemption_id, related_type='redemption').count(), 1)
+        with patch('core.api_views._notify', side_effect=RuntimeError('Notification write failed')):
+            with self.assertRaises(RuntimeError):
+                self.transition(redemption_id, 'rejected')
+        self.assertEqual(Redemption.objects.get(pk=redemption_id).status, 'pending')
+        self.assertEqual(PointTransaction.objects.filter(student=self.student).count(), 2)
+        self.reward.refresh_from_db()
+        self.assertEqual(self.reward.stock, 2)
+
+    def test_reward_submission_notification_failure_rolls_back(self):
+        from .models import Redemption, PointTransaction
+        with patch('core.api_views._notify', side_effect=RuntimeError('Notification write failed')):
+            with self.assertRaises(RuntimeError):
+                self.client.post(reverse('api-redeem-reward'), {'reward_id': self.reward.pk}, format='json')
+        self.assertFalse(Redemption.objects.exists())
+        self.assertEqual(PointTransaction.objects.filter(student=self.student).count(), 1)
+        self.reward.refresh_from_db()
+        self.assertEqual(self.reward.stock, 3)
+        self.assertFalse(self.notifications.exists())
+
+    def test_free_enrollment_confirmation_only_on_creation(self):
+        url = reverse('api-enroll-course', args=[self.course.pk])
+        self.assertEqual(self.client.post(url).status_code, 201)
+        self.assertEqual(self.client.post(url).status_code, 400)
+        self.assertEqual(self.notifications.filter(title='Course access confirmed', related_id=self.course.pk).count(), 1)
+
+    def test_course_progress_completion_not_repeated_by_my_learning(self):
+        self.enroll_completed()
+        url = reverse('api-course-progress', args=[self.course.pk])
+        for _ in range(2):
+            self.assertTrue(self.client.get(url).data['is_completed'])
+            self.assertEqual(self.client.get(reverse('api-my-learning')).status_code, 200)
+        notice = self.notifications.get(title='Course completed')
+        self.assertEqual((notice.recipient_id, notice.related_type, notice.related_id), (self.student.pk, 'course', self.course.pk))
+
+    def test_my_learning_completion_batch_has_no_query_growth(self):
+        self.enroll_completed()
+        with CaptureQueriesContext(connection) as first:
+            self.assertEqual(self.client.get(reverse('api-my-learning')).status_code, 200)
+        for i in range(5):
+            course = Course.objects.create(title=f'Other course {i}', instructor=self.teacher, course_type='skill')
+            self.enroll_completed(course)
+        with CaptureQueriesContext(connection) as many:
+            self.assertEqual(self.client.get(reverse('api-my-learning')).status_code, 200)
+        self.assertEqual(len(first), len(many))
+        self.assertEqual(self.notifications.filter(title='Course completed').count(), 6)
+
+    def test_stale_completion_requests_are_guarded_by_locked_state(self):
+        from .api_views import _apply_course_completion, _persist_course_completions
+        enrollment = self.enroll_completed()
+        stale = Enrollment.objects.select_related('course').get(pk=enrollment.pk)
+        current = Enrollment.objects.select_related('course').get(pk=enrollment.pk)
+        _apply_course_completion(current, True)
+        _apply_course_completion(stale, True)
+        _persist_course_completions([current])
+        _persist_course_completions([stale])
+        self.assertEqual(self.notifications.filter(title='Course completed').count(), 1)
+
+    def test_completion_notification_failure_rolls_back_transition(self):
+        from .models import Notification
+        enrollment = self.enroll_completed()
+        with patch.object(Notification.objects, 'bulk_create', side_effect=RuntimeError('Notification write failed')):
+            with self.assertRaises(RuntimeError):
+                self.client.get(reverse('api-course-progress', args=[self.course.pk]))
+        enrollment.refresh_from_db()
+        self.assertEqual(enrollment.status, 'active')
+        self.assertFalse(self.notifications.exists())
+
+    def test_incomplete_zero_lesson_and_historical_completion_do_not_notify(self):
+        Enrollment.objects.create(student=self.student, course=self.course)
+        empty = Course.objects.create(title='Empty', instructor=self.teacher, course_type='skill')
+        Enrollment.objects.create(student=self.student, course=empty)
+        historical = Course.objects.create(title='Historical', instructor=self.teacher, course_type='skill')
+        Enrollment.objects.create(student=self.student, course=historical, status='completed')
+        self.client.get(reverse('api-my-learning'))
+        self.assertFalse(self.notifications.filter(title='Course completed').exists())
+
+    def test_course_certificate_notifies_once_and_failure_rolls_back(self):
+        from .models import Certificate, CertificateCriteria
+        enrollment = self.enroll_completed()
+        enrollment.status = 'completed'
+        enrollment.save()
+        criteria = CertificateCriteria.get_solo()
+        criteria.skill_course_requires_quiz_pass = False
+        criteria.save()
+        url = reverse('api-check-course-certificate', args=[self.course.pk])
+        with patch('core.api_views._notify', side_effect=RuntimeError('Notification write failed')):
+            with self.assertRaises(RuntimeError):
+                self.client.post(url)
+        self.assertFalse(Certificate.objects.exists())
+        first = self.client.post(url)
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(self.client.post(url).status_code, 200)
+        self.assertEqual(self.notifications.filter(notification_type='certificate', related_id=first.data['id']).count(), 1)
+
+    def test_grade_certificate_notifies_once(self):
+        from .models import Certificate
+        grade = Grade.objects.create(name='Notification grade')
+        StudentProfile.objects.create(user=self.student, grade=grade)
+        course = Course.objects.create(title='Academic', course_type='academic', grade=grade, instructor=self.teacher, is_published=True)
+        self.enroll_completed(course)
+        url = reverse('api-check-grade-certificate')
+        first = self.client.post(url)
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(self.client.post(url).status_code, 200)
+        self.assertEqual(Certificate.objects.filter(student=self.student, grade=grade).count(), 1)
+        self.assertEqual(self.notifications.filter(notification_type='certificate').count(), 1)
+
+    def test_event_registration_waitlist_cancellation_and_promotion(self):
+        event = self.event(capacity=1)
+        url = reverse('api-event-register', args=[event.pk])
+        self.assertEqual(self.client.post(url).status_code, 201)
+        self.assertEqual(self.client.post(url).status_code, 200)
+        self.client.force_authenticate(self.other)
+        self.assertEqual(self.client.post(url).status_code, 201)
+        self.assertEqual(self.client.post(url).status_code, 200)
+        self.client.force_authenticate(self.student)
+        self.assertEqual(self.client.delete(url).status_code, 200)
+        self.assertEqual(self.client.delete(url).status_code, 200)
+        self.assertEqual(list(self.notifications.filter(recipient=self.student).order_by('pk').values_list('title', flat=True)),
+            ['Event registration confirmed', 'Event registration cancelled'])
+        self.assertEqual(list(self.notifications.filter(recipient=self.other).order_by('pk').values_list('title', flat=True)),
+            ['Event waitlisted', 'Event registration confirmed'])
+
+    def test_event_notification_failure_rolls_back_registration(self):
+        from .models import EventRegistration
+        event = self.event()
+        with patch('core.event_views._notify', side_effect=RuntimeError('Notification write failed')):
+            with self.assertRaises(RuntimeError):
+                self.client.post(reverse('api-event-register', args=[event.pk]))
+        self.assertFalse(EventRegistration.objects.exists())
+        self.assertFalse(self.notifications.exists())
+
+    def test_existing_instructor_verification_trigger_preserved_and_safe(self):
+        self.client.force_authenticate(self.admin)
+        url = reverse('api-admin-instructor-verification', args=[self.teacher.pk])
+        for state in ['verified', 'rejected']:
+            response = self.client.patch(url, {'verification_status': state, 'notes': 'PRIVATE REVIEW NOTES'}, format='json')
+            self.assertEqual(response.status_code, 200)
+        notices = self.notifications.filter(recipient=self.teacher)
+        self.assertEqual(notices.count(), 2)
+        for notice in notices:
+            self.assertNotIn('PRIVATE REVIEW NOTES', notice.message)
+            self.assertNotIn(self.teacher.email, notice.message)
+            self.assertNotIn(self.admin.email, notice.message)
+
+
+class RewardTestSetup(TestCase):
+    def setUp(self):
+        from .models import Reward, PointTransaction
+        self.client = APIClient()
+        self.admin = self.user('RewardAdmin', 'super_admin')
+        self.student = self.user('RewardStudent', 'student')
+        self.other = self.user('RewardOther', 'student')
+        self.reward = Reward.objects.create(name='Book', points_required=40, stock=3)
+        PointTransaction.objects.create(student=self.student, points=100, event_type='manual_adjustment')
+        self.list_url = reverse('api-admin-rewards')
+        self.detail_url = reverse('api-admin-reward-detail', args=[self.reward.pk])
+        self.redemptions_url = reverse('api-admin-redemptions')
+        self.client.force_authenticate(self.admin)
+
+    def user(self, name, role, **kwargs):
+        return User.objects.create_user(email=f'{name.lower()}@example.com', name=name,
+            role=Role.objects.get_or_create(name=role)[0], **kwargs)
+
+    def redeem(self, reward=None):
+        from .models import Redemption
+        self.client.force_authenticate(self.student)
+        response = self.client.post(reverse('api-redeem-reward'), {'reward_id': (reward or self.reward).pk}, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        self.client.force_authenticate(self.admin)
+        return Redemption.objects.get(pk=response.data['redemption']['id'])
+
+    def transition(self, redemption, status, **fields):
+        return self.client.patch(reverse('api-admin-redemption-detail', args=[redemption.pk]),
+            {'status': status, **fields}, format='json')
+
+    def balance(self):
+        from .models import PointTransaction
+        from django.db.models import Sum
+        return PointTransaction.objects.filter(student=self.student).aggregate(total=Sum('points'))['total']
+
+class RewardAdminTests(RewardTestSetup):
+    def test_admin_list_detail_create_and_update(self):
+        from .models import AuditLog
+        self.assertEqual(self.client.get(self.list_url).data[0]['id'], self.reward.pk)
+        self.assertEqual(self.client.get(self.detail_url).status_code, 200)
+        created = self.client.post(self.list_url, {'name': 'Pen', 'points_required': 10, 'stock': None}, format='json')
+        self.assertEqual(created.status_code, 201)
+        self.assertTrue(created.data['available'])
+        updated = self.client.patch(self.detail_url, {'name': 'New book', 'description': 'Gift',
+            'points_required': 50, 'stock': 0, 'is_active': False}, format='json')
+        self.assertEqual(updated.status_code, 200)
+        self.assertFalse(updated.data['available'])
+        self.assertEqual(list(AuditLog.objects.filter(target_type='reward').order_by('pk').values_list('action', flat=True)), ['create', 'update'])
+
+    def test_invalid_points_and_stock(self):
+        for value in [0, -1, 'bad', None, 1.5]:
+            with self.subTest(points=value):
+                self.assertEqual(self.client.post(self.list_url, {'name': 'Bad', 'points_required': value}, format='json').status_code, 400)
+                self.assertEqual(self.client.patch(self.detail_url, {'points_required': value}, format='json').status_code, 400)
+        for value in [-1, 'bad', 1.5]:
+            self.assertEqual(self.client.patch(self.detail_url, {'stock': value}, format='json').status_code, 400)
+        self.assertEqual(self.client.patch(self.detail_url, {'stock': None}, format='json').status_code, 200)
+
+    def test_read_only_and_ownership_fields_rejected(self):
+        for field in ['student', 'id', 'created_at', 'available', 'status']:
+            self.assertEqual(self.client.patch(self.detail_url, {field: 1}, format='json').status_code, 400)
+        redemption = self.redeem()
+        for field in ['student_id', 'reward_id', 'points_spent']:
+            self.assertEqual(self.transition(redemption, 'approved', **{field: 1}).status_code, 400)
+
+    def test_delete_deactivates_preserves_history_and_is_idempotent(self):
+        from .models import Reward, Redemption, AuditLog
+        redemption = self.redeem()
+        for _ in range(2):
+            self.assertEqual(self.client.delete(self.detail_url).status_code, 204)
+        self.assertTrue(Reward.objects.filter(pk=self.reward.pk, is_active=False).exists())
+        self.assertTrue(Redemption.objects.filter(pk=redemption.pk).exists())
+        self.assertEqual(AuditLog.objects.filter(action='deactivate', target_type='reward').count(), 1)
+        self.assertEqual(self.transition(redemption, 'rejected').status_code, 200)
+        self.assertEqual(self.balance(), 100)
+
+    def test_non_admin_roles_denied_on_every_operation(self):
+        redemption = self.redeem()
+        url = reverse('api-admin-redemption-detail', args=[redemption.pk])
+        for role in ['student', 'instructor', 'teacher', 'municipality', 'ministry']:
+            self.client.force_authenticate(self.user(f'Denied{role}', role))
+            for method, endpoint, data in [('get', self.list_url, None), ('post', self.list_url, {}),
+                ('get', self.detail_url, None), ('patch', self.detail_url, {}), ('delete', self.detail_url, None),
+                ('get', self.redemptions_url, None), ('get', url, None), ('patch', url, {'status': 'approved'})]:
+                with self.subTest(role=role, method=method, endpoint=endpoint):
+                    self.assertEqual(getattr(self.client, method)(endpoint, data, format='json').status_code, 403)
+
+    def test_anonymous_denied_and_superuser_allowed(self):
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.get(self.list_url).status_code, 401)
+        self.client.force_authenticate(self.user('RootReward', 'student', is_superuser=True))
+        self.assertEqual(self.client.get(self.list_url).status_code, 200)
+
+    def test_redemption_list_detail_status_filter_privacy(self):
+        redemption = self.redeem()
+        self.assertEqual(self.transition(redemption, 'approved', note='Ready').status_code, 200)
+        listed = self.client.get(self.redemptions_url, {'status': 'approved'}).data
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]['student'], {'id': self.student.pk, 'name': self.student.name})
+        self.assertEqual(set(listed[0]), {'id', 'student', 'reward', 'points_spent', 'status', 'note', 'created_at', 'updated_at'})
+        self.assertEqual(self.client.get(reverse('api-admin-redemption-detail', args=[redemption.pk])).data, listed[0])
+        self.assertEqual(self.client.get(self.redemptions_url, {'status': 'pending'}).data, [])
+        self.assertEqual(self.client.get(self.redemptions_url, {'status': 'bad'}).status_code, 400)
+
+    def test_approval_fulfillment_preserves_points_and_stock(self):
+        from .models import PointTransaction
+        redemption = self.redeem()
+        for state in ['approved', 'fulfilled']:
+            self.assertEqual(self.transition(redemption, state).status_code, 200)
+        self.assertEqual(self.balance(), 60)
+        self.assertEqual(PointTransaction.objects.filter(student=self.student).count(), 2)
+        self.reward.refresh_from_db()
+        self.assertEqual(self.reward.stock, 2)
+
+    def test_invalid_jumps_and_fulfilled_backward_transitions(self):
+        redemption = self.redeem()
+        self.assertEqual(self.transition(redemption, 'fulfilled').status_code, 400)
+        self.assertEqual(self.transition(redemption, 'invalid').status_code, 400)
+        self.transition(redemption, 'approved')
+        self.assertEqual(self.transition(redemption, 'pending').status_code, 400)
+        self.transition(redemption, 'fulfilled')
+        for state in ['pending', 'approved', 'rejected', 'cancelled']:
+            self.assertEqual(self.transition(redemption, state).status_code, 400)
+        self.assertEqual(self.balance(), 60)
+
+    def test_rejection_restores_once_and_preserves_original_deduction(self):
+        from .models import PointTransaction, AuditLog
+        redemption = self.redeem()
+        original_id = redemption.point_transaction_id
+        for _ in range(3):
+            self.assertEqual(self.transition(redemption, 'rejected', note='Unavailable').status_code, 200)
+        redemption.refresh_from_db()
+        self.reward.refresh_from_db()
+        self.assertEqual((redemption.status, redemption.note, self.reward.stock, self.balance()), ('rejected', 'Unavailable', 3, 100))
+        self.assertEqual(redemption.point_transaction_id, original_id)
+        self.assertEqual(PointTransaction.objects.get(pk=original_id).points, -40)
+        refund = PointTransaction.objects.exclude(pk=original_id).get(student=self.student, points=40)
+        self.assertEqual(refund.event_type, 'manual_adjustment')
+        self.assertIn(f'#{redemption.pk}', refund.description)
+        log = AuditLog.objects.get(target_type='redemption', target_id=redemption.pk)
+        self.assertEqual(log.metadata['refund_transaction_id'], refund.pk)
+        self.assertNotIn('Unavailable', str(log.metadata))
+        for state in ['approved', 'pending', 'cancelled']:
+            self.assertEqual(self.transition(redemption, state).status_code, 400)
+
+    def test_approved_rejection_uses_original_price(self):
+        redemption = self.redeem()
+        self.transition(redemption, 'approved')
+        self.client.patch(self.detail_url, {'points_required': 99}, format='json')
+        self.assertEqual(self.transition(redemption, 'rejected').status_code, 200)
+        self.assertEqual(self.balance(), 100)
+
+    def test_cancellation_pending_and_approved_refunds_once(self):
+        for approved in [False, True]:
+            redemption = self.redeem()
+            if approved:
+                self.transition(redemption, 'approved')
+            for _ in range(2):
+                self.assertEqual(self.transition(redemption, 'cancelled').status_code, 200)
+            self.assertEqual(self.transition(redemption, 'rejected').status_code, 400)
+            self.assertEqual(self.balance(), 100)
+        self.reward.refresh_from_db()
+        self.assertEqual(self.reward.stock, 3)
+
+    def test_unlimited_stock_remains_null_on_refund(self):
+        self.reward.stock = None
+        self.reward.save()
+        redemption = self.redeem()
+        self.assertEqual(self.transition(redemption, 'rejected').status_code, 200)
+        self.reward.refresh_from_db()
+        self.assertIsNone(self.reward.stock)
+        self.assertEqual(self.balance(), 100)
+
+    def test_stock_mode_changes_blocked_until_reservations_closed(self):
+        redemption = self.redeem()
+        self.assertEqual(self.client.patch(self.detail_url, {'stock': None}, format='json').status_code, 400)
+        self.transition(redemption, 'approved')
+        self.assertEqual(self.client.patch(self.detail_url, {'stock': None}, format='json').status_code, 400)
+        self.transition(redemption, 'rejected')
+        self.assertEqual(self.client.patch(self.detail_url, {'stock': None}, format='json').status_code, 200)
+        unlimited = self.redeem()
+        self.assertEqual(self.client.patch(self.detail_url, {'stock': 5}, format='json').status_code, 400)
+        self.transition(unlimited, 'cancelled')
+        self.assertEqual(self.client.patch(self.detail_url, {'stock': 5}, format='json').status_code, 200)
+
+    def test_atomic_failure_rolls_back_refund_stock_status_and_audit(self):
+        from .models import AuditLog, PointTransaction
+        redemption = self.redeem()
+        with patch('core.api_views._create_audit_log', side_effect=RuntimeError('Audit unavailable')):
+            with self.assertRaises(RuntimeError):
+                self.transition(redemption, 'rejected')
+        redemption.refresh_from_db()
+        self.reward.refresh_from_db()
+        self.assertEqual((redemption.status, self.reward.stock, self.balance()), ('pending', 2, 60))
+        self.assertEqual(PointTransaction.objects.filter(student=self.student).count(), 2)
+        self.assertFalse(AuditLog.objects.filter(target_type='redemption').exists())
+        self.assertEqual(self.transition(redemption, 'rejected').status_code, 200)
+
+    def test_transition_locks_redemption_reward_student_and_retry_noop(self):
+        from .models import Reward, Redemption, AuditLog
+        managers = [Redemption.objects, Reward.objects, User.objects]
+        with patch.object(managers[0], 'select_for_update', wraps=managers[0].select_for_update) as redemption_lock, \
+             patch.object(managers[1], 'select_for_update', wraps=managers[1].select_for_update) as reward_lock, \
+             patch.object(managers[2], 'select_for_update', wraps=managers[2].select_for_update) as student_lock:
+            redemption = self.redeem()
+            redemption_lock.reset_mock(); reward_lock.reset_mock(); student_lock.reset_mock()
+            self.assertEqual(self.transition(redemption, 'rejected').status_code, 200)
+            for lock in [redemption_lock, reward_lock, student_lock]:
+                lock.assert_called_once_with()
+        before = self.client.get(reverse('api-admin-redemption-detail', args=[redemption.pk])).data
+        self.assertEqual(self.transition(redemption, 'rejected', note='Retry changes nothing').data, before)
+        self.assertEqual(AuditLog.objects.filter(target_type='redemption').count(), 1)
+
+    def test_list_does_not_query_each_redemption(self):
+        from .models import PointTransaction
+        PointTransaction.objects.create(student=self.student, points=1000, event_type='manual_adjustment')
+        self.reward.stock = None
+        self.reward.save()
+        for _ in range(5):
+            self.redeem()
+        with self.assertNumQueries(1):
+            self.assertEqual(len(self.client.get(self.redemptions_url).data), 5)
+
+    def test_missing_resources(self):
+        self.assertEqual(self.client.get(reverse('api-admin-reward-detail', args=[99999])).status_code, 404)
+        self.assertEqual(self.client.patch(reverse('api-admin-redemption-detail', args=[99999]), {'status': 'approved'}, format='json').status_code, 404)
+
+
+class StudentRewardCompatibilityTests(RewardTestSetup):
+    def test_student_listing_redeem_history_and_points(self):
+        from .models import Reward
+        created = self.client.post(self.list_url, {'name': 'Pen', 'points_required': 10}, format='json')
+        self.assertEqual(created.status_code, 201)
+        Reward.objects.create(name='Hidden', points_required=1, is_active=False)
+        self.client.force_authenticate(self.student)
+        listed = self.client.get(reverse('api-rewards')).data
+        self.assertEqual({r['id'] for r in listed}, {self.reward.pk, created.data['id']})
+        response = self.client.post(reverse('api-redeem-reward'), {'reward_id': self.reward.pk}, format='json')
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['remaining_points'], 60)
+        self.assertEqual(response.data['redemption']['status'], 'pending')
+        history = self.client.get(reverse('api-my-redemptions')).data
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0], response.data['redemption'])
+        self.assertEqual(self.client.get(reverse('student-points')).data['total_points'], 60)
+        self.client.force_authenticate(self.other)
+        self.assertEqual(self.client.get(reverse('api-my-redemptions')).data, [])
+
+    def test_student_insufficient_points_out_of_stock_inactive(self):
+        from .models import Reward, Redemption, PointTransaction
+        expensive = Reward.objects.create(name='Expensive', points_required=101, stock=2)
+        empty = Reward.objects.create(name='Empty', points_required=10, stock=0)
+        inactive = Reward.objects.create(name='Inactive', points_required=10, stock=2, is_active=False)
+        self.client.force_authenticate(self.student)
+        for reward, expected in [(expensive, 400), (empty, 400), (inactive, 404)]:
+            self.assertEqual(self.client.post(reverse('api-redeem-reward'), {'reward_id': reward.pk}, format='json').status_code, expected)
+        self.assertEqual(self.balance(), 100)
+        self.assertEqual(PointTransaction.objects.filter(student=self.student).count(), 1)
+        self.assertFalse(Redemption.objects.exists())
+
+    def test_student_points_and_history_reflect_admin_refund(self):
+        redemption = self.redeem()
+        self.assertEqual(self.transition(redemption, 'rejected').status_code, 200)
+        self.client.force_authenticate(self.student)
+        self.assertEqual(self.client.get(reverse('student-points')).data['total_points'], 100)
+        self.assertEqual(self.client.get(reverse('api-my-redemptions')).data[0]['status'], 'rejected')
+        self.assertEqual(self.client.get(reverse('api-rewards')).data[0]['stock'], 3)
+
+
+class MyLearningTests(TestCase):
+    sections = {'continue_learning', 'courses', 'stats', 'completed_courses', 'certificates'}
+    card_fields = {'enrollment_id', 'enrollment_status', 'enrolled_at', 'completed_at', 'course',
+                   'progress_percentage', 'completed_lessons', 'total_lessons', 'is_completed',
+                   'next_lesson', 'resume_url', 'last_learning_activity'}
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.student = self.user('LearningStudent', 'student')
+        self.other = self.user('LearningOther', 'student')
+        self.teacher = self.user('LearningTeacher', 'instructor')
+        self.course, self.enrollment = self.enroll('Learning course')
+        self.lessons = [Lesson.objects.create(course=self.course, title=f'Lesson {i}',
+            content_type='video', order=i) for i in range(1, 4)]
+        self.client.force_authenticate(self.student)
+        self.url = reverse('api-my-learning')
+
+    def user(self, name, role, **fields):
+        return User.objects.create_user(email=f'{name.lower()}@example.com', name=name,
+            role=Role.objects.get(name=role), **fields)
+
+    def enroll(self, title, student=None, status='active', published=True):
+        course = Course.objects.create(title=title, instructor=self.teacher, course_type='skill', is_published=published)
+        enrollment = Enrollment.objects.create(student=student or self.student, course=course, status=status)
+        return course, enrollment
+
+    def progress(self, lesson, student=None, completed=True, when=None, enrollment=None):
+        return LessonProgress.objects.create(student=student or self.student, lesson=lesson,
+            enrollment=enrollment, is_completed=completed, completed_at=when if when is not None else timezone.now())
+
+    def feed(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        return response.data
+
+    def cards(self, data):
+        return ([data['continue_learning']] if data['continue_learning'] else []) + data['courses'] + data['completed_courses']
+
+    def test_structure_first_lesson_and_safe_course_fields(self):
+        data = self.feed()
+        self.assertEqual(set(data), self.sections)
+        card = data['continue_learning']
+        self.assertEqual(set(card), self.card_fields)
+        self.assertEqual(set(card['course']), set(CourseSerializer(self.course).data))
+        self.assertEqual(card['next_lesson'], {'id': self.lessons[0].pk, 'title': 'Lesson 1',
+            'content_type': 'video', 'order': 1, 'lesson_number': 1})
+        self.assertEqual(card['resume_url'], 'http://testserver' + reverse('api-lesson-detail', kwargs={'pk': self.lessons[0].pk}))
+        self.assertEqual(self.client.get(card['resume_url']).status_code, 200)
+        self.assertIsNone(card['last_learning_activity'])
+        self.assertEqual(data['courses'], [])
+        self.assertFalse({'email', 'password', 'verification_status', 'phone_number', 'payment_reference', 'amount_paid'} & set(card))
+
+    def test_empty_learning_returns_null_continue_and_empty_sections(self):
+        self.enrollment.delete()
+        data = self.feed()
+        self.assertIsNone(data['continue_learning'])
+        for section in ['courses', 'completed_courses', 'certificates']:
+            self.assertEqual(data[section], [])
+        self.assertEqual(data['stats'], {'courses_completed': 0, 'day_streak': 0, 'hours_learned': None})
+
+    def test_partial_progress_matches_existing_progress_endpoint(self):
+        self.progress(self.lessons[0])
+        self.progress(self.lessons[2], completed=False)
+        self.progress(self.lessons[1], student=self.other)
+        card = self.feed()['continue_learning']
+        self.assertEqual(card['completed_lessons'], 1)
+        self.assertEqual(card['total_lessons'], 3)
+        self.assertEqual(card['progress_percentage'], 33.33)
+        self.assertFalse(card['is_completed'])
+        self.assertEqual(card['next_lesson']['id'], self.lessons[1].pk)
+        response = self.client.get(reverse('api-course-progress', kwargs={'course_id': self.course.pk}))
+        self.assertEqual(response.status_code, 200)
+        for field in ['completed_lessons', 'total_lessons', 'progress_percentage', 'is_completed']:
+            self.assertEqual(card[field], response.data[field])
+
+    def test_out_of_order_completion_resumes_first_gap_with_actual_ordinal(self):
+        self.progress(self.lessons[2])
+        card = self.feed()['continue_learning']
+        self.assertEqual(card['next_lesson']['id'], self.lessons[0].pk)
+        self.assertEqual(card['next_lesson']['lesson_number'], 1)
+        self.progress(self.lessons[0])
+        self.assertEqual(self.feed()['continue_learning']['next_lesson']['lesson_number'], 2)
+
+    def test_lesson_order_ties_use_existing_title_order_and_stable_id(self):
+        Lesson.objects.filter(course=self.course).delete()
+        z = Lesson.objects.create(course=self.course, title='Z', order=0, content_type='text')
+        a = Lesson.objects.create(course=self.course, title='A', order=0, content_type='text')
+        duplicate = Lesson.objects.create(course=self.course, title='A', order=0, content_type='text')
+        self.assertEqual(self.feed()['continue_learning']['next_lesson']['id'], a.pk)
+        self.progress(a)
+        self.assertEqual(self.feed()['continue_learning']['next_lesson']['id'], duplicate.pk)
+        self.progress(duplicate)
+        card = self.feed()['continue_learning']
+        self.assertEqual(card['next_lesson']['id'], z.pk)
+        self.assertEqual(card['next_lesson']['lesson_number'], 3)
+
+    def test_zero_lesson_course_is_not_completed_or_resumable(self):
+        self.enrollment.delete()
+        empty, _ = self.enroll('No lessons')
+        data = self.feed()
+        self.assertIsNone(data['continue_learning'])
+        card = data['courses'][0]
+        self.assertEqual(card['course']['id'], empty.pk)
+        self.assertEqual(card['progress_percentage'], 0)
+        self.assertEqual(card['completed_lessons'], 0)
+        self.assertEqual(card['total_lessons'], 0)
+        self.assertFalse(card['is_completed'])
+        self.assertIsNone(card['next_lesson'])
+        self.assertIsNone(card['resume_url'])
+        self.assertEqual(data['stats']['courses_completed'], 0)
+
+    def test_completed_courses_transition_once_and_have_no_resume(self):
+        for lesson in self.lessons:
+            self.progress(lesson)
+        data = self.feed()
+        self.assertIsNone(data['continue_learning'])
+        self.assertEqual(data['courses'], [])
+        card = data['completed_courses'][0]
+        self.assertEqual(card['progress_percentage'], 100)
+        self.assertTrue(card['is_completed'])
+        self.assertEqual(card['enrollment_status'], 'completed')
+        self.assertIsNone(card['next_lesson'])
+        self.assertIsNone(card['resume_url'])
+        self.enrollment.refresh_from_db()
+        completed_at = self.enrollment.completed_at
+        self.assertEqual(self.enrollment.status, 'completed')
+        self.assertIsNotNone(completed_at)
+        self.feed()
+        self.enrollment.refresh_from_db()
+        self.assertEqual(self.enrollment.completed_at, completed_at)
+        self.assertEqual(data['stats']['courses_completed'], 1)
+
+    def test_historical_completed_status_retained_if_curriculum_changes(self):
+        self.enrollment.status = 'completed'
+        self.enrollment.completed_at = timezone.now() - timedelta(days=1)
+        self.enrollment.save()
+        data = self.feed()
+        self.assertEqual(data['completed_courses'][0]['enrollment_status'], 'completed')
+        self.assertEqual(data['completed_courses'][0]['progress_percentage'], 0)
+        self.assertFalse(data['completed_courses'][0]['is_completed'])
+        self.assertEqual(data['stats']['courses_completed'], 1)
+        self.assertIsNone(data['continue_learning'])
+        self.assertEqual(self.client.get(reverse('api-course-progress', kwargs={'course_id': self.course.pk})).data['is_completed'], False)
+        self.enrollment.refresh_from_db()
+        self.assertEqual(self.enrollment.status, 'completed')
+
+    def test_enrollment_statuses_ownership_and_private_course_access(self):
+        pending, pending_enrollment = self.enroll('Pending', status='pending_payment')
+        cancelled, cancelled_enrollment = self.enroll('Cancelled', status='cancelled')
+        friend, _ = self.enroll('Friend private', student=self.other, published=False)
+        private, _ = self.enroll('My unpublished', published=False)
+        self.progress(Lesson.objects.create(course=friend, title='Other lesson', content_type='text'), student=self.other)
+        data = self.feed()
+        ids = {card['course']['id'] for card in self.cards(data)}
+        self.assertEqual(ids, {self.course.pk, private.pk})
+        self.assertFalse({pending.pk, cancelled.pk, friend.pk} & ids)
+        self.assertEqual(self.client.get(reverse('api-course-progress', kwargs={'course_id': private.pk})).status_code, 200)
+        pending_enrollment.refresh_from_db()
+        cancelled_enrollment.refresh_from_db()
+        self.assertEqual(pending_enrollment.status, 'pending_payment')
+        self.assertEqual(cancelled_enrollment.status, 'cancelled')
+
+    def test_ownership_fields_cannot_override_user(self):
+        for field in ['student', 'student_id', 'user', 'user_id']:
+            with self.subTest(field=field):
+                self.assertEqual(self.client.get(self.url, {field: self.other.pk}).status_code, 400)
+                self.assertEqual(self.client.generic('GET', self.url,
+                    json.dumps({field: self.other.pk}), content_type='application/json').status_code, 400)
+        card = self.feed()['continue_learning']
+        self.assertEqual(card['enrollment_id'], self.enrollment.pk)
+
+    def test_continue_selection_uses_recent_real_activity_then_enrollment_and_stable_id(self):
+        recent, recent_enrollment = self.enroll('Recent enrollment')
+        Lesson.objects.create(course=recent, title='Recent lesson', content_type='text')
+        self.assertEqual(self.feed()['continue_learning']['course']['id'], recent.pk)
+        moment = timezone.now() - timedelta(days=1)
+        self.progress(self.lessons[0], when=moment)
+        self.assertEqual(self.feed()['continue_learning']['course']['id'], self.course.pk)
+        # Someone else's recent progress must not affect my continue card.
+        recent_lesson = recent.lessons.first()
+        self.progress(recent_lesson, student=self.other)
+        self.assertEqual(self.feed()['continue_learning']['course']['id'], self.course.pk)
+        Enrollment.objects.filter(pk=recent_enrollment.pk).update(enrolled_at=self.enrollment.enrolled_at)
+        LessonProgress.objects.filter(student=self.student).delete()
+        self.assertEqual(self.feed()['continue_learning']['course']['id'], recent.pk)
+        self.assertEqual(self.feed()['continue_learning']['course']['id'], recent.pk)
+
+    def test_quiz_completion_activity_used_but_unfinished_quizzes_ignored(self):
+        from .models import Quiz, QuizAttempt
+        other_course, other_enrollment = self.enroll('Quiz course')
+        Lesson.objects.create(course=other_course, title='Resume', content_type='video')
+        moment = timezone.now() - timedelta(hours=2)
+        self.progress(self.lessons[0], when=moment)
+        quiz = Quiz.objects.create(course=other_course, title='Quiz')
+        attempt = QuizAttempt.objects.create(student=self.student, enrollment=other_enrollment, quiz=quiz)
+        self.assertEqual(self.feed()['continue_learning']['course']['id'], self.course.pk)
+        attempt.completed_at = moment + timedelta(hours=1)
+        attempt.save()
+        card = self.feed()['continue_learning']
+        self.assertEqual(card['course']['id'], other_course.pk)
+        self.assertEqual(card['last_learning_activity'], attempt.completed_at.isoformat().replace('+00:00', 'Z'))
+
+    def test_missing_completion_timestamp_is_not_fabricated(self):
+        self.progress(self.lessons[0])
+        LessonProgress.objects.filter(student=self.student).update(completed_at=None)
+        card = self.feed()['continue_learning']
+        self.assertEqual(card['completed_lessons'], 1)
+        self.assertIsNone(card['last_learning_activity'])
+        self.assertNotIn('last_accessed', card)
+        self.assertNotIn('playback_position', card)
+
+    def test_stats_use_existing_streak_and_hours_unavailable(self):
+        from .models import LearningStreak, StreakHistory
+        streak = LearningStreak.objects.create(student=self.student, current_streak=4,
+            longest_streak=8, last_active_date=timezone.now().date() - timedelta(days=3))
+        LearningStreak.objects.create(student=self.other, current_streak=99)
+        stats = self.feed()['stats']
+        self.assertEqual(stats['day_streak'], 4)
+        self.assertEqual(stats['day_streak'], self.client.get(reverse('api-my-streak')).data['current_streak'])
+        self.assertIsNone(stats['hours_learned'])
+        streak.refresh_from_db()
+        self.assertEqual(streak.current_streak, 4)
+        self.assertFalse(StreakHistory.objects.filter(student=self.student).exists())
+
+    def test_certificates_reuse_existing_serializer_and_student_scope(self):
+        from .models import Certificate
+        own = Certificate.objects.create(student=self.student, course=self.course, certificate_type='course')
+        grade = Grade.objects.first()
+        own_grade = Certificate.objects.create(student=self.student, grade=grade, certificate_type='grade')
+        Certificate.objects.create(student=self.other, course=self.course, certificate_type='course')
+        certificates = self.feed()['certificates']
+        self.assertEqual({c['id'] for c in certificates}, {own.pk, own_grade.pk})
+        self.assertEqual(certificates, self.client.get(reverse('api-my-certificates')).data)
+        self.assertTrue(all(set(c) <= {'id', 'certificate_type', 'course', 'course_title', 'grade', 'grade_name', 'issued_at'} for c in certificates))
+
+    def test_no_duplicate_courses_across_sections(self):
+        for index in range(3):
+            course, _ = self.enroll(f'Extra course {index}')
+            lesson = Lesson.objects.create(course=course, title='Lesson', content_type='text')
+            if index == 2:
+                self.progress(lesson)
+        data = self.feed()
+        cards = self.cards(data)
+        ids = [card['course']['id'] for card in cards]
+        self.assertEqual(len(ids), 4)
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(data['stats']['courses_completed'], 1)
+
+    def test_read_query_count_constant_for_many_courses_lessons_and_certificates(self):
+        from .models import Certificate
+        self.progress(self.lessons[0])
+        Certificate.objects.create(student=self.student, course=self.course, certificate_type='course')
+        with self.assertNumQueries(7):
+            self.feed()
+        for index in range(8):
+            course, enrollment = self.enroll(f'Bulk course {index}')
+            for order in range(3):
+                lesson = Lesson.objects.create(course=course, title=f'Lesson {order}', order=order, content_type='text')
+                if order == 0:
+                    self.progress(lesson, enrollment=enrollment)
+            Certificate.objects.create(student=self.student, course=course, certificate_type='course')
+        with self.assertNumQueries(7):
+            data = self.feed()
+        self.assertEqual(len(self.cards(data)), 9)
+        self.assertEqual(len(data['certificates']), 9)
+
+    def test_authentication_roles_inactive_and_read_only(self):
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.get(self.url).status_code, 401)
+        for user in [self.teacher, self.user('LearningAdmin', 'super_admin'),
+                     self.user('LearningInactive', 'student', is_active=False)]:
+            self.client.force_authenticate(user)
+            self.assertEqual(self.client.get(self.url).status_code, 403)
+        self.client.force_authenticate(self.student)
+        for method in ['post', 'patch', 'delete']:
+            self.assertEqual(getattr(self.client, method)(self.url).status_code, 405)
+        from rest_framework_simplejwt.tokens import RefreshToken
+        self.client.force_authenticate(None)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(self.student).access_token}')
+        self.assertEqual(self.client.get(self.url).status_code, 200)
+        self.student.email_verified = False
+        self.student.save()
+        self.assertEqual(self.client.get(self.url).status_code, 401)
+
+
+class LearningCompatibilityTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.student = User.objects.create_user(email='compat-student@example.com', role=Role.objects.get(name='student'))
+        self.teacher = User.objects.create_user(email='compat-teacher@example.com', role=Role.objects.get(name='instructor'))
+        self.course = Course.objects.create(title='Compatibility course', course_type='skill', instructor=self.teacher, is_published=True)
+        self.lesson = Lesson.objects.create(course=self.course, title='Complete', content_type='text')
+        self.client.force_authenticate(self.student)
+
+    def test_enrollment_completion_and_progress_preserve_existing_contract(self):
+        self.assertEqual(self.client.post(reverse('api-enroll-course', kwargs={'course_id': self.course.pk})).status_code, 201)
+        self.assertEqual(self.client.post(reverse('api-complete-lesson', kwargs={'lesson_id': self.lesson.pk})).status_code, 200)
+        url = reverse('api-course-progress', kwargs={'course_id': self.course.pk})
+        response = self.client.get(url)
+        self.assertEqual(response.data, {'course_id': self.course.pk, 'total_lessons': 1,
+            'completed_lessons': 1, 'progress_percentage': 100.0, 'is_completed': True})
+        enrollment = Enrollment.objects.get(student=self.student, course=self.course)
+        completed_at = enrollment.completed_at
+        self.client.get(url)
+        enrollment.refresh_from_db()
+        self.assertEqual(enrollment.completed_at, completed_at)
+        self.assertEqual(self.client.get(reverse('api-my-enrollments')).data[0]['status'], 'completed')
+
+    def test_streak_completion_is_once_per_day_and_preserves_grace_rules(self):
+        from .models import LearningStreak, StreakSettings, StreakHistory
+        Enrollment.objects.create(student=self.student, course=self.course)
+        settings = StreakSettings.get_solo()
+        settings.grace_period_days = 1
+        settings.save()
+        today = timezone.now().date()
+        LearningStreak.objects.create(student=self.student, current_streak=3, longest_streak=3,
+            last_active_date=today - timedelta(days=2))
+        url = reverse('api-complete-lesson', kwargs={'lesson_id': self.lesson.pk})
+        self.assertEqual(self.client.post(url).status_code, 200)
+        self.assertEqual(self.client.post(url).status_code, 200)
+        self.assertEqual(self.client.get(reverse('api-my-streak')).data['current_streak'], 4)
+        self.assertEqual(StreakHistory.objects.filter(student=self.student).count(), 1)
+        data = self.client.get(reverse('api-my-learning')).data
+        self.assertEqual(data['stats']['day_streak'], 4)
+        self.assertEqual(data['stats']['courses_completed'], 1)
+
+    def test_existing_course_certificate_requires_completion_and_quiz_pass(self):
+        from .models import Certificate, CertificateCriteria, Quiz, QuizAttempt
+        enrollment = Enrollment.objects.create(student=self.student, course=self.course)
+        criteria = CertificateCriteria.get_solo()
+        criteria.skill_course_requires_quiz_pass = True
+        criteria.save()
+        quiz = Quiz.objects.create(course=self.course, title='Required quiz', is_published=True)
+        url = reverse('api-check-course-certificate', kwargs={'course_id': self.course.pk})
+        self.assertEqual(self.client.post(url).status_code, 400)
+        self.client.post(reverse('api-complete-lesson', kwargs={'lesson_id': self.lesson.pk}))
+        self.client.get(reverse('api-my-learning'))
+        self.assertEqual(self.client.post(url).status_code, 400)
+        QuizAttempt.objects.create(student=self.student, quiz=quiz, enrollment=enrollment, is_passed=True, completed_at=timezone.now())
+        issued = self.client.post(url)
+        self.assertEqual(issued.status_code, 201)
+        self.assertEqual(self.client.post(url).status_code, 200)
+        self.assertEqual(Certificate.objects.filter(student=self.student).count(), 1)
+        self.assertEqual(self.client.get(reverse('api-my-learning')).data['certificates'][0], issued.data)
+
+
+class HomeFeedTests(TestCase):
+    sections = {'featured_courses', 'recommended_courses', 'skill_courses',
+                'events', 'advertisements', 'top_instructors'}
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.student = self.user('HomeStudent', 'student')
+        self.profile = StudentProfile.objects.create(user=self.student)
+        self.teacher = self.user('HomeTeacher')
+        InstructorProfile.objects.create(user=self.teacher, qualification='MSc')
+        self.course = self.course_for('Coding basics')
+        self.client.force_authenticate(self.student)
+        self.url = reverse('api-home')
+
+    def user(self, name, role='instructor', **fields):
+        return User.objects.create_user(email=f'{name.lower()}@example.com', name=name,
+            role=Role.objects.get(name=role), verification_status='verified', **fields)
+
+    def course_for(self, title, **fields):
+        fields.setdefault('instructor', self.teacher)
+        fields.setdefault('course_type', 'skill')
+        fields.setdefault('is_published', True)
+        return Course.objects.create(title=title, **fields)
+
+    def event(self, title='ICT & AI Bootcamp', **fields):
+        from .models import Event
+        fields.setdefault('host', self.teacher)
+        fields.setdefault('is_published', True)
+        fields.setdefault('start_at', timezone.now() + timedelta(days=1))
+        fields.setdefault('end_at', timezone.now() + timedelta(days=2))
+        return Event.objects.create(title=title, **fields)
+
+    def ad(self, **fields):
+        from .models import Advertisement
+        fields.setdefault('title', 'Admin-managed advertisement')
+        fields.setdefault('banner_image', 'advertisements/home.png')
+        fields.setdefault('is_active', True)
+        return Advertisement.objects.create(**fields)
+
+    def feed(self):
+        # Exercise the normal request query cost even when fixture construction
+        # or a preceding request cached the reverse profile on this User object.
+        self.student._state.fields_cache.pop('student_profile', None)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        return response.data
+
+    def test_endpoint_sections_and_course_serializer_reuse(self):
+        data = self.feed()
+        self.assertEqual(set(data), self.sections)
+        self.assertTrue(all(isinstance(value, list) for value in data.values()))
+        card = data['featured_courses'][0]
+        self.assertEqual(set(card), set(CourseSerializer(self.course).data) | {'is_enrolled'})
+        self.assertFalse(card['is_enrolled'])
+        self.assertEqual(card['id'], self.course.pk)
+
+    def test_empty_feed_returns_empty_arrays(self):
+        self.course.delete()
+        self.assertEqual(self.feed(), {section: [] for section in self.sections})
+
+    def test_publication_and_skill_type_rules(self):
+        draft = self.course_for('Private draft', is_published=False)
+        academic = self.course_for('Academic', course_type='academic')
+        data = self.feed()
+        for section in ['featured_courses', 'recommended_courses', 'skill_courses']:
+            self.assertNotIn(draft.pk, [row['id'] for row in data[section]])
+            self.assertTrue(all(row['is_published'] for row in data[section]))
+        self.assertIn(academic.pk, [row['id'] for row in data['featured_courses']])
+        self.assertEqual([row['id'] for row in data['skill_courses']], [self.course.pk])
+
+    def test_featured_ranking_and_live_review_statistics(self):
+        low = self.course_for('Lower rated')
+        tie = self.course_for('More reviews')
+        unrated = self.course_for('No reviews')
+        other = self.user('HomeOther', 'student')
+        review = CourseReview.objects.create(student=self.student, course=self.course, rating=5)
+        CourseReview.objects.create(student=self.student, course=low, rating=2)
+        for student in [self.student, other]:
+            CourseReview.objects.create(student=student, course=tie, rating=5)
+        rows = self.feed()['featured_courses']
+        self.assertEqual([row['id'] for row in rows], [tie.pk, self.course.pk, low.pk, unrated.pk])
+        self.assertEqual(rows[0]['average_rating'], 5)
+        self.assertEqual(rows[0]['review_count'], 2)
+        review.rating = 1
+        review.save()
+        self.assertEqual([r['id'] for r in self.feed()['featured_courses']], [tie.pk, low.pk, self.course.pk, unrated.pk])
+        review.delete()
+        row = next(r for r in self.feed()['featured_courses'] if r['id'] == self.course.pk)
+        self.assertIsNone(row['average_rating'])
+        self.assertEqual(row['review_count'], 0)
+
+    def test_personalization_by_literal_interests_and_subject(self):
+        from .models import LearningInterest, Subject
+        self.profile.learning_interests.add(LearningInterest.objects.get(slug='coding'))
+        generic = self.course_for('New generic course')
+        self.assertEqual(self.feed()['recommended_courses'][0]['id'], self.course.pk)
+        self.profile.learning_interests.set([LearningInterest.objects.get(slug='mathematics')])
+        math = self.course_for('Algebra', course_type='academic', subject=Subject.objects.create(name='Mathematics'))
+        self.course_for('Newest generic course')
+        self.assertEqual(self.feed()['recommended_courses'][0]['id'], math.pk)
+        self.assertIn(generic.pk, [r['id'] for r in self.feed()['recommended_courses']])
+
+    def test_inactive_interests_do_not_personalize(self):
+        from .models import LearningInterest
+        interest = LearningInterest.objects.get(slug='coding')
+        interest.is_active = False
+        interest.save()
+        self.profile.learning_interests.add(interest)
+        newest = self.course_for('New unrelated course')
+        self.assertEqual(self.feed()['recommended_courses'][0]['id'], newest.pk)
+
+    def test_grade_recommendations_exclude_other_grades(self):
+        self.profile.grade = Grade.objects.first()
+        self.profile.save()
+        matched = self.course_for('Grade matched', course_type='academic', grade=self.profile.grade)
+        other_grade = Grade.objects.create(name='Home other grade')
+        wrong = self.course_for('Wrong grade', course_type='academic', grade=other_grade)
+        generic = self.course_for('Recent skill')
+        rows = self.feed()['recommended_courses']
+        self.assertEqual(rows[0]['id'], matched.pk)
+        self.assertNotIn(wrong.pk, [r['id'] for r in rows])
+        self.assertIn(generic.pk, [r['id'] for r in rows])
+
+    def test_fallback_deterministic_without_profile_and_without_matches(self):
+        from .models import LearningInterest
+        recent = self.course_for('Recent unrelated')
+        expected = [recent.pk, self.course.pk]
+        self.assertEqual([r['id'] for r in self.feed()['recommended_courses']], expected)
+        self.profile.learning_interests.add(LearningInterest.objects.get(slug='robotics'))
+        self.assertEqual([r['id'] for r in self.feed()['recommended_courses']], expected)
+        self.profile.delete()
+        self.assertEqual([r['id'] for r in self.feed()['recommended_courses']], expected)
+        self.assertEqual([r['id'] for r in self.feed()['recommended_courses']], expected)
+        # A timestamp tie has a stable unique-ID tie-breaker.
+        Course.objects.filter(pk=recent.pk).update(created_at=self.course.created_at)
+        self.assertEqual([r['id'] for r in self.feed()['recommended_courses']], [self.course.pk, recent.pk])
+
+    def test_enrollment_state_and_recommendation_exclusions(self):
+        cancelled = self.course_for('Cancelled course')
+        Enrollment.objects.create(student=self.student, course=cancelled, status='cancelled')
+        courses = []
+        for state in ['active', 'completed', 'pending_payment']:
+            course = self.course_for(state)
+            Enrollment.objects.create(student=self.student, course=course, status=state)
+            courses.append(course)
+        data = self.feed()
+        recommendations = {r['id'] for r in data['recommended_courses']}
+        self.assertTrue({self.course.pk, cancelled.pk}.issubset(recommendations))
+        self.assertFalse({c.pk for c in courses} & recommendations)
+        cards = {r['id']: r for r in data['featured_courses']}
+        self.assertTrue(cards[courses[0].pk]['is_enrolled'])
+        self.assertTrue(cards[courses[1].pk]['is_enrolled'])
+        self.assertFalse(cards[courses[2].pk]['is_enrolled'])
+        Enrollment.objects.create(student=self.user('EnrolledOther', 'student'), course=self.course)
+        self.assertFalse(next(r for r in self.feed()['featured_courses'] if r['id'] == self.course.pk)['is_enrolled'])
+
+    def test_advertisement_rules_and_exact_existing_api_representation(self):
+        now = timezone.now()
+        with patch('core.api_views.timezone.now', return_value=now):
+            visible = self.ad(starts_at=now, ends_at=now)
+            self.ad(is_active=False)
+            self.ad(archived_at=now)
+            self.ad(starts_at=now + timedelta(seconds=1))
+            self.ad(ends_at=now - timedelta(seconds=1))
+            evergreen = self.ad(display_order=1)
+            ads = self.feed()['advertisements']
+            self.assertEqual([a['id'] for a in ads], [visible.pk, evergreen.pk])
+            response = self.client.get(reverse('api-advertisements'))
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(ads, response.data)
+            self.assertNotIn('created_by', ads[0])
+
+    def test_top_instructors_consistency_privacy_and_canonical_photo(self):
+        self.teacher.profile_photo_url = 'profile-photos/home/image.png'
+        self.teacher.save()
+        pending = self.user('HomePending')
+        pending.verification_status = 'pending'
+        pending.save()
+        self.course_for('Pending teacher', instructor=pending)
+        empty = self.user('HomeEmpty')
+        inactive = self.user('HomeInactive', is_active=False)
+        self.course_for('Inactive teacher', instructor=inactive)
+        CourseReview.objects.create(student=self.student, course=self.course, rating=4)
+        instructors = self.feed()['top_instructors']
+        self.assertEqual(instructors, self.client.get(reverse('api-top-instructors')).data)
+        self.assertEqual([row['id'] for row in instructors], [self.teacher.pk])
+        self.assertEqual(instructors[0]['average_rating'], 4)
+        self.assertEqual(instructors[0]['review_count'], 1)
+        self.assertEqual(instructors[0]['profile_photo_url'], 'http://testserver/media/profile-photos/home/image.png')
+        self.assertEqual(set(instructors[0]), PublicInstructorTests.fields)
+        self.assertNotIn(empty.pk, [row['id'] for row in instructors])
+
+    def test_event_visibility_order_viewer_state_and_existing_serializer(self):
+        from .models import EventBookmark, EventRegistration
+        now = timezone.now()
+        later = self.event()
+        ongoing = self.event('Ongoing', start_at=now - timedelta(hours=1), end_at=now)
+        self.event('Hidden', is_published=False)
+        self.event('Ended', start_at=now - timedelta(days=2), end_at=now - timedelta(seconds=1))
+        EventRegistration.objects.create(event=ongoing, user=self.student, status='registered')
+        EventBookmark.objects.create(event=ongoing, user=self.student)
+        with patch('core.api_views.timezone.now', return_value=now):
+            events = self.feed()['events']
+            self.assertEqual([e['id'] for e in events], [ongoing.pk, later.pk])
+            self.assertEqual(events[0]['my_status'], 'registered')
+            self.assertTrue(events[0]['is_saved'])
+            self.assertEqual(events[0]['attendee_count'], 1)
+            self.assertIsNone(events[0]['rating'])
+            self.assertEqual(events[0], self.client.get(reverse('api-event-detail', kwargs={'event_id': ongoing.pk})).data)
+        self.assertEqual(set(events[0]['host']), {'id', 'name', 'role', 'avatar_url'})
+
+    def test_all_section_limits_and_query_count_independent_of_items(self):
+        self.event()
+        self.ad()
+        with CaptureQueriesContext(connection) as initial:
+            self.feed()
+        self.assertLessEqual(len(initial), 12)
+        for index in range(10):
+            teacher = self.user(f'HomeExtra{index}')
+            self.course_for(f'Course {index}', instructor=teacher)
+            self.event(f'Event {index}')
+            self.ad(title=f'Ad {index}')
+        with CaptureQueriesContext(connection) as expanded:
+            data = self.feed()
+        self.assertEqual(len(expanded), len(initial))
+        for section, limit in [('featured_courses', 6), ('recommended_courses', 6),
+                               ('skill_courses', 6), ('events', 3),
+                               ('advertisements', 3), ('top_instructors', 6)]:
+            self.assertEqual(len(data[section]), limit)
+        self.assertEqual(data['top_instructors'], self.client.get(reverse('api-top-instructors')).data[:6])
+
+    def test_home_never_calls_external_ai_and_existing_ai_pool_still_works(self):
+        self.course_for('Draft', is_published=False)
+        with patch('core.ai_service.GeminiService._get_client', side_effect=AssertionError('Home must not call Gemini')):
+            self.feed()
+        with patch('core.ai_service.GeminiService.recommend_learning_content', return_value={
+            'courses': [{'id': self.course.pk, 'reason': 'Relevant'}], 'lessons': [], 'videos': [],
+        }) as recommend:
+            response = self.client.post(reverse('ai-recommendations'), {'learning_goal': 'Coding'}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([c.pk for c in recommend.call_args.kwargs['courses']], [self.course.pk])
+        self.assertEqual(response.data['recommendations']['courses'][0]['id'], self.course.pk)
+
+    def test_authentication_student_only_and_read_only(self):
+        for user in [self.teacher, self.user('HomeAdmin', 'super_admin'),
+                     self.user('HomeInactiveStudent', 'student', is_active=False)]:
+            self.client.force_authenticate(user)
+            self.assertEqual(self.client.get(self.url).status_code, 403)
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.get(self.url).status_code, 401)
+        self.client.force_authenticate(self.student)
+        for method in ['post', 'patch', 'delete']:
+            self.assertEqual(getattr(self.client, method)(self.url).status_code, 405)
+        from rest_framework_simplejwt.tokens import RefreshToken
+        self.client.force_authenticate(None)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(self.student).access_token}')
+        self.assertEqual(self.client.get(self.url).status_code, 200)
+        self.student.email_verified = False
+        self.student.save()
+        self.assertEqual(self.client.get(self.url).status_code, 401)
+
+
 class PublicInstructorTests(TestCase):
     fields = {'id', 'name', 'profile_photo_url', 'qualification', 'subject_expertise',
               'average_rating', 'review_count', 'total_students', 'total_courses'}
