@@ -1528,3 +1528,91 @@ class Redemption(models.Model):
                         f'{self.reward.name} - '
                         f'{self.status}'
                 )
+
+
+
+def event_image_path(instance, filename):
+	from pathlib import Path
+	from uuid import uuid4
+	return f'events/{uuid4().hex}{Path(filename).suffix.lower()}'
+
+
+class Event(models.Model):
+	FORMAT_CHOICES = (
+		('in_person', 'In person'),
+		('online', 'Online'),
+		('hybrid', 'Hybrid'),
+	)
+
+	title = models.CharField(max_length=200)
+	description = models.TextField(blank=True)
+	highlights = models.JSONField(default=list, blank=True)
+	cover_image = models.ImageField(upload_to=event_image_path, blank=True)
+
+	host = models.ForeignKey(
+		User,
+		on_delete=models.SET_NULL,
+		null=True,
+		blank=True,
+		related_name='hosted_events',
+	)
+	host_role = models.CharField(max_length=150, blank=True)
+
+	start_at = models.DateTimeField()
+	end_at = models.DateTimeField()
+	format = models.CharField(max_length=20, choices=FORMAT_CHOICES, default='in_person')
+
+	venue_name = models.CharField(max_length=200, blank=True)
+	city = models.CharField(max_length=150, blank=True)
+	province = models.ForeignKey(Province, on_delete=models.PROTECT, null=True, blank=True, related_name='events')
+	district = models.ForeignKey(District, on_delete=models.PROTECT, null=True, blank=True, related_name='events')
+	municipality = models.ForeignKey(Municipality, on_delete=models.PROTECT, null=True, blank=True, related_name='events')
+	latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+	longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+
+	capacity = models.PositiveIntegerField(null=True, blank=True)
+	is_published = models.BooleanField(default=False)
+
+	created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='created_events')
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'events'
+		ordering = ['start_at', 'id']
+		indexes = [models.Index(fields=['is_published', 'end_at'])]
+		constraints = [models.CheckConstraint(
+			condition=models.Q(end_at__gte=models.F('start_at')),
+			name='event_valid_schedule',
+		)]
+
+	def __str__(self):
+		return self.title
+
+
+class EventRegistration(models.Model):
+	STATUS_CHOICES = (
+		('registered', 'Registered'),
+		('waitlisted', 'Waitlisted'),
+	)
+
+	event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='registrations')
+	user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='event_registrations')
+	status = models.CharField(max_length=20, choices=STATUS_CHOICES)
+	created_at = models.DateTimeField(auto_now_add=True)
+
+	class Meta:
+		db_table = 'event_registrations'
+		ordering = ['created_at', 'id']
+		constraints = [models.UniqueConstraint(fields=['event', 'user'], name='unique_event_registration')]
+
+
+class EventBookmark(models.Model):
+	event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='bookmarks')
+	user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='event_bookmarks')
+	created_at = models.DateTimeField(auto_now_add=True)
+
+	class Meta:
+		db_table = 'event_bookmarks'
+		ordering = ['-created_at', '-id']
+		constraints = [models.UniqueConstraint(fields=['event', 'user'], name='unique_event_bookmark')]

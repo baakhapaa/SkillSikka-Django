@@ -1,4 +1,9 @@
 from django.urls import path
+from .event_views import (
+	EventAdminDetailAPIView, EventAdminListAPIView, EventAdminRegistrationListAPIView,
+	EventBookmarkAPIView, EventDetailAPIView, EventListAPIView, EventRegistrationAPIView,
+	SavedEventListAPIView,
+)
 from .advertisement_views import AdvertisementListAPIView, AdvertisementAdminListAPIView, AdvertisementAdminDetailAPIView
 
 from rest_framework_simplejwt.views import TokenRefreshView
@@ -122,6 +127,14 @@ from .api_views import (
 
 
 urlpatterns = [
+    path('events/', EventListAPIView.as_view(), name='api-events'),
+    path('events/saved/', SavedEventListAPIView.as_view(), name='api-events-saved'),
+    path('events/<int:event_id>/', EventDetailAPIView.as_view(), name='api-event-detail'),
+    path('events/<int:event_id>/register/', EventRegistrationAPIView.as_view(), name='api-event-register'),
+    path('events/<int:event_id>/save/', EventBookmarkAPIView.as_view(), name='api-event-save'),
+    path('admin/events/', EventAdminListAPIView.as_view(), name='api-admin-events'),
+    path('admin/events/<int:event_id>/', EventAdminDetailAPIView.as_view(), name='api-admin-event-detail'),
+    path('admin/events/<int:event_id>/registrations/', EventAdminRegistrationListAPIView.as_view(), name='api-admin-event-registrations'),
     path('advertisements/', AdvertisementListAPIView.as_view(), name='api-advertisements'),
     path('admin/advertisements/', AdvertisementAdminListAPIView.as_view(), name='api-admin-advertisements'),
     path('admin/advertisements/<int:advertisement_id>/', AdvertisementAdminDetailAPIView.as_view(), name='api-admin-advertisement-detail'),
