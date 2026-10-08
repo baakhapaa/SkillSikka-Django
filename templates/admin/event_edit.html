@@ -1,0 +1,64 @@
+{% extends 'base.html' %}
+{% block title %}Edit event | SkillSikka{% endblock %}
+{% block content %}
+{% include 'admin/_event_styles.html' %}
+<div class="app-shell">
+    <aside class="sidebar">
+        <div class="brand"><span class="brand-mark small">SS</span><strong>SkillSikka</strong></div>
+        <p class="sidebar-label">Workspace</p>
+        <nav>
+            <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
+            <a class="nav-item" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
+            <a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
+            <a class="nav-item" href="{% url 'manage_courses' %}"><span>▣</span> Courses</a>
+            <a class="nav-item active" href="{% url 'manage_events' %}"><span>◷</span> Events</a>
+            <a class="nav-item" href="{% url 'manage_streak_settings' %}"><span>◈</span> Streak settings</a>
+            <a class="nav-item" href="{% url 'manage_certificate_criteria' %}"><span>⚑</span> Certificate criteria</a>
+            <a class="nav-item" href="{% url 'manage_users' %}"><span>◎</span> Users</a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="avatar">{{ request.user.name|slice:':1'|upper }}</div>
+            <div><strong>{{ request.user.name }}</strong><small>{{ request.user.role.name|default:'Administrator' }}</small></div>
+            <a class="logout" href="{% url 'logout' %}" aria-label="Log out">↗</a>
+        </div>
+    </aside>
+    <main class="dashboard-main">
+        <header class="topbar"><div><p class="eyebrow">Events</p><h1>Edit event</h1></div><div class="top-actions"><a class="outline-button" href="{% url 'manage_events' %}">Back to events</a></div></header>
+        {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
+
+        <article class="management-card">
+            <div class="section-heading"><div><p class="eyebrow">{% if event.is_published %}Published{% else %}Draft{% endif %} · {{ event.get_format_display }}</p><h2>{{ event.title }}</h2></div></div>
+            {% if event.cover_image %}<img class="ev-cover" src="{{ event.cover_image.url }}" alt="Current cover image">{% endif %}
+            <form method="post" enctype="multipart/form-data" class="form-stack">
+                {% include 'admin/_event_form_fields.html' %}
+                <button class="primary-button" type="submit">Save changes</button>
+            </form>
+        </article>
+
+        <article class="management-card">
+            <div class="section-heading"><div><p class="eyebrow">Sign-ups</p><h2>Registrations</h2></div><span class="count-label">{{ registrations|length }} total{% if event.capacity %} · capacity {{ event.capacity }}{% endif %}</span></div>
+            <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Status</th><th>Signed up (NPT)</th></tr></thead><tbody>
+                {% for registration in registrations %}
+                <tr>
+                    <td>{{ registration.user.name }}</td>
+                    <td>{{ registration.user.email }}</td>
+                    <td><span class="pill {% if registration.status == 'registered' %}verified{% else %}pending{% endif %}">{{ registration.get_status_display }}</span></td>
+                    <td>{{ registration.created_at|date:"Y-m-d g:i A" }}</td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="4" class="empty-state">No one has signed up yet.</td></tr>
+                {% endfor %}
+            </tbody></table></div>
+        </article>
+
+        <article class="management-card danger-zone">
+            <div class="section-heading"><div><p class="eyebrow">Danger zone</p><h2>Delete event</h2></div></div>
+            <p class="page-intro">Deleting removes the event and all its registrations and bookmarks. To hide it without losing sign-ups, untick "Published" instead.</p>
+            <form method="post" action="{% url 'delete_event' event.pk %}" onsubmit="return confirm('Delete this event and all its registrations? This cannot be undone.');">
+                {% csrf_token %}
+                <button class="outline-button danger" type="submit">Delete event</button>
+            </form>
+        </article>
+    </main>
+</div>
+{% endblock %}

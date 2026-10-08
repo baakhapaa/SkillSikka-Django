@@ -1,0 +1,21 @@
+<style>
+.page-intro{color:var(--muted);max-width:620px;margin-bottom:28px}
+.management-card{background:var(--white);border:1px solid var(--line);padding:24px;border-radius:4px;box-shadow:var(--shadow);margin-bottom:24px}
+.management-card h2{margin-bottom:0}
+.count-label{color:var(--muted);font-size:13px}
+.form-error{color:#b64b45;font-size:12px;display:block}
+.ev-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 24px;margin:18px 0 24px}
+.ev-field label{display:block;font-size:13px;font-weight:700;margin-bottom:6px}
+.ev-field input[type=text],.ev-field input[type=number],.ev-field input[type=datetime-local],.ev-field select,.ev-field textarea{width:100%;padding:12px 14px;border:1px solid #d7e1df;border-radius:3px;background:var(--white);font:inherit;color:var(--ink)}
+.ev-field textarea{resize:vertical}
+.ev-wide{grid-column:1/-1}
+.ev-check label{display:inline;margin-left:8px}
+.ev-check input{order:-1}
+.ev-help{display:block;color:var(--muted);font-size:12px;margin-top:4px}
+.ev-thumb{width:56px;height:32px;border-radius:3px;object-fit:cover;flex-shrink:0}
+.ev-thumb-empty{display:grid;place-items:center;background:#e0efea;color:var(--teal-dark)}
+.ev-cover{max-width:360px;width:100%;border-radius:4px;border:1px solid var(--line);margin-bottom:8px}
+.danger-zone{border-color:#f0c9c5}
+.outline-button.danger{color:#ac4a43;border-color:#e6b5b0}
+@media(max-width:850px){.ev-grid{grid-template-columns:1fr}}
+</style>

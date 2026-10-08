@@ -1,7 +1,7 @@
 import io
 import shutil
 import tempfile
-from datetime import timedelta
+from datetime import timedelta, timezone as dt_timezone
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
@@ -252,3 +252,98 @@ class EventApiTests(TestCase):
 		self.as_user(self.admin)
 		data = self.client.get(f'/api/v1/admin/events/{event.pk}/registrations/').json()
 		self.assertEqual(data['results'][0]['email'], self.student.email)
+
+
+@override_settings(MEDIA_ROOT=MEDIA_ROOT)
+class EventAdminPageTests(TestCase):
+	"""The Django admin dashboard pages (session login)."""
+
+	def setUp(self):
+		self.province, _ = Province.objects.get_or_create(name='Event Province')
+		self.district, _ = District.objects.get_or_create(name='Event District', province=self.province)
+		self.municipality, _ = Municipality.objects.get_or_create(name='Event Municipality', district=self.district)
+		self.host = User.objects.create_user(
+			email='page-host@example.com', password='A-strong-password-123',
+			name='Page Host', role=Role.objects.get(name='instructor'),
+		)
+		self.admin = User.objects.create_user(
+			email='page-admin@example.com', password='A-strong-password-123',
+			name='Page Admin', role=Role.objects.get_or_create(name='super_admin')[0],
+			onboarding_completed=True,
+		)
+		self.client.force_login(self.admin)
+
+	def form_data(self, **overrides):
+		data = {
+			'title': 'Admin page event', 'description': 'About',
+			'highlights': 'First point\n\nSecond point\n',
+			'host': self.host.pk, 'host_role': 'Physics Teacher',
+			'start_at': '2030-01-10T10:00', 'end_at': '2030-01-10T14:00',
+			'format': 'in_person', 'venue_name': 'Hall', 'city': 'Kathmandu',
+			'district': '', 'municipality': self.municipality.pk,
+			'latitude': '27.7172', 'longitude': '85.3240', 'capacity': '50',
+			'is_published': 'on',
+		}
+		data.update(overrides)
+		return data
+
+	def test_create_event_in_nepal_time(self):
+		data = dict(self.form_data(), cover_image=png())
+		response = self.client.post('/admin/events', data)
+		self.assertEqual(response.status_code, 302)
+
+		event = Event.objects.get(title='Admin page event')
+		# 10:00 NPT (+05:45) is 04:15 UTC.
+		self.assertEqual(event.start_at.astimezone(dt_timezone.utc).strftime('%H:%M'), '04:15')
+		self.assertEqual(event.highlights, ['First point', 'Second point'])
+		self.assertEqual(event.district, self.district)
+		self.assertEqual(event.province, self.province)
+		self.assertEqual(event.created_by, self.admin)
+		self.assertTrue(event.cover_image.name.startswith('events/'))
+
+		page = self.client.get('/admin/events')
+		self.assertContains(page, 'Admin page event')
+		self.assertContains(page, '10:00 AM')
+
+	def test_validation_errors_are_shown(self):
+		response = self.client.post('/admin/events', self.form_data(
+			end_at='2030-01-10T09:00', longitude='', municipality='', district='',
+		))
+		self.assertEqual(response.status_code, 200)
+		self.assertContains(response, 'End time must not be earlier than start time.')
+		self.assertContains(response, 'Enter latitude and longitude together')
+		self.assertContains(response, 'In-person and hybrid events need a district.')
+		self.assertFalse(Event.objects.exists())
+
+	def test_edit_shows_nepal_time_and_saves(self):
+		self.client.post('/admin/events', self.form_data())
+		event = Event.objects.get()
+
+		page = self.client.get(f'/admin/events/{event.pk}/edit')
+		self.assertContains(page, 'value="2030-01-10T10:00"')
+		self.assertContains(page, 'First point\nSecond point')
+
+		response = self.client.post(f'/admin/events/{event.pk}/edit', self.form_data(title='Renamed', is_published=''))
+		self.assertEqual(response.status_code, 302)
+		event.refresh_from_db()
+		self.assertEqual(event.title, 'Renamed')
+		self.assertFalse(event.is_published)
+
+	def test_delete(self):
+		self.client.post('/admin/events', self.form_data())
+		event = Event.objects.get()
+		self.assertEqual(self.client.post(f'/admin/events/{event.pk}/delete').status_code, 302)
+		self.assertFalse(Event.objects.exists())
+
+	def test_non_admin_is_redirected(self):
+		student = User.objects.create_user(
+			email='page-student@example.com', password='A-strong-password-123',
+			name='Student', role=Role.objects.get(name='student'), onboarding_completed=True,
+		)
+		self.client.force_login(student)
+		self.assertEqual(self.client.get('/admin/events').status_code, 302)
+		self.assertEqual(self.client.post('/admin/events', self.form_data()).status_code, 302)
+		self.assertFalse(Event.objects.exists())
+
+	def test_sidebar_links_to_events(self):
+		self.assertContains(self.client.get('/admin/courses'), "href=\"/admin/events\"")

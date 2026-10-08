@@ -2,9 +2,12 @@ from django.urls import path
 
 from .views import (
 	dashboard,
+	delete_event,
+	edit_event,
 	edit_user,
 	login_view,
 	logout_view,
+	manage_events,
 	manage_certificate_criteria,
 	manage_courses,
 	manage_geography,
@@ -29,6 +32,9 @@ urlpatterns = [
 	path('admin/users/<int:user_id>/edit', edit_user, name='edit_user'),
 	path('admin/users/<int:user_id>/status', toggle_user_active, name='toggle_user_active'),
 	path('admin/courses', manage_courses, name='manage_courses'),
+	path('admin/events', manage_events, name='manage_events'),
+	path('admin/events/<int:event_id>/edit', edit_event, name='edit_event'),
+	path('admin/events/<int:event_id>/delete', delete_event, name='delete_event'),
 	path('admin/streak-settings', manage_streak_settings, name='manage_streak_settings'),
 	path('admin/certificate-criteria', manage_certificate_criteria, name='manage_certificate_criteria'),
 ]

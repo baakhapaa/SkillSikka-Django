@@ -1,0 +1,63 @@
+{% extends 'base.html' %}
+{% block title %}Events | SkillSikka{% endblock %}
+{% block content %}
+{% include 'admin/_event_styles.html' %}
+<div class="app-shell">
+    <aside class="sidebar">
+        <div class="brand"><span class="brand-mark small">SS</span><strong>SkillSikka</strong></div>
+        <p class="sidebar-label">Workspace</p>
+        <nav>
+            <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
+            <a class="nav-item" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
+            <a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
+            <a class="nav-item" href="{% url 'manage_courses' %}"><span>▣</span> Courses</a>
+            <a class="nav-item active" href="{% url 'manage_events' %}"><span>◷</span> Events</a>
+            <a class="nav-item" href="{% url 'manage_streak_settings' %}"><span>◈</span> Streak settings</a>
+            <a class="nav-item" href="{% url 'manage_certificate_criteria' %}"><span>⚑</span> Certificate criteria</a>
+            <a class="nav-item" href="{% url 'manage_users' %}"><span>◎</span> Users</a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="avatar">{{ request.user.name|slice:':1'|upper }}</div>
+            <div><strong>{{ request.user.name }}</strong><small>{{ request.user.role.name|default:'Administrator' }}</small></div>
+            <a class="logout" href="{% url 'logout' %}" aria-label="Log out">↗</a>
+        </div>
+    </aside>
+    <main class="dashboard-main">
+        <header class="topbar"><div><p class="eyebrow">Content management</p><h1>Events</h1></div><div class="top-actions"><a class="outline-button" href="#new-event">+ New event</a></div></header>
+        {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
+        <p class="page-intro">Events appear in the app's "Event near you" rail once published. All times are Nepal time.</p>
+
+        <article class="management-card">
+            <div class="section-heading"><div><p class="eyebrow">All events</p><h2>Events</h2></div><span class="count-label">{{ events|length }} total</span></div>
+            <div class="table-wrap"><table><thead><tr><th>Event</th><th>When (NPT)</th><th>Where</th><th>Host</th><th>Sign-ups</th><th>Status</th><th></th></tr></thead><tbody>
+                {% for event in events %}
+                <tr>
+                    <td><div class="person">{% if event.cover_image %}<img class="ev-thumb" src="{{ event.cover_image.url }}" alt="">{% else %}<span class="ev-thumb ev-thumb-empty">◷</span>{% endif %}<span><strong>{{ event.title }}</strong><small>{{ event.get_format_display }}</small></span></div></td>
+                    <td>{{ event.start_at|date:"D d M Y" }}<br><small>{{ event.start_at|time:"g:i A" }} – {{ event.end_at|time:"g:i A" }}</small></td>
+                    <td>{{ event.venue_name|default:"—" }}<br><small>{{ event.city|default:event.district.name|default:"Online" }}{% if event.latitude is not None %} · GPS{% endif %}</small></td>
+                    <td>{{ event.host.name|default:"—" }}</td>
+                    <td>{{ event.registered_count }}{% if event.capacity %} / {{ event.capacity }}{% endif %}{% if event.waitlist_count %}<br><small>+{{ event.waitlist_count }} waitlist</small>{% endif %}</td>
+                    <td>
+                        {% if event.end_at < now %}<span class="pill">Ended</span>
+                        {% elif event.is_published %}<span class="pill verified">Published</span>
+                        {% else %}<span class="pill pending">Draft</span>{% endif %}
+                    </td>
+                    <td><a class="outline-button" href="{% url 'edit_event' event.pk %}">Edit</a></td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="7" class="empty-state">No events yet. Create one below.</td></tr>
+                {% endfor %}
+            </tbody></table></div>
+        </article>
+
+        <article class="management-card" id="new-event">
+            <div class="section-heading"><div><p class="eyebrow">Add</p><h2>New event</h2></div></div>
+            <form method="post" enctype="multipart/form-data" class="form-stack">
+                {% include 'admin/_event_form_fields.html' %}
+                <button class="primary-button" type="submit">Create event</button>
+            </form>
+        </article>
+    </main>
+</div>
+{% if form.errors %}<script>document.getElementById('new-event').scrollIntoView();</script>{% endif %}
+{% endblock %}

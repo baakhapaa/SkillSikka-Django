@@ -2,9 +2,9 @@ from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.http import Http404
-from django.shortcuts import redirect, render
+from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
@@ -13,6 +13,7 @@ from .forms import (
 	CertificateCriteriaForm,
 	CourseForm,
 	DistrictForm,
+	EventForm,
 	GradeForm,
 	MunicipalityForm,
 	ProvinceForm,
@@ -21,6 +22,7 @@ from .forms import (
 	UserAdminForm,
 )
 from .models import (
+	Event,
 	AdminAuditLog,
 	CertificateCriteria,
 	Course,
@@ -397,3 +399,84 @@ def manage_certificate_criteria(request):
 def logout_view(request):
 	logout(request)
 	return redirect('login')
+
+
+# =========================================================
+# Events
+# =========================================================
+
+EVENT_TIMEZONE = 'Asia/Kathmandu'
+
+
+@login_required
+def manage_events(request):
+	if not is_admin(request.user):
+		messages.error(request, 'You do not have permission to manage events.')
+		return redirect('dashboard')
+
+	with timezone.override(EVENT_TIMEZONE):
+		form = EventForm()
+		if request.method == 'POST':
+			form = EventForm(request.POST, request.FILES)
+			if form.is_valid():
+				event = form.save(commit=False)
+				event.created_by = request.user
+				event.save()
+				messages.success(request, f'Event "{event.title}" created.')
+				return redirect('manage_events')
+
+		events = Event.objects.select_related('host', 'district').annotate(
+			registered_count=Count('registrations', filter=Q(registrations__status='registered')),
+			waitlist_count=Count('registrations', filter=Q(registrations__status='waitlisted')),
+		).order_by('-start_at')
+
+		return render(request, 'admin/events.html', {
+			'form': form,
+			'events': events,
+			'now': timezone.now(),
+		})
+
+
+@login_required
+def edit_event(request, event_id):
+	if not is_admin(request.user):
+		messages.error(request, 'You do not have permission to manage events.')
+		return redirect('dashboard')
+
+	event = get_object_or_404(Event, pk=event_id)
+	old_cover = event.cover_image.name
+
+	with timezone.override(EVENT_TIMEZONE):
+		if request.method == 'POST':
+			form = EventForm(request.POST, request.FILES, instance=event)
+			if form.is_valid():
+				event = form.save()
+				if old_cover and old_cover != event.cover_image.name:
+					event.cover_image.storage.delete(old_cover)
+				messages.success(request, f'Event "{event.title}" updated.')
+				return redirect('edit_event', event_id=event.pk)
+		else:
+			form = EventForm(instance=event)
+
+		return render(request, 'admin/event_edit.html', {
+			'form': form,
+			'event': event,
+			'registrations': event.registrations.select_related('user'),
+		})
+
+
+@login_required
+@require_POST
+def delete_event(request, event_id):
+	if not is_admin(request.user):
+		messages.error(request, 'You do not have permission to manage events.')
+		return redirect('dashboard')
+
+	event = get_object_or_404(Event, pk=event_id)
+	title, cover = event.title, event.cover_image.name
+	storage = event.cover_image.storage
+	event.delete()
+	if cover:
+		storage.delete(cover)
+	messages.success(request, f'Event "{title}" deleted.')
+	return redirect('manage_events')
