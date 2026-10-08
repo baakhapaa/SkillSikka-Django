@@ -310,6 +310,39 @@ DEFAULT_FROM_EMAIL = config(
     default='noreply@skillsikka.com'
 )
 
+
+# Payments (Khalti, eSewa)
+# PAYMENT_MODE=sandbox uses the gateways' test environments; the eSewa test
+# merchant works out of the box, Khalti needs a sandbox secret key from
+# https://test-admin.khalti.com. PAYMENT_MODE=live needs real merchant keys.
+
+PAYMENT_MODE = config('PAYMENT_MODE', default='sandbox')
+_LIVE_PAYMENTS = PAYMENT_MODE == 'live'
+
+KHALTI_SECRET_KEY = config('KHALTI_SECRET_KEY', default='')
+KHALTI_BASE_URL = config(
+    'KHALTI_BASE_URL',
+    default='https://khalti.com/api/v2/' if _LIVE_PAYMENTS else 'https://dev.khalti.com/api/v2/',
+)
+
+# Empty values fall back to eSewa's public test merchant in sandbox mode.
+ESEWA_PRODUCT_CODE = config('ESEWA_PRODUCT_CODE', default='') or ('' if _LIVE_PAYMENTS else 'EPAYTEST')
+ESEWA_SECRET_KEY = config('ESEWA_SECRET_KEY', default='') or ('' if _LIVE_PAYMENTS else '8gBm/:&EnhH.1/q')
+ESEWA_FORM_URL = config(
+    'ESEWA_FORM_URL',
+    default='https://epay.esewa.com.np/api/epay/main/v2/form' if _LIVE_PAYMENTS
+    else 'https://rc-epay.esewa.com.np/api/epay/main/v2/form',
+)
+ESEWA_STATUS_URL = config(
+    'ESEWA_STATUS_URL',
+    default='https://esewa.com.np/api/epay/transaction/status/' if _LIVE_PAYMENTS
+    else 'https://rc.esewa.com.np/api/epay/transaction/status/',
+)
+
+# Optional app deep link to send the user to after paying, e.g.
+# skillsikka://payment-complete. Empty: the server shows a result page.
+PAYMENT_APP_RETURN_URL = config('PAYMENT_APP_RETURN_URL', default='')
+
 # Gemini AI
 # Gemini AI
 GEMINI_API_KEY = config(

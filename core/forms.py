@@ -76,6 +76,17 @@ class CourseForm(forms.ModelForm):
 			'thumbnail_url': forms.URLInput(attrs={'placeholder': 'https://example.com/thumbnail.png'}),
 		}
 
+	def clean(self):
+		# Same rule as the course API: checkout needs a price on paid courses.
+		cleaned = super().clean()
+		if cleaned.get('is_paid'):
+			price = cleaned.get('price')
+			if price is None or price <= 0:
+				self.add_error('price', 'A paid course must have a price greater than 0.')
+		else:
+			cleaned['price'] = None
+		return cleaned
+
 
 class StreakSettingsForm(forms.ModelForm):
 	class Meta:

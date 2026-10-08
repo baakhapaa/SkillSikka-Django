@@ -71,6 +71,7 @@ from .models import (
 
 from .ai_service import GeminiService
 from .documents import document_file_response
+from .payments import GatewayError, GatewayNotConfigured, esewa_form, khalti_initiate, refresh_payment
 from .learning_interest_serializers import selected_interests_payload
 
 from .serializers import (
@@ -1470,6 +1471,8 @@ class CourseProgressAPIView(APIView):
 # =========================================================
 
 class InitiatePaymentAPIView(APIView):
+	"""Creates the payment and returns payment_url for the app to open."""
+
 	authentication_classes = [JWTAuthentication]
 	permission_classes = [IsAuthenticated]
 
@@ -1481,37 +1484,46 @@ class InitiatePaymentAPIView(APIView):
 		serializer = InitiatePaymentSerializer(data=request.data, context={'course': course, 'request': request})
 		serializer.is_valid(raise_exception=True)
 		payment = serializer.save()
+		reference = payment.transaction_reference
 
-		return Response(PaymentSerializer(payment).data, status=status.HTTP_201_CREATED)
+		try:
+			if payment.provider == 'khalti':
+				payment_url = khalti_initiate(
+					payment,
+					return_url=request.build_absolute_uri(reverse('payment-khalti-return', args=[reference])),
+					website_url=request.build_absolute_uri('/'),
+				)
+			else:
+				esewa_form(payment, success_url='', failure_url='')  # fails fast if not configured
+				payment_url = request.build_absolute_uri(reverse('payment-esewa-checkout', args=[reference]))
+		except GatewayNotConfigured as exc:
+			payment.status = 'failed'
+			payment.save(update_fields=['status'])
+			return Response({'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+		except GatewayError as exc:
+			payment.status = 'failed'
+			payment.save(update_fields=['status'])
+			return Response({'detail': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+		data = PaymentSerializer(payment).data
+		data['payment_url'] = payment_url
+		return Response(data, status=status.HTTP_201_CREATED)
 
 
 class VerifyPaymentAPIView(APIView):
+	"""Re-checks a payment with its gateway and returns the current state."""
+
 	authentication_classes = [JWTAuthentication]
 	permission_classes = [IsAuthenticated]
 
 	def post(self, request):
 		serializer = VerifyPaymentSerializer(data=request.data, context={'request': request})
 		serializer.is_valid(raise_exception=True)
-		payment = serializer.save()
 
-		if payment.status == 'successful':
-			_notify(
-				recipient=payment.student,
-				notification_type='payment',
-				title='Payment successful',
-				message=f'Your payment for "{payment.course.title}" was successful.',
-				related_type='payment',
-				related_id=payment.id,
-			)
-		else:
-			_notify(
-				recipient=payment.student,
-				notification_type='payment',
-				title='Payment failed',
-				message=f'Your payment for "{payment.course.title}" failed. Please try again.',
-				related_type='payment',
-				related_id=payment.id,
-			)
+		try:
+			payment = refresh_payment(serializer.validated_data['payment'].pk)
+		except GatewayError as exc:
+			return Response({'detail': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
 
 		return Response(PaymentSerializer(payment).data, status=status.HTTP_200_OK)
 
@@ -1527,6 +1539,12 @@ class PaymentStatusAPIView(APIView):
 
 		if payment.student_id != request.user.id and not _is_admin(request.user):
 			return Response({'detail': 'You do not have permission to view this payment.'}, status=status.HTTP_403_FORBIDDEN)
+
+		if payment.status == 'initiated':
+			try:
+				payment = refresh_payment(payment.pk)
+			except GatewayError:
+				pass  # report the last known state
 
 		return Response(PaymentSerializer(payment).data, status=status.HTTP_200_OK)
 

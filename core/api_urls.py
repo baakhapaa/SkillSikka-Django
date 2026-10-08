@@ -1,4 +1,5 @@
 from django.urls import path
+from . import payment_views
 from .event_views import (
 	EventAdminDetailAPIView, EventAdminListAPIView, EventAdminRegistrationListAPIView,
 	EventBookmarkAPIView, EventDetailAPIView, EventListAPIView, EventRegistrationAPIView,
@@ -127,6 +128,11 @@ from .api_views import (
 
 
 urlpatterns = [
+    # Browser pages inside the Khalti / eSewa flow (opened in the app's WebView).
+    path('payments/esewa/checkout/<str:reference>/', payment_views.esewa_checkout, name='payment-esewa-checkout'),
+    path('payments/esewa/return/<str:reference>/', payment_views.esewa_return, name='payment-esewa-return'),
+    path('payments/khalti/return/<str:reference>/', payment_views.khalti_return, name='payment-khalti-return'),
+    path('payments/complete/<str:reference>/', payment_views.payment_complete, name='payment-complete'),
     path('events/', EventListAPIView.as_view(), name='api-events'),
     path('events/saved/', SavedEventListAPIView.as_view(), name='api-events-saved'),
     path('events/<int:event_id>/', EventDetailAPIView.as_view(), name='api-event-detail'),

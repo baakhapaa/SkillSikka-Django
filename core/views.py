@@ -2,7 +2,7 @@ from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
-from django.db.models import Count, Q
+from django.db.models import Count, Q, Sum
 from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
@@ -23,6 +23,7 @@ from .forms import (
 )
 from .models import (
 	Event,
+	Payment,
 	AdminAuditLog,
 	CertificateCriteria,
 	Course,
@@ -37,6 +38,7 @@ from .models import (
 	VerificationDocument,
 )
 from .documents import document_file_response
+from .payments import GatewayError, refresh_payment
 
 
 def login_view(request):
@@ -480,3 +482,66 @@ def delete_event(request, event_id):
 		storage.delete(cover)
 	messages.success(request, f'Event "{title}" deleted.')
 	return redirect('manage_events')
+
+
+# =========================================================
+# Payments
+# =========================================================
+
+@login_required
+def manage_payments(request):
+	if not is_admin(request.user):
+		messages.error(request, 'You do not have permission to view payments.')
+		return redirect('dashboard')
+
+	status_filter = request.GET.get('status', '').strip()
+	provider_filter = request.GET.get('provider', '').strip()
+	query = request.GET.get('q', '').strip()
+
+	payments = Payment.objects.select_related('student', 'course').order_by('-created_at')
+	if status_filter in dict(Payment.STATUS_CHOICES):
+		payments = payments.filter(status=status_filter)
+	if provider_filter in dict(Payment.PROVIDER_CHOICES):
+		payments = payments.filter(provider=provider_filter)
+	if query:
+		payments = payments.filter(
+			Q(student__name__icontains=query) | Q(student__email__icontains=query)
+			| Q(course__title__icontains=query) | Q(transaction_reference__icontains=query)
+			| Q(gateway_transaction_id__icontains=query)
+		)
+
+	successful = Payment.objects.filter(status='successful')
+	params = request.GET.copy()
+	params.pop('page', None)
+
+	with timezone.override(EVENT_TIMEZONE):
+		return render(request, 'admin/payments.html', {
+			'page': Paginator(payments, 25).get_page(request.GET.get('page')),
+			'status_choices': Payment.STATUS_CHOICES,
+			'provider_choices': Payment.PROVIDER_CHOICES,
+			'filters': {'status': status_filter, 'provider': provider_filter, 'q': query},
+			'query_string': params.urlencode(),
+			'revenue': successful.aggregate(total=Sum('amount'))['total'] or 0,
+			'successful_count': successful.count(),
+			'pending_count': Payment.objects.filter(status='initiated').count(),
+		})
+
+
+@login_required
+@require_POST
+def recheck_payment(request, payment_id):
+	if not is_admin(request.user):
+		messages.error(request, 'You do not have permission to manage payments.')
+		return redirect('dashboard')
+
+	payment = get_object_or_404(Payment, pk=payment_id)
+	try:
+		payment = refresh_payment(payment.pk)
+		messages.success(request, f'Payment #{payment.pk} is now: {payment.get_status_display()}.')
+	except GatewayError as exc:
+		messages.error(request, f'Could not reach the gateway for payment #{payment.pk}: {exc}')
+
+	next_url = request.POST.get('next', '')
+	if url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
+		return redirect(next_url)
+	return redirect('manage_payments')

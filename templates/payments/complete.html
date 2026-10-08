@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Payment {{ payment.get_status_display|lower }}</title>
+    <style>
+        body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f7faf9;color:#172b2f;font-family:system-ui,-apple-system,sans-serif;text-align:center;padding:24px}
+        .card{background:#fff;border:1px solid #e6eceb;border-radius:8px;padding:32px 28px;max-width:420px}
+        .icon{font-size:48px;line-height:1}
+        p{color:#718084}
+    </style>
+</head>
+<body>
+    <div class="card">
+        {% if payment.status == 'successful' %}
+            <div class="icon">✅</div><h1>Payment successful</h1>
+            <p>“{{ payment.course.title }}” is now unlocked. You can return to the SkillSikka app.</p>
+        {% elif payment.status == 'initiated' %}
+            <div class="icon">⏳</div><h1>Payment pending</h1>
+            <p>We haven't received confirmation yet. Return to the app; it will update once the payment is confirmed.</p>
+        {% else %}
+            <div class="icon">⚠️</div><h1>Payment not completed</h1>
+            <p>The payment for “{{ payment.course.title }}” didn't go through. Return to the app to try again.</p>
+        {% endif %}
+    </div>
+</body>
+</html>

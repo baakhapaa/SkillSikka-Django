@@ -672,6 +672,11 @@ class Payment(models.Model):
 	status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='initiated')
 	created_at = models.DateTimeField(auto_now_add=True)
 	verified_at = models.DateTimeField(null=True, blank=True)
+	# Khalti pidx; eSewa uses transaction_reference as its transaction_uuid.
+	gateway_token = models.CharField(max_length=100, blank=True)
+	# Khalti transaction_id / eSewa ref_id, once the gateway confirms.
+	gateway_transaction_id = models.CharField(max_length=100, blank=True)
+	gateway_response = models.JSONField(default=dict, blank=True)
 
 	class Meta:
 		db_table = 'payments'

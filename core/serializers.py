@@ -1304,7 +1304,7 @@ class PaymentSerializer(serializers.ModelSerializer):
 		fields = [
 			'id', 'course', 'course_title', 'enrollment', 'amount',
 			'provider', 'transaction_reference', 'status',
-			'created_at', 'verified_at',
+			'gateway_transaction_id', 'created_at', 'verified_at',
 		]
 		read_only_fields = ['id', 'status', 'created_at', 'verified_at']
 
@@ -1319,6 +1319,11 @@ class InitiatePaymentSerializer(serializers.Serializer):
 		if not course.is_paid:
 			raise serializers.ValidationError({
 				'detail': 'This course is free and does not require payment.'
+			})
+
+		if course.price is None or course.price <= 0:
+			raise serializers.ValidationError({
+				'detail': 'This course has no price set yet. Please contact support.'
 			})
 
 		enrollment = Enrollment.objects.filter(student=student, course=course).first()
@@ -1354,13 +1359,14 @@ class InitiatePaymentSerializer(serializers.Serializer):
 
 
 class VerifyPaymentSerializer(serializers.Serializer):
+	"""Asks the gateway for the real outcome; the client's word is not used."""
+
 	transaction_reference = serializers.CharField()
-	gateway_status = serializers.ChoiceField(choices=[('success', 'Success'), ('failure', 'Failure')])
 
 	def validate(self, attrs):
 		payment = Payment.objects.filter(
 			transaction_reference=attrs['transaction_reference'],
-		).select_related('enrollment').first()
+		).first()
 
 		if payment is None:
 			raise serializers.ValidationError({'detail': 'Payment not found.'})
@@ -1368,33 +1374,8 @@ class VerifyPaymentSerializer(serializers.Serializer):
 		if payment.student_id != self.context['request'].user.id:
 			raise serializers.ValidationError({'detail': 'This payment does not belong to you.'})
 
-		if payment.status != 'initiated':
-			raise serializers.ValidationError({'detail': 'This payment has already been processed.'})
-
 		attrs['payment'] = payment
 		return attrs
-
-	def save(self):
-		payment = self.validated_data['payment']
-		gateway_status = self.validated_data['gateway_status']
-
-		with transaction.atomic():
-			if gateway_status == 'success':
-				payment.status = 'successful'
-				payment.verified_at = timezone.now()
-				payment.save(update_fields=['status', 'verified_at'])
-
-				enrollment = payment.enrollment
-				enrollment.status = 'active'
-				enrollment.amount_paid = payment.amount
-				enrollment.payment_reference = payment.transaction_reference
-				enrollment.save(update_fields=['status', 'amount_paid', 'payment_reference'])
-			else:
-				payment.status = 'failed'
-				payment.verified_at = timezone.now()
-				payment.save(update_fields=['status', 'verified_at'])
-
-		return payment
 
 
 class QuestionOptionManagementSerializer(serializers.ModelSerializer):
