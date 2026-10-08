@@ -1072,12 +1072,18 @@ class CourseReviewSerializer(serializers.ModelSerializer):
 
 
 class PublicInstructorSerializer(serializers.ModelSerializer):
+	profile_photo_url = serializers.SerializerMethodField()
 	qualification = serializers.SerializerMethodField()
 	subject_expertise = serializers.SerializerMethodField()
 	average_rating = serializers.FloatField(read_only=True, allow_null=True)
 	review_count = serializers.IntegerField(read_only=True)
 	total_students = serializers.IntegerField(read_only=True)
 	total_courses = serializers.IntegerField(read_only=True)
+
+	def get_profile_photo_url(self, obj):
+		photo = obj.profile_photo_src
+		request = self.context.get('request')
+		return request.build_absolute_uri(photo) if photo and request else photo
 
 	def get_qualification(self, obj):
 		return getattr(getattr(obj, 'instructor_profile', None), 'qualification', '')

@@ -206,6 +206,25 @@ class PublicInstructorTests(TestCase):
         with self.assertNumQueries(2):
             self.assertEqual(len(self.detail().data['courses']), 6)
 
+    def test_public_photos_use_canonical_storage_resolution(self):
+        for stored in ['profile-photos/1/new.png', '/media/profile-photos/1/old.png',
+                       'https://legacy.example.com/media/profile-photos/1/legacy.png', '']:
+            with self.subTest(stored=stored):
+                self.teacher.profile_photo_url = stored
+                self.teacher.save(update_fields=['profile_photo_url'])
+                expected = ('http://testserver' + self.teacher.profile_photo_src) if stored else None
+                self.assertEqual(self.detail().data['profile_photo_url'], expected)
+                self.assertEqual(self.client.get(self.url).data[0]['profile_photo_url'], expected)
+
+    def test_public_photos_preserve_storage_backend_urls(self):
+        self.teacher.profile_photo_url = 'profile-photos/1/new.png'
+        self.teacher.save(update_fields=['profile_photo_url'])
+        signed_url = 'https://cdn.example.com/photos/new.png?signature=fresh'
+        with patch('core.documents.default_storage.url', return_value=signed_url) as resolve:
+            self.assertEqual(self.detail().data['profile_photo_url'], signed_url)
+            resolve.assert_called_once_with('profile-photos/1/new.png')
+        self.assertEqual(self.detail().data['profile_photo_url'], 'http://testserver/media/profile-photos/1/new.png')
+
     def test_authentication_and_read_only_endpoints(self):
         detail_url = reverse('api-public-instructor-detail', kwargs={'instructor_id': self.teacher.pk})
         for url in [self.url, detail_url]:
