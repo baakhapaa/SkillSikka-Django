@@ -1,6 +1,7 @@
 ﻿from django.db.models import Count, Prefetch, Q, QuerySet
 from django.utils import timezone
-from django.db.models import Exists, OuterRef
+from django.db.models import Exists, OuterRef, Subquery, F
+from django.db.models.functions import Coalesce
 from django.db import transaction, IntegrityError
 from decimal import Decimal
 from django.db.models import Sum, Count, Avg
@@ -30,6 +31,7 @@ from .models import (
 	Chapter,
 	Course,
 	CourseReview,
+	with_instructor_review_stats,
 	District,
 	EBook,
 	Enrollment,
@@ -87,6 +89,7 @@ from .serializers import (
 	CompleteStudentProfileSerializer,
 	CourseSerializer,
 	CourseReviewSerializer,
+	PublicInstructorSerializer,
 	DistrictSerializer,
 	EBookSerializer,
 	EnrollCourseSerializer,
@@ -1035,6 +1038,53 @@ class TopicDetailAPIView(
 # =========================================================
 # Course Management
 # =========================================================
+
+def _public_instructors():
+	public_courses = Course.objects.filter(instructor_id=OuterRef('pk'), is_published=True)
+	students = Enrollment.objects.filter(
+		course__instructor_id=OuterRef('pk'), course__is_published=True,
+		status__in=['active', 'completed'],
+	).order_by().values('course__instructor_id').annotate(value=Count('student_id', distinct=True))
+	return with_instructor_review_stats(User.objects.filter(
+		role__name='instructor', verification_status='verified', is_active=True,
+	)).select_related('instructor_profile').filter(Exists(public_courses)).annotate(
+		total_courses=Subquery(public_courses.order_by().values('instructor_id')
+			.annotate(value=Count('pk')).values('value')),
+		total_students=Coalesce(Subquery(students.values('value')), 0),
+	)
+
+
+class TopInstructorsAPIView(generics.ListAPIView):
+	authentication_classes = [JWTAuthentication, SessionAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = PublicInstructorSerializer
+
+	def get_queryset(self):
+		return _public_instructors().order_by(
+			F('average_rating').desc(nulls_last=True), '-review_count',
+			'-total_students', '-total_courses', 'pk',
+		)
+
+
+class PublicInstructorDetailAPIView(generics.RetrieveAPIView):
+	authentication_classes = [JWTAuthentication, SessionAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = PublicInstructorSerializer
+	lookup_url_kwarg = 'instructor_id'
+
+	def get_queryset(self):
+		return _public_instructors().prefetch_related(Prefetch(
+			'courses', to_attr='public_courses',
+			queryset=Course.objects.filter(is_published=True).with_review_stats()
+			.select_related('instructor', 'subject', 'grade').order_by('-created_at', 'pk'),
+		))
+
+	def retrieve(self, request, *args, **kwargs):
+		instructor = self.get_object()
+		data = self.get_serializer(instructor).data
+		data['courses'] = CourseSerializer(instructor.public_courses, many=True, context=self.get_serializer_context()).data
+		return Response(data)
+
 
 class CourseListCreateAPIView(generics.ListCreateAPIView):
 	serializer_class = CourseSerializer

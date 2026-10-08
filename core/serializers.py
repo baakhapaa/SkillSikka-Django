@@ -1071,6 +1071,27 @@ class CourseReviewSerializer(serializers.ModelSerializer):
 		return super().to_internal_value(data)
 
 
+class PublicInstructorSerializer(serializers.ModelSerializer):
+	qualification = serializers.SerializerMethodField()
+	subject_expertise = serializers.SerializerMethodField()
+	average_rating = serializers.FloatField(read_only=True, allow_null=True)
+	review_count = serializers.IntegerField(read_only=True)
+	total_students = serializers.IntegerField(read_only=True)
+	total_courses = serializers.IntegerField(read_only=True)
+
+	def get_qualification(self, obj):
+		return getattr(getattr(obj, 'instructor_profile', None), 'qualification', '')
+
+	def get_subject_expertise(self, obj):
+		return getattr(getattr(obj, 'instructor_profile', None), 'subject_expertise', '')
+
+	class Meta:
+		model = User
+		fields = ['id', 'name', 'profile_photo_url', 'qualification', 'subject_expertise',
+			'average_rating', 'review_count', 'total_students', 'total_courses']
+		read_only_fields = fields
+
+
 class CourseSerializer(serializers.ModelSerializer):
 	average_rating = serializers.SerializerMethodField()
 	review_count = serializers.SerializerMethodField()

@@ -30,6 +30,200 @@ from .models import Course, CourseReview, Enrollment, Lesson, LessonProgress, wi
 from .serializers import CourseSerializer
 
 
+class PublicInstructorTests(TestCase):
+    fields = {'id', 'name', 'profile_photo_url', 'qualification', 'subject_expertise',
+              'average_rating', 'review_count', 'total_students', 'total_courses'}
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.student = self.user('Student', 'student')
+        self.other = self.user('Other', 'student')
+        self.teacher = self.user('Teacher')
+        InstructorProfile.objects.create(user=self.teacher, qualification='MSc', subject_expertise='Python')
+        self.course = self.course_for(self.teacher)
+        self.url = reverse('api-top-instructors')
+        self.client.force_authenticate(self.student)
+
+    def user(self, name, role='instructor', **kwargs):
+        return User.objects.create_user(email=f'{name.lower()}@example.com', name=name,
+            role=Role.objects.get(name=role), verification_status='verified', **kwargs)
+
+    def course_for(self, teacher, published=True):
+        return Course.objects.create(instructor=teacher, title='Python', course_type='skill', is_published=published)
+
+    def detail(self, teacher=None):
+        return self.client.get(reverse('api-public-instructor-detail',
+            kwargs={'instructor_id': (teacher or self.teacher).pk}))
+
+    def ids(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        return [row['id'] for row in response.data]
+
+    def review(self, course, student, rating):
+        return CourseReview.objects.create(course=course, student=student, rating=rating)
+
+    def test_approved_instructor_and_empty_statistics(self):
+        self.assertEqual(self.ids(), [self.teacher.pk])
+        data = self.detail().data
+        self.assertIsNone(data['average_rating'])
+        self.assertEqual(data['review_count'], 0)
+        self.assertEqual(data['total_students'], 0)
+        self.assertEqual(data['total_courses'], 1)
+
+    def test_nonpublic_instructors_hidden_for_all_roles(self):
+        hidden = []
+        for state in ['pending', 'rejected', 'not_applicable']:
+            teacher = self.user(state)
+            teacher.verification_status = state
+            teacher.save()
+            self.course_for(teacher)
+            hidden.append(teacher)
+        inactive = self.user('Inactive', is_active=False)
+        self.course_for(inactive)
+        hidden.append(inactive)
+        nonteacher = self.user('Nonteacher', 'student')
+        self.course_for(nonteacher)
+        hidden.append(nonteacher)
+        for viewer in [self.student, self.teacher, self.user('Admin', 'super_admin')]:
+            self.client.force_authenticate(viewer)
+            self.assertEqual(self.ids(), [self.teacher.pk])
+            for teacher in hidden:
+                self.assertEqual(self.detail(teacher).status_code, 404)
+
+    def test_no_public_courses_hidden_and_missing_profile_supported(self):
+        empty = self.user('Empty')
+        draft = self.user('Draft')
+        self.course_for(draft, False)
+        for teacher in [empty, draft]:
+            self.assertEqual(self.detail(teacher).status_code, 404)
+        self.assertEqual(self.ids(), [self.teacher.pk])
+        self.course_for(empty)
+        self.assertEqual(self.detail(empty).data['qualification'], '')
+        self.assertEqual(self.detail(empty).data['subject_expertise'], '')
+        self.assertEqual(self.detail(self.user('Missing')).status_code, 404)
+
+    def test_distinct_students_public_courses_and_valid_statuses(self):
+        second = self.course_for(self.teacher)
+        draft = self.course_for(self.teacher, False)
+        for course in [self.course, second]:
+            Enrollment.objects.create(student=self.student, course=course, status='active')
+        Enrollment.objects.create(student=self.other, course=second, status='completed')
+        for name, state, course in [('Pending', 'pending_payment', second),
+                                   ('Cancelled', 'cancelled', second), ('Draftstudent', 'active', draft)]:
+            Enrollment.objects.create(student=self.user(name, 'student'), course=course, status=state)
+        unrelated = self.course_for(self.user('Unrelated'))
+        Enrollment.objects.create(student=self.user('Unrelatedstudent', 'student'), course=unrelated)
+        data = self.detail().data
+        self.assertEqual(data['total_students'], 2)
+        self.assertEqual(data['total_courses'], 2)
+        self.assertEqual({c['id'] for c in data['courses']}, {self.course.pk, second.pk})
+        self.assertTrue(all(c['is_published'] for c in data['courses']))
+        row = next(row for row in self.client.get(self.url).data if row['id'] == self.teacher.pk)
+        self.assertEqual(row['total_students'], 2)
+        self.assertEqual(row['total_courses'], 2)
+
+    def test_review_weighted_average_and_no_enrollment_join_bias(self):
+        second = self.course_for(self.teacher)
+        self.review(self.course, self.student, 1)
+        self.review(self.course, self.other, 5)
+        self.review(second, self.student, 3)
+        for student in [self.student, self.other, self.user('Third', 'student')]:
+            Enrollment.objects.create(student=student, course=self.course)
+        data = self.detail().data
+        self.assertEqual(data['review_count'], 3)
+        self.assertEqual(data['average_rating'], 3)
+        self.review(second, self.other, 5)
+        data = self.detail().data
+        self.assertEqual(data['review_count'], 4)
+        self.assertEqual(data['average_rating'], 3.5)
+        self.assertEqual(self.client.get(self.url).data[0]['average_rating'], 3.5)
+
+    def test_historical_reviews_follow_existing_aggregate_policy(self):
+        draft = self.course_for(self.teacher, False)
+        self.review(draft, self.student, 5)
+        self.review(self.course, self.other, 1)
+        data = self.detail().data
+        self.assertEqual(data['average_rating'], 3)
+        self.assertEqual(data['review_count'], 2)
+        self.assertEqual(data['total_courses'], 1)
+        self.assertEqual([c['id'] for c in data['courses']], [self.course.pk])
+
+    def test_review_api_updates_and_deletions_change_instructor_statistics(self):
+        Enrollment.objects.create(student=self.student, course=self.course)
+        url = reverse('api-course-reviews', kwargs={'course_id': self.course.pk})
+        me = reverse('api-my-course-review', kwargs={'course_id': self.course.pk})
+        self.assertEqual(self.client.post(url, {'rating': 2}, format='json').status_code, 201)
+        self.assertEqual(self.detail().data['average_rating'], 2)
+        self.assertEqual(self.client.patch(me, {'rating': 5}, format='json').status_code, 200)
+        self.assertEqual(self.client.get(self.url).data[0]['average_rating'], 5)
+        self.assertEqual(self.client.delete(me).status_code, 204)
+        self.assertIsNone(self.detail().data['average_rating'])
+        self.assertEqual(self.detail().data['review_count'], 0)
+
+    def test_ranking_each_tie_breaker_and_stable_id(self):
+        # Each adjacent pair isolates one ranking criterion.
+        specs = [('High', [5], 1, 1), ('Reviews', [4, 4], 1, 1),
+                 ('Students', [4], 2, 1), ('Courses', [4], 1, 2),
+                 ('Stablefirst', [4], 1, 1), ('Stablesecond', [4], 1, 1)]
+        expected = []
+        for name, ratings, student_count, course_count in specs:
+            teacher = self.user(name)
+            courses = [self.course_for(teacher) for _ in range(course_count)]
+            for index, rating in enumerate(ratings):
+                self.review(courses[0], [self.student, self.other][index], rating)
+            for student in [self.student, self.other][:student_count]:
+                Enrollment.objects.create(student=student, course=courses[0])
+            expected.append(teacher.pk)
+        expected.append(self.teacher.pk)  # Unrated instructors sort last.
+        self.assertEqual(self.ids(), expected)
+        self.assertEqual(self.ids(), expected)
+
+    def test_privacy_and_reuse_course_serializer(self):
+        data = self.detail().data
+        self.assertEqual(set(data), self.fields | {'courses'})
+        self.assertEqual(set(self.client.get(self.url).data[0]), self.fields)
+        self.assertEqual(data['qualification'], 'MSc')
+        self.assertEqual(data['subject_expertise'], 'Python')
+        self.assertEqual(set(data['courses'][0]), set(CourseSerializer(self.course).data))
+        private = {'email', 'password', 'phone_number', 'verification_documents',
+                   'cv_resume_document', 'verified_by', 'verified_at', 'verification_status',
+                   'is_staff', 'dob', 'location', 'created_at', 'updated_at'}
+        self.assertFalse(private & set(data))
+
+    def test_query_counts_do_not_grow_with_instructors_or_courses(self):
+        with self.assertNumQueries(1):
+            self.assertEqual(self.client.get(self.url).status_code, 200)
+        with self.assertNumQueries(2):
+            self.assertEqual(self.detail().status_code, 200)
+        for index in range(5):
+            teacher = self.user(f'Extra{index}')
+            self.course_for(teacher)
+            self.course_for(self.teacher)
+        with self.assertNumQueries(1):
+            self.assertEqual(len(self.client.get(self.url).data), 6)
+        with self.assertNumQueries(2):
+            self.assertEqual(len(self.detail().data['courses']), 6)
+
+    def test_authentication_and_read_only_endpoints(self):
+        detail_url = reverse('api-public-instructor-detail', kwargs={'instructor_id': self.teacher.pk})
+        for url in [self.url, detail_url]:
+            self.assertEqual(self.client.post(url, {'total_students': 999}, format='json').status_code, 405)
+            self.assertEqual(self.client.patch(url, {'average_rating': 5}, format='json').status_code, 405)
+            self.assertEqual(self.client.delete(url).status_code, 405)
+        self.client.force_authenticate(None)
+        for url in [self.url, detail_url]:
+            self.assertEqual(self.client.get(url).status_code, 401)
+        from rest_framework_simplejwt.tokens import RefreshToken
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(self.student).access_token}')
+        for url in [self.url, detail_url]:
+            self.assertEqual(self.client.get(url).status_code, 200)
+        self.student.email_verified = False
+        self.student.save()
+        self.assertEqual(self.client.get(self.url).status_code, 401)
+
+
 class CourseReviewTests(TestCase):
     def setUp(self):
         cache.clear()

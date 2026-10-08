@@ -23,6 +23,8 @@ from .analytics_views import (
 	TeacherTimelineAPIView,
 )
 from .api_views import (
+	TopInstructorsAPIView,
+	PublicInstructorDetailAPIView,
 	BadgeDetailAPIView,
 	BadgeListCreateAPIView,
 	ChallengeDetailAPIView,
@@ -143,6 +145,8 @@ urlpatterns = [
     path('admin/events/', EventAdminListAPIView.as_view(), name='api-admin-events'),
     path('admin/events/<int:event_id>/', EventAdminDetailAPIView.as_view(), name='api-admin-event-detail'),
     path('admin/events/<int:event_id>/registrations/', EventAdminRegistrationListAPIView.as_view(), name='api-admin-event-registrations'),
+	path('instructors/top/', TopInstructorsAPIView.as_view(), name='api-top-instructors'),
+	path('instructors/<int:instructor_id>/', PublicInstructorDetailAPIView.as_view(), name='api-public-instructor-detail'),
     path('advertisements/', AdvertisementListAPIView.as_view(), name='api-advertisements'),
     path('admin/advertisements/', AdvertisementAdminListAPIView.as_view(), name='api-admin-advertisements'),
     path('admin/advertisements/<int:advertisement_id>/', AdvertisementAdminDetailAPIView.as_view(), name='api-admin-advertisement-detail'),

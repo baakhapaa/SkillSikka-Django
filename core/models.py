@@ -527,8 +527,18 @@ def with_instructor_review_stats(queryset=None):
 	if queryset is None:
 		queryset = User.objects.filter(role__name='instructor')
 	return queryset.annotate(
-		average_rating=models.Avg('courses__reviews__rating'),
-		review_count=models.Count('courses__reviews', distinct=True),
+		# Isolate reviews from any course/enrollment joins on the caller's
+		# queryset so each review contributes exactly once to the average.
+		average_rating=models.Subquery(
+			CourseReview.objects.filter(course__instructor=models.OuterRef('pk'))
+			.order_by().values('course__instructor')
+			.annotate(value=models.Avg('rating')).values('value')
+		),
+		review_count=models.functions.Coalesce(models.Subquery(
+			CourseReview.objects.filter(course__instructor=models.OuterRef('pk'))
+			.order_by().values('course__instructor')
+			.annotate(value=models.Count('pk')).values('value')
+		), 0),
 	)
 
 
