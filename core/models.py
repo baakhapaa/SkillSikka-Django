@@ -510,10 +510,24 @@ class Chapter(models.Model):
 
 
 class CourseQuerySet(models.QuerySet):
+	def with_access(self, user):
+		return self.annotate(is_enrolled=models.Exists(Enrollment.objects.filter(
+			student=user, course=models.OuterRef('pk'), status__in=['active', 'completed'],
+		)))
+
 	def with_review_stats(self):
-		return self.annotate(
+		return self.with_card_stats().annotate(
 			average_rating=models.Avg('reviews__rating'),
 			review_count=models.Count('reviews', distinct=True),
+		)
+
+	def with_card_stats(self):
+		lessons = Lesson.objects.filter(course=models.OuterRef('pk')).order_by().values('course')
+		students = Enrollment.objects.filter(course=models.OuterRef('pk'), status__in=['active', 'completed']).order_by().values('course')
+		return self.select_related('skill_category').annotate(
+			students_enrolled=models.functions.Coalesce(models.Subquery(students.annotate(value=models.Count('student', distinct=True)).values('value')), 0),
+			lessons_count=models.functions.Coalesce(models.Subquery(lessons.annotate(value=models.Count('pk')).values('value')), 0),
+			total_duration_seconds=models.Subquery(lessons.annotate(value=models.Sum('duration_seconds')).values('value')),
 		)
 
 
@@ -552,7 +566,10 @@ class Course(models.Model):
 	title = models.CharField(max_length=200)
 	description = models.TextField(blank=True)
 	instructor = models.ForeignKey(User, on_delete=models.PROTECT, related_name='courses')
+	learning_outcomes = models.JSONField(default=list, blank=True)
+	requirements = models.JSONField(default=list, blank=True)
 	course_type = models.CharField(max_length=10, choices=COURSE_TYPE_CHOICES)
+	skill_category = models.ForeignKey(LearningInterest, on_delete=models.SET_NULL, null=True, blank=True, related_name='courses')
 	subject = models.ForeignKey(Subject, on_delete=models.PROTECT, null=True, blank=True, related_name='courses')
 	grade = models.ForeignKey(Grade, on_delete=models.PROTECT, null=True, blank=True, related_name='courses')
 	is_paid = models.BooleanField(default=False)
@@ -594,6 +611,9 @@ class Lesson(models.Model):
 	course = models.ForeignKey(Course, on_delete=models.CASCADE, null=True, blank=True, related_name='lessons')
 
 	title = models.CharField(max_length=200)
+	section = models.CharField(max_length=200, null=True, blank=True)
+	duration_seconds = models.PositiveIntegerField(null=True, blank=True)
+	is_preview = models.BooleanField(default=False)
 	content_type = models.CharField(max_length=10, choices=CONTENT_TYPE_CHOICES)
 	content_url = models.URLField(blank=True)
 	content_text = models.TextField(blank=True)
@@ -851,6 +871,8 @@ class QuizAttempt(models.Model):
 	enrollment = models.ForeignKey(
 		Enrollment,
 		on_delete=models.CASCADE,
+		null=True,
+		blank=True,
 		related_name='quiz_attempts'
 	)
 	score = models.DecimalField(

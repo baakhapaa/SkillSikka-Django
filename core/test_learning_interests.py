@@ -67,11 +67,12 @@ class StudentLearningInterestsTests(TestCase):
         return self.client.post('/api/v1/me/complete-profile/', self.profile_payload, format='json')
 
     def test_seeded_catalogue_is_exact_and_ordered(self):
-        self.assertEqual(list(LearningInterest.objects.values_list('name', 'slug')), EXPECTED_INTERESTS)
-        self.assertEqual(list(LearningInterest.objects.values_list('display_order', flat=True)), list(range(1, 13)))
+        expected = EXPECTED_INTERESTS + [('Drawing', 'drawing'), ('Public Speaking', 'public-speaking'), ('Music', 'music')]
+        self.assertEqual(list(LearningInterest.objects.values_list('name', 'slug')), expected)
+        self.assertEqual(list(LearningInterest.objects.values_list('display_order', flat=True)), list(range(1, 16)))
         response = self.client.get('/api/v1/learning-interests/')
         self.assertEqual(response.status_code, 200)
-        self.assertEqual([(i['name'], i['slug']) for i in response.data], EXPECTED_INTERESTS)
+        self.assertEqual([(i['name'], i['slug']) for i in response.data], expected)
         self.assertEqual(set(response.data[0]), {'id', 'name', 'slug', 'description', 'display_order'})
 
     def test_new_registration_requires_email_verification_and_enables_new_flow(self):

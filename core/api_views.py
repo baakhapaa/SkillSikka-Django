@@ -20,6 +20,7 @@ from rest_framework import serializers
 
 
 from .authentication import EmailVerifiedJWTAuthentication as JWTAuthentication
+from .course_access import CourseAPIError, require_course_access
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -1135,7 +1136,7 @@ class PublicInstructorDetailAPIView(generics.RetrieveAPIView):
 	def get_queryset(self):
 		return _public_instructors().prefetch_related(Prefetch(
 			'courses', to_attr='public_courses',
-			queryset=Course.objects.filter(is_published=True).with_review_stats()
+			queryset=Course.objects.filter(is_published=True).with_review_stats().with_access(self.request.user)
 			.select_related('instructor', 'subject', 'grade').order_by('-created_at', 'pk'),
 		))
 
@@ -1146,7 +1147,11 @@ class PublicInstructorDetailAPIView(generics.RetrieveAPIView):
 		return Response(data)
 
 
+from .course_pagination import CoursePagination
+
+
 class CourseListCreateAPIView(generics.ListCreateAPIView):
+	pagination_class = CoursePagination
 	serializer_class = CourseSerializer
 	authentication_classes = [
 		JWTAuthentication,
@@ -1155,7 +1160,7 @@ class CourseListCreateAPIView(generics.ListCreateAPIView):
 	permission_classes = [IsAuthenticated]
 
 	def get_queryset(self):
-		queryset = Course.objects.with_review_stats().select_related(
+		queryset = Course.objects.with_review_stats().with_access(self.request.user).select_related(
 			'instructor',
 			'subject',
 			'grade',
@@ -1224,7 +1229,16 @@ class CourseListCreateAPIView(generics.ListCreateAPIView):
 					is_published=False
 				)
 
-		return queryset.order_by('-created_at')
+		category = self.request.query_params.get('skill_category')
+		if category:
+			queryset = queryset.filter(skill_category_id=category)
+		search = self.request.query_params.get('search', '').strip()
+		if search:
+			queryset = queryset.filter(Q(title__icontains=search) | Q(description__icontains=search))
+		ordering = self.request.query_params.get('ordering', '-created_at')
+		if ordering not in {'created_at', '-created_at', 'title', '-title', 'average_rating', '-average_rating', 'price', '-price'}:
+			ordering = '-created_at'
+		return queryset.order_by(ordering, 'pk')
 
 	def perform_create(self, serializer):
 		if not _is_instructor(self.request.user):
@@ -1248,8 +1262,15 @@ class CourseDetailAPIView(
 	]
 	permission_classes = [IsAuthenticated]
 
+	def get_object(self):
+		from django.http import Http404
+		try:
+			return super().get_object()
+		except Http404:
+			raise CourseAPIError('COURSE_NOT_FOUND', 'Course not found.', 404)
+
 	def get_queryset(self):
-		queryset = Course.objects.with_review_stats().select_related(
+		queryset = Course.objects.with_review_stats().with_access(self.request.user).select_related(
 			'instructor',
 			'subject',
 			'grade',
@@ -1316,6 +1337,7 @@ class LessonListCreateAPIView(generics.ListCreateAPIView):
 			'course',
 			'course__instructor',
 		)
+		queryset = queryset.filter(Q(course__in=_visible_courses(self.request.user, Course.objects.all())) | Q(course__isnull=True))
 
 		topic_id = self.request.query_params.get(
 			'topic'
@@ -1370,7 +1392,7 @@ class LessonDetailAPIView(
 	permission_classes = [IsAuthenticated]
 
 	def get_queryset(self):
-		return Lesson.objects.select_related(
+		return Lesson.objects.filter(Q(course__in=_visible_courses(self.request.user, Course.objects.all())) | Q(course__isnull=True)).select_related(
 			'topic',
 			'topic__chapter',
 			'course',
@@ -1429,7 +1451,7 @@ class EnrollCourseAPIView(APIView):
 	def post(self, request, course_id):
 		course = Course.objects.filter(pk=course_id).first()
 		if course is None:
-			return Response({'detail': 'Course not found.'}, status=status.HTTP_404_NOT_FOUND)
+			raise CourseAPIError('COURSE_NOT_FOUND', 'Course not found.', 404)
 
 		serializer = EnrollCourseSerializer(data={}, context={'course': course, 'request': request})
 		serializer.is_valid(raise_exception=True)
@@ -1472,21 +1494,13 @@ class CompleteLessonAPIView(APIView):
 		enrollment = None
 
 		if lesson.course is not None:
-			has_access = Enrollment.objects.filter(
-				student=student,
-				course=lesson.course,
-				status__in=['active', 'completed'],
-			).exists()
-
-			if not has_access:
-				return Response(
-					{'detail': 'You must be enrolled in this course to access this lesson.'},
-					status=status.HTTP_403_FORBIDDEN,
-				)
-
-			enrollment = Enrollment.objects.filter(
-				student=student, course=lesson.course
-			).first()
+			if lesson.course.course_type == 'academic':
+				# Management access does not create student progress for staff.
+				enrollment = require_course_access(student, lesson.course, managers=False)
+			else:
+				enrollment = Enrollment.objects.filter(student=student, course=lesson.course, status__in=['active', 'completed']).first()
+				if enrollment is None:
+					raise CourseAPIError('NOT_ENROLLED', 'You must be enrolled in this course to access this lesson.', 403)
 
 		elif lesson.topic is not None:
 			student_grade_id = getattr(
@@ -1587,7 +1601,7 @@ class MyLearningAPIView(APIView):
 		enrollments = list(Enrollment.objects.filter(
 			student=student, status__in=['active', 'completed'],
 		).prefetch_related(Prefetch(
-			'course', queryset=Course.objects.with_review_stats().select_related('instructor', 'subject', 'grade'),
+			'course', queryset=Course.objects.with_review_stats().with_access(student).select_related('instructor', 'subject', 'grade'),
 		)))
 		course_ids = [enrollment.course_id for enrollment in enrollments]
 		# Compact bulk metadata avoids loading lesson content or querying each course.
@@ -1657,19 +1671,16 @@ class CourseProgressAPIView(APIView):
 	def get(self, request, course_id):
 		course = Course.objects.filter(pk=course_id).first()
 		if course is None:
-			return Response({'detail': 'Course not found.'}, status=status.HTTP_404_NOT_FOUND)
+			raise CourseAPIError('COURSE_NOT_FOUND', 'Course not found.', 404)
 
 		student = request.user
 
-		enrollment = Enrollment.objects.filter(
-			student=student, course=course, status__in=['active', 'completed'],
-		).first()
-
-		if enrollment is None:
-			return Response(
-				{'detail': 'You must be enrolled in this course to view progress.'},
-				status=status.HTTP_403_FORBIDDEN,
-			)
+		if course.course_type == 'academic':
+			enrollment = require_course_access(student, course)
+		else:
+			enrollment = Enrollment.objects.filter(student=student, course=course, status__in=['active', 'completed']).first()
+			if enrollment is None:
+				raise CourseAPIError('NOT_ENROLLED', 'You must be enrolled in this course to view progress.', 403)
 
 		total_lessons = Lesson.objects.filter(course=course).count()
 		completed_lessons = LessonProgress.objects.filter(
@@ -1677,7 +1688,7 @@ class CourseProgressAPIView(APIView):
 		).count()
 
 		summary = _course_progress_summary(course.id, total_lessons, completed_lessons)
-		if _apply_course_completion(enrollment, summary['is_completed']):
+		if enrollment is not None and _apply_course_completion(enrollment, summary['is_completed']):
 			enrollment.course = course
 			_persist_course_completions([enrollment])
 
@@ -1824,7 +1835,7 @@ class CheckCourseCertificateAPIView(APIView):
 	def post(self, request, course_id):
 		course = Course.objects.filter(pk=course_id, course_type='skill').first()
 		if course is None:
-			return Response({'detail': 'Skill course not found.'}, status=status.HTTP_404_NOT_FOUND)
+			raise CourseAPIError('COURSE_NOT_FOUND', 'Skill course not found.', 404)
 
 		student = request.user
 
@@ -1833,7 +1844,7 @@ class CheckCourseCertificateAPIView(APIView):
 			return Response(CertificateSerializer(existing).data, status=status.HTTP_200_OK)
 
 		if not _check_course_certificate_eligibility(student, course):
-			return Response({'detail': 'You have not yet met the criteria for this certificate.'}, status=status.HTTP_400_BAD_REQUEST)
+			raise CourseAPIError('CERTIFICATE_NOT_ELIGIBLE', 'You have not yet met the criteria for this certificate.')
 
 		certificate, created = _issue_certificate(student, 'course', course=course)
 		return Response(CertificateSerializer(certificate).data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
@@ -1848,14 +1859,14 @@ class CheckGradeCertificateAPIView(APIView):
 		student_grade = getattr(getattr(student, 'student_profile', None), 'grade', None)
 
 		if student_grade is None:
-			return Response({'detail': 'You do not have a grade set on your profile.'}, status=status.HTTP_400_BAD_REQUEST)
+			raise CourseAPIError('CERTIFICATE_NOT_ELIGIBLE', 'You do not have a grade set on your profile.')
 
 		existing = Certificate.objects.filter(student=student, grade=student_grade).first()
 		if existing is not None:
 			return Response(CertificateSerializer(existing).data, status=status.HTTP_200_OK)
 
 		if not _check_grade_certificate_eligibility(student, student_grade):
-			return Response({'detail': 'You have not yet met the criteria for this certificate.'}, status=status.HTTP_400_BAD_REQUEST)
+			raise CourseAPIError('CERTIFICATE_NOT_ELIGIBLE', 'You have not yet met the criteria for this certificate.')
 
 		certificate, created = _issue_certificate(student, 'grade', grade=student_grade)
 		return Response(CertificateSerializer(certificate).data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
@@ -2925,18 +2936,7 @@ class StudentQuizDetailAPIView(
 	def get_object(self):
 		quiz = super().get_object()
 		user = self.request.user
-
-		enrollment = Enrollment.objects.filter(
-			student=user,
-			course=quiz.course,
-			status__in=['active', 'completed']
-		).first()
-
-		if not enrollment:
-			raise PermissionDenied(
-				'You must be enrolled in this course '
-				'to access this quiz.'
-			)
+		require_course_access(user, quiz.course)
 
 		return quiz
 
@@ -2966,22 +2966,7 @@ class StartQuizAttemptAPIView(APIView):
 				status=status.HTTP_404_NOT_FOUND,
 			)
 
-		enrollment = Enrollment.objects.filter(
-			student=student,
-			course=quiz.course,
-			status__in=['active', 'completed']
-		).first()
-
-		if enrollment is None:
-			return Response(
-				{
-					'detail': (
-						'You must be enrolled in this course '
-						'before attempting this quiz.'
-					)
-				},
-				status=status.HTTP_403_FORBIDDEN,
-			)
+		enrollment = require_course_access(student, quiz.course, managers=False)
 
 		completed_attempts = QuizAttempt.objects.filter(
 			student=student,
@@ -2992,6 +2977,7 @@ class StartQuizAttemptAPIView(APIView):
 		if completed_attempts >= quiz.max_attempts:
 			return Response(
 				{
+					'code': 'MAX_ATTEMPTS_REACHED',
 					'detail': (
 						'Maximum quiz attempts reached.'
 					),
@@ -3049,6 +3035,8 @@ class SubmitQuizAttemptAPIView(APIView):
 				{'detail': 'Quiz attempt not found.'},
 				status=status.HTTP_404_NOT_FOUND,
 			)
+		if attempt.quiz.course.course_type == 'academic':
+			require_course_access(student, attempt.quiz.course, managers=False)
 
 		if attempt.completed_at is not None:
 			return Response(
@@ -7982,7 +7970,7 @@ class CourseReviewAccessMixin:
 			pk=self.kwargs['course_id'],
 		).first()
 		if course is None:
-			raise NotFound('Course not found.')
+			raise CourseAPIError('COURSE_NOT_FOUND', 'Course not found.', 404)
 		return course
 
 	def check_student(self):
@@ -7991,7 +7979,7 @@ class CourseReviewAccessMixin:
 
 	def check_enrollment(self, course):
 		if not Enrollment.objects.filter(student=self.request.user, course=course, status__in=['active', 'completed']).exists():
-			raise PermissionDenied('An active or completed enrollment is required to review this course.')
+			raise CourseAPIError('NOT_ENROLLED', 'An active or completed enrollment is required to review this course.', 403)
 
 
 class CourseReviewListCreateAPIView(CourseReviewAccessMixin, generics.ListCreateAPIView):
@@ -8005,19 +7993,19 @@ class CourseReviewListCreateAPIView(CourseReviewAccessMixin, generics.ListCreate
 		course = self.get_course()
 		self.check_enrollment(course)
 		if CourseReview.objects.filter(student=self.request.user, course=course).exists():
-			raise ValidationError({'detail': 'You have already reviewed this course.'})
+			raise CourseAPIError('REVIEW_EXISTS', 'You have already reviewed this course.')
 		try:
 			with transaction.atomic():
 				serializer.save(student=self.request.user, course=course)
 		except IntegrityError:
 			if CourseReview.objects.filter(student=self.request.user, course=course).exists():
-				raise ValidationError({'detail': 'You have already reviewed this course.'})
+				raise CourseAPIError('REVIEW_EXISTS', 'You have already reviewed this course.')
 			raise
 
 
-class MyCourseReviewAPIView(CourseReviewAccessMixin, generics.UpdateAPIView, generics.DestroyAPIView):
+class MyCourseReviewAPIView(CourseReviewAccessMixin, generics.RetrieveUpdateDestroyAPIView):
 	serializer_class = CourseReviewSerializer
-	http_method_names = ['patch', 'delete', 'options']
+	http_method_names = ['get', 'patch', 'delete', 'options']
 
 	def delete(self, request, *args, **kwargs):
 		# Reject ownership/course overrides on DELETE as well as POST/PATCH.
@@ -8033,3 +8021,7 @@ class MyCourseReviewAPIView(CourseReviewAccessMixin, generics.UpdateAPIView, gen
 		if review is None:
 			raise NotFound('You have not reviewed this course.')
 		return review
+
+
+from .course_schema import document_course_views
+document_course_views(globals())

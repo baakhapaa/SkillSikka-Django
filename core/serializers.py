@@ -15,6 +15,8 @@ from django.utils import timezone
 from django.utils.crypto import constant_time_compare, salted_hmac
 from django.utils.text import slugify
 from rest_framework import serializers
+from drf_spectacular.utils import extend_schema_field
+from .course_access import CourseAPIError, academic_eligible, is_course_manager
 from rest_framework_simplejwt.token_blacklist.models import (
 	BlacklistedToken,
 	OutstandingToken,
@@ -1044,8 +1046,12 @@ class CourseReviewSerializer(serializers.ModelSerializer):
 		fields = ['id', 'rating', 'review', 'student', 'created_at', 'updated_at']
 		read_only_fields = ['id', 'student', 'created_at', 'updated_at']
 
+	@extend_schema_field({'type': 'object', 'properties': {'id': {'type': 'integer'}, 'name': {'type': 'string'}, 'profile_photo_url': {'type': 'string', 'nullable': True}}, 'required': ['id', 'name', 'profile_photo_url']})
 	def get_student(self, obj):
-		return {'id': obj.student_id, 'name': obj.student.name}
+		photo = obj.student.profile_photo_src
+		request = self.context.get('request')
+		return {'id': obj.student_id, 'name': obj.student.name,
+			'profile_photo_url': request.build_absolute_uri(photo) if photo and request else photo or None}
 
 	def reject_identity_fields(self, data):
 		if not isinstance(data, Mapping):
@@ -1080,14 +1086,17 @@ class PublicInstructorSerializer(serializers.ModelSerializer):
 	total_students = serializers.IntegerField(read_only=True)
 	total_courses = serializers.IntegerField(read_only=True)
 
+	@extend_schema_field(serializers.CharField(allow_null=True))
 	def get_profile_photo_url(self, obj):
 		photo = obj.profile_photo_src
 		request = self.context.get('request')
 		return request.build_absolute_uri(photo) if photo and request else photo
 
+	@extend_schema_field(serializers.CharField())
 	def get_qualification(self, obj):
 		return getattr(getattr(obj, 'instructor_profile', None), 'qualification', '')
 
+	@extend_schema_field(serializers.CharField())
 	def get_subject_expertise(self, obj):
 		return getattr(getattr(obj, 'instructor_profile', None), 'subject_expertise', '')
 
@@ -1098,7 +1107,63 @@ class PublicInstructorSerializer(serializers.ModelSerializer):
 		read_only_fields = fields
 
 
+def accessible_course_ids(context):
+	"""One access lookup per serialization context, including nested serializers."""
+	if '_accessible_course_ids' not in context:
+		request = context.get('request')
+		user = getattr(request, 'user', None)
+		context['_accessible_course_ids'] = set(Enrollment.objects.filter(
+			student=user, status__in=['active', 'completed'],
+		).values_list('course_id', flat=True)) if user and user.is_authenticated else set()
+	return context['_accessible_course_ids']
+
+
+class StrictCourseString(serializers.CharField):
+	def to_internal_value(self, data):
+		if not isinstance(data, str):
+			raise serializers.ValidationError('Each entry must be a string.')
+		return super().to_internal_value(data)
+
+
+class CourseStringList(serializers.ListField):
+	child = StrictCourseString(max_length=500, allow_blank=False, trim_whitespace=True)
+
+	def __init__(self, **kwargs):
+		kwargs.setdefault('max_length', 50)
+		super().__init__(**kwargs)
+
+
 class CourseSerializer(serializers.ModelSerializer):
+	learning_outcomes = CourseStringList(required=False)
+	requirements = CourseStringList(required=False)
+	skill_category_name = serializers.CharField(source='skill_category.name', read_only=True, allow_null=True)
+	students_enrolled = serializers.SerializerMethodField()
+	lessons_count = serializers.SerializerMethodField()
+	total_duration_seconds = serializers.SerializerMethodField()
+	is_enrolled = serializers.SerializerMethodField()
+
+	def _card_value(self, obj, field):
+		if hasattr(obj, field):
+			return getattr(obj, field)
+		if not hasattr(obj, '_card_stats'):
+			obj._card_stats = Course.objects.with_card_stats().values('students_enrolled', 'lessons_count', 'total_duration_seconds').get(pk=obj.pk)
+		return obj._card_stats[field]
+
+	@extend_schema_field(serializers.IntegerField())
+	def get_students_enrolled(self, obj):
+		return self._card_value(obj, 'students_enrolled')
+
+	@extend_schema_field(serializers.IntegerField())
+	def get_lessons_count(self, obj):
+		return self._card_value(obj, 'lessons_count')
+
+	@extend_schema_field(serializers.IntegerField(allow_null=True))
+	def get_total_duration_seconds(self, obj):
+		return self._card_value(obj, 'total_duration_seconds')
+
+	@extend_schema_field(serializers.BooleanField())
+	def get_is_enrolled(self, obj):
+		return obj.is_enrolled if hasattr(obj, 'is_enrolled') else obj.pk in accessible_course_ids(self.context)
 	average_rating = serializers.SerializerMethodField()
 	review_count = serializers.SerializerMethodField()
 
@@ -1108,9 +1173,11 @@ class CourseSerializer(serializers.ModelSerializer):
 			obj._serialized_review_stats = obj.reviews.aggregate(average_rating=Avg('rating'), review_count=Count('pk'))
 		return obj._serialized_review_stats
 
+	@extend_schema_field(serializers.FloatField(allow_null=True))
 	def get_average_rating(self, obj):
 		return obj.average_rating if hasattr(obj, 'average_rating') else self._review_stats(obj)['average_rating']
 
+	@extend_schema_field(serializers.IntegerField())
 	def get_review_count(self, obj):
 		return obj.review_count if hasattr(obj, 'review_count') else self._review_stats(obj)['review_count']
 
@@ -1130,6 +1197,8 @@ class CourseSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = Course
 		fields = [
+			'learning_outcomes', 'requirements',
+			'skill_category', 'skill_category_name', 'students_enrolled', 'lessons_count', 'total_duration_seconds', 'is_enrolled',
 			'id',
 			'average_rating',
 			'review_count',
@@ -1203,13 +1272,33 @@ class CourseSerializer(serializers.ModelSerializer):
 
 
 class HomeCourseSerializer(CourseSerializer):
-	is_enrolled = serializers.BooleanField(read_only=True)
-
-	class Meta(CourseSerializer.Meta):
-		fields = CourseSerializer.Meta.fields + ['is_enrolled']
+	pass
 
 
 class LessonSerializer(serializers.ModelSerializer):
+	def to_representation(self, instance):
+		data = super().to_representation(instance)
+		request = self.context.get('request')
+		user = getattr(request, 'user', None)
+		authorized = False
+		if user and user.is_authenticated:
+			admin = user.is_superuser or getattr(getattr(user, 'role', None), 'name', '') == 'super_admin'
+			if instance.course_id:
+				if instance.course.course_type == 'academic':
+					authorized = is_course_manager(user, instance.course) or academic_eligible(user, instance.course)
+				else:
+					authorized = admin or instance.course.instructor_id == user.pk or instance.is_preview or instance.course_id in accessible_course_ids(self.context)
+			elif instance.topic_id:
+				# Legacy academic lessons have no course enrollment; preserve grade access.
+				grade_id = getattr(getattr(user, 'student_profile', None), 'grade_id', None)
+				authorized = admin or instance.is_preview or grade_id == instance.topic.chapter.grade_id
+			else:
+				authorized = admin
+		if not authorized:
+			data['content_url'] = None
+			data['content_text'] = None
+		return data
+
 	topic_name = serializers.CharField(
 		source='topic.name',
 		read_only=True
@@ -1222,6 +1311,7 @@ class LessonSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = Lesson
 		fields = [
+			'section', 'duration_seconds', 'is_preview',
 			'id',
 			'topic',
 			'topic_name',
@@ -1338,19 +1428,13 @@ class EnrollCourseSerializer(serializers.Serializer):
 		student = self.context['request'].user
 
 		if course.course_type != 'skill':
-			raise serializers.ValidationError({
-				'detail': 'Only skill development courses require enrollment.'
-			})
+			raise CourseAPIError('COURSE_NOT_ENROLLABLE', 'Only skill development courses require enrollment.')
 
 		if not course.is_published:
-			raise serializers.ValidationError({
-				'detail': 'This course is not available for enrollment.'
-			})
+			raise CourseAPIError('COURSE_NOT_PUBLISHED', 'This course is not available for enrollment.')
 
 		if Enrollment.objects.filter(student=student, course=course).exists():
-			raise serializers.ValidationError({
-				'detail': 'You are already enrolled in this course.'
-			})
+			raise CourseAPIError('ALREADY_ENROLLED', 'You are already enrolled in this course.')
 
 		return attrs
 

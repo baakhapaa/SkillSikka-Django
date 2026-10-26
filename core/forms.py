@@ -69,6 +69,8 @@ class CourseForm(forms.ModelForm):
 		model = Course
 		fields = [
 			'title', 'description', 'instructor', 'course_type',
+			'skill_category',
+			'learning_outcomes', 'requirements',
 			'subject', 'grade', 'is_paid', 'price', 'thumbnail_url', 'is_published',
 		]
 		widgets = {
@@ -79,6 +81,15 @@ class CourseForm(forms.ModelForm):
 	def clean(self):
 		# Same rule as the course API: checkout needs a price on paid courses.
 		cleaned = super().clean()
+		from .serializers import CourseStringList
+		from rest_framework.exceptions import ValidationError
+		for field in ['learning_outcomes', 'requirements']:
+			if field in cleaned:
+				try:
+					value = cleaned[field]
+					cleaned[field] = CourseStringList().run_validation([] if value is None else value)
+				except ValidationError:
+					self.add_error(field, 'Use a list of non-empty strings, each at most 500 characters.')
 		if cleaned.get('is_paid'):
 			price = cleaned.get('price')
 			if price is None or price <= 0:

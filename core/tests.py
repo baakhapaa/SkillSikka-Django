@@ -1526,7 +1526,7 @@ class CourseReviewTests(TestCase):
         self.assertEqual(len(response.data), 2)
         for review in response.data:
             self.assertEqual(set(review), {'id', 'rating', 'review', 'student', 'created_at', 'updated_at'})
-            self.assertEqual(set(review['student']), {'id', 'name'})
+            self.assertEqual(set(review['student']), {'id', 'name', 'profile_photo_url'})
         with self.assertNumQueries(1):
             data = CourseSerializer(Course.objects.with_review_stats().select_related('instructor', 'subject', 'grade'), many=True).data
             self.assertEqual(data[0]['review_count'], 2)
@@ -1541,12 +1541,12 @@ class CourseReviewTests(TestCase):
         for method, url in [('get', self.url), ('post', self.url), ('patch', self.me), ('delete', self.me)]:
             self.assertEqual(getattr(self.client, method)(url, {'rating': 3}, format='json').status_code, 404)
         self.assertEqual(self.client.get(self.detail).status_code, 404)
-        self.assertEqual(self.client.get(reverse('api-course-list-create')).data, [])
+        self.assertEqual(self.client.get(reverse('api-course-list-create')).data['results'], [])
         for user in [self.instructor, self.admin]:
             self.client.force_authenticate(user)
             self.assertEqual(self.client.get(self.url).status_code, 200)
             self.assertEqual(self.client.get(self.detail).status_code, 200)
-            self.assertEqual(len(self.client.get(reverse('api-course-list-create')).data), 1)
+            self.assertEqual(len(self.client.get(reverse('api-course-list-create')).data['results']), 1)
         outsider = User.objects.create_user(email='outsider@example.com', role=self.instructor.role)
         self.client.force_authenticate(outsider)
         self.assertEqual(self.client.get(self.url).status_code, 404)
@@ -1591,7 +1591,8 @@ class CourseReviewTests(TestCase):
         self.assertEqual(self.client.post(enroll_url).status_code, 201)
         self.assertEqual(self.client.post(enroll_url).status_code, 400)
         self.assertEqual(self.client.get(reverse('api-my-enrollments')).status_code, 200)
-        with self.assertNumQueries(1):
+        # Count and paginated course rows, including an Exists access annotation.
+        with self.assertNumQueries(2):
             self.assertEqual(self.client.get(reverse('api-course-list-create')).status_code, 200)
 
     def test_reviews_do_not_change_rewards(self):
