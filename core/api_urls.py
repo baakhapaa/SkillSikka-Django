@@ -1,3 +1,4 @@
+from .bootcamp_views import (BootcampResourceListAPIView, BootcampResourceDetailAPIView, BootcampDiscussionListAPIView, BootcampDiscussionDetailAPIView, BootcampDiscussionLikeAPIView)
 from django.urls import path
 from .course_quiz_views import CourseQuizListAPIView
 from . import payment_views
@@ -139,6 +140,11 @@ from .api_views import (
 
 
 urlpatterns = [
+    path('courses/<int:course_id>/resources/', BootcampResourceListAPIView.as_view(), name='api-bootcamp-resources'),
+    path('courses/<int:course_id>/resources/<int:resource_id>/', BootcampResourceDetailAPIView.as_view(), name='api-bootcamp-resource-detail'),
+    path('courses/<int:course_id>/discussions/', BootcampDiscussionListAPIView.as_view(), name='api-bootcamp-discussions'),
+    path('courses/<int:course_id>/discussions/<int:discussion_id>/', BootcampDiscussionDetailAPIView.as_view(), name='api-bootcamp-discussion-detail'),
+    path('courses/<int:course_id>/discussions/<int:discussion_id>/like/', BootcampDiscussionLikeAPIView.as_view(), name='api-bootcamp-discussion-like'),
 	path('courses/<int:course_id>/quizzes/', CourseQuizListAPIView.as_view(), name='api-course-quizzes'),
     # Browser pages inside the Khalti / eSewa flow (opened in the app's WebView).
     path('payments/esewa/checkout/<str:reference>/', payment_views.esewa_checkout, name='payment-esewa-checkout'),

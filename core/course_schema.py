@@ -1,10 +1,10 @@
 """Documentation for course/student contracts; no runtime response changes."""
 from drf_spectacular.contrib.rest_framework_simplejwt import SimpleJWTScheme
-from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
+from drf_spectacular.utils import OpenApiParameter, PolymorphicProxySerializer, extend_schema, extend_schema_view
 from rest_framework import serializers
 
 from .serializers import (CertificateSerializer, CourseProgressSerializer,
-    EnrollmentSerializer, HomeCourseSerializer, InitiatePaymentSerializer, LearningCourseSerializer,
+    EnrollmentSerializer, CourseSerializer, BootcampCardSerializer, BootcampDetailSerializer, HomeCourseSerializer, InitiatePaymentSerializer, LearningCourseSerializer,
     PaymentSerializer, PublicInstructorSerializer, LessonProgressSerializer, QuizAttemptSerializer)
 from .event_serializers import EventSerializer
 from .advertisement_serializers import AdvertisementDisplaySerializer
@@ -43,6 +43,7 @@ class HomeResponseSerializer(serializers.Serializer):
     featured_courses = HomeCourseSerializer(many=True)
     recommended_courses = HomeCourseSerializer(many=True)
     skill_courses = HomeCourseSerializer(many=True)
+    bootcamps = BootcampCardSerializer(many=True)
     events = EventSerializer(many=True)
     advertisements = AdvertisementDisplaySerializer(many=True)
     top_instructors = PublicInstructorSerializer(many=True)
@@ -62,17 +63,21 @@ def document_course_views(views):
         'CheckCourseCertificateAPIView': {'post': extend_schema(request=None, responses={200: CertificateSerializer, 201: CertificateSerializer, **errors})},
         'CheckGradeCertificateAPIView': {'post': extend_schema(request=None, responses={200: CertificateSerializer, 201: CertificateSerializer, **errors})},
         'StartQuizAttemptAPIView': {'post': extend_schema(request=None, responses={200: QuizAttemptSerializer, 201: QuizAttemptSerializer, 400: QuizLimitErrorSerializer})},
-        'EnrollCourseAPIView': {'post': extend_schema(request=None, responses={201: EnrollmentSerializer, **errors})},
+        'EnrollCourseAPIView': {'post': extend_schema(description='Skill and bootcamp courses use existing Enrollment: free courses become active; paid courses await payment. Academic courses return COURSE_NOT_ENROLLABLE.', request=None, responses={201: EnrollmentSerializer, **errors})},
         'CourseProgressAPIView': {'get': extend_schema(responses={200: CourseProgressSerializer, **errors}, description='Skill progress requires active/completed enrollment. Academic progress uses the active student’s matching grade, without enrollment.')},
         'MyLearningAPIView': {'get': extend_schema(responses={200: MyLearningResponseSerializer}, description='Enrollment-based skill learning dashboard. Academic progress is available through course progress.')},
         'HomeFeedAPIView': {'get': extend_schema(responses={200: HomeResponseSerializer}, description='Student dashboard with deterministic recommendations. Available without a Gemini/network request.')},
         'InitiatePaymentAPIView': {'post': extend_schema(request=InitiatePaymentSerializer, responses={201: PaymentInitiationResponseSerializer}, description='Existing payment initiation response. payment_url opens the provider checkout.')},
-        'CourseListCreateAPIView': {'get': extend_schema(parameters=[
+        'CourseDetailAPIView': {
+            'get': extend_schema(responses=PolymorphicProxySerializer(component_name='CourseDetailResponse', serializers=[CourseSerializer, BootcampDetailSerializer], resource_type_field_name=None)),
+            'patch': extend_schema(description='Bootcamp updates are admin-only (ADMIN_ONLY). Nested profile PATCH is partial. lead_instructor_id is write-only; roster/lead changes must retain exactly one matching lead. Bootcamp type conversion is rejected.'),
+        },
+        'CourseListCreateAPIView': {'post': extend_schema(description='Bootcamps are admin-only (ADMIN_ONLY). Supply bootcamp_profile, lead_instructor_id and instructors with exactly one matching lead. Instructors must be active and verified. LEAD_INSTRUCTOR_REQUIRED / LEAD_INSTRUCTOR_NOT_IN_ROSTER are HTTP 400. Course/profile/roster save atomically. Academic and skill authoring retains existing rules.'), 'get': extend_schema(responses=PolymorphicProxySerializer(component_name='CourseListRow', serializers=[CourseSerializer, BootcampCardSerializer], resource_type_field_name=None), parameters=[
             OpenApiParameter('search', str, description='Case-insensitive title/description search; blank means no filter.'),
             OpenApiParameter('ordering', str, enum=['created_at', '-created_at', 'title', '-title', 'average_rating', '-average_rating', 'price', '-price'], description='Default and invalid-value fallback: -created_at. pk breaks ties.'),
             OpenApiParameter('skill_category', int),
             *[OpenApiParameter(name, int) for name in ['subject', 'grade', 'instructor']],
-            OpenApiParameter('course_type', str, enum=['academic', 'skill']),
+            OpenApiParameter('course_type', str, enum=['academic', 'skill', 'bootcamp']),
             OpenApiParameter('is_paid', bool), OpenApiParameter('is_published', bool),
         ])},
     }

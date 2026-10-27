@@ -16,7 +16,9 @@ from django.utils.crypto import constant_time_compare, salted_hmac
 from django.utils.text import slugify
 from rest_framework import serializers
 from drf_spectacular.utils import extend_schema_field
-from .course_access import CourseAPIError, academic_eligible, is_course_manager
+from .course_access import CourseAPIError, academic_eligible, is_course_manager, require_bootcamp_admin
+from .bootcamp_serializers import BootcampProfileSerializer, CourseInstructorInputSerializer, CourseInstructorDisplaySerializer, CourseListSerializer, load_bootcamp_rosters
+from .models import BootcampProfile, CourseInstructor
 from rest_framework_simplejwt.token_blacklist.models import (
 	BlacklistedToken,
 	OutstandingToken,
@@ -1134,6 +1136,61 @@ class CourseStringList(serializers.ListField):
 
 
 class CourseSerializer(serializers.ModelSerializer):
+	lead_instructor_id = serializers.PrimaryKeyRelatedField(queryset=User.objects.filter(
+		role__name='instructor', is_active=True, verification_status='verified'), write_only=True, required=False, allow_null=True)
+	bootcamp_profile = BootcampProfileSerializer(required=False, write_only=True)
+	instructors = CourseInstructorInputSerializer(many=True, required=False, write_only=True)
+
+	def to_internal_value(self, data):
+		request = self.context.get('request')
+		if request and isinstance(data, Mapping):
+			for kind in [getattr(self.instance, 'course_type', None), data.get('course_type')]:
+				require_bootcamp_admin(request.user, kind)
+		return super().to_internal_value(data)
+
+	def to_representation(self, instance):
+		load_bootcamp_rosters([instance])
+		data = super().to_representation(instance)
+		if instance.course_type == 'bootcamp':
+			profile = getattr(instance, 'bootcamp_profile', None)
+			if profile:
+				data.update(BootcampProfileSerializer(profile).data)
+			data['instructors'] = CourseInstructorDisplaySerializer(instance.instructors.all(), many=True, context=self.context).data
+			for key in ['resources_count', 'discussions_count']:
+				if hasattr(instance, key):
+					data[key] = getattr(instance, key)
+		return data
+
+	@transaction.atomic
+	def create(self, validated_data):
+		profile = validated_data.pop('bootcamp_profile', None)
+		roster = validated_data.pop('instructors', [])
+		lead = validated_data.pop('lead_instructor_id', None)
+		if lead:
+			validated_data['instructor'] = lead
+		course = super().create(validated_data)
+		if profile is not None:
+			BootcampProfile.objects.create(course=course, **profile)
+		CourseInstructor.objects.bulk_create([CourseInstructor(course=course, **row) for row in roster])
+		return course
+
+	@transaction.atomic
+	def update(self, instance, validated_data):
+		profile = validated_data.pop('bootcamp_profile', None)
+		roster = validated_data.pop('instructors', None)
+		lead = validated_data.pop('lead_instructor_id', None)
+		if lead:
+			validated_data['instructor'] = lead
+		instance = super().update(instance, validated_data)
+		if profile is not None:
+			BootcampProfile.objects.update_or_create(course=instance, defaults=profile)
+			instance._state.fields_cache.pop('bootcamp_profile', None)
+		if roster is not None:
+			instance.instructors.all().delete()
+			CourseInstructor.objects.bulk_create([CourseInstructor(course=instance, **row) for row in roster])
+		instance._prefetched_objects_cache = {}
+		return instance
+
 	learning_outcomes = CourseStringList(required=False)
 	requirements = CourseStringList(required=False)
 	skill_category_name = serializers.CharField(source='skill_category.name', read_only=True, allow_null=True)
@@ -1195,9 +1252,10 @@ class CourseSerializer(serializers.ModelSerializer):
 	)
 
 	class Meta:
+		list_serializer_class = CourseListSerializer
 		model = Course
 		fields = [
-			'learning_outcomes', 'requirements',
+			'learning_outcomes', 'requirements', 'lead_instructor_id', 'bootcamp_profile', 'instructors',
 			'skill_category', 'skill_category_name', 'students_enrolled', 'lessons_count', 'total_duration_seconds', 'is_enrolled',
 			'id',
 			'average_rating',
@@ -1246,6 +1304,37 @@ class CourseSerializer(serializers.ModelSerializer):
 			getattr(self.instance, 'price', None)
 		)
 
+		if self.instance and course_type != self.instance.course_type and 'bootcamp' in [course_type, self.instance.course_type]:
+			raise serializers.ValidationError({'course_type': 'Bootcamp course type cannot be converted.'})
+		if course_type == 'bootcamp':
+			attrs['subject'] = attrs['grade'] = None
+			lead = attrs.get('lead_instructor_id', getattr(self.instance, 'instructor', None))
+			if lead is None:
+				raise CourseAPIError('LEAD_INSTRUCTOR_REQUIRED', 'A lead instructor is required.')
+			if self.instance is None and 'bootcamp_profile' not in attrs:
+				raise serializers.ValidationError({'bootcamp_profile': 'This field is required.'})
+			roster = attrs.get('instructors')
+			if roster is None:
+				roster = list(self.instance.instructors.values('instructor_id', 'role')) if self.instance else []
+				leads = [row['instructor_id'] for row in roster if row['role'] == 'lead']
+			else:
+				ids = [row['instructor'].pk for row in roster]
+				if len(ids) != len(set(ids)):
+					raise serializers.ValidationError({'instructors': 'Each instructor may appear only once.'})
+				leads = [row['instructor'].pk for row in roster if row['role'] == 'lead']
+			if leads != [lead.pk]:
+				raise CourseAPIError('LEAD_INSTRUCTOR_NOT_IN_ROSTER', 'The roster must contain exactly one lead matching lead_instructor_id.')
+			if 'bootcamp_profile' in attrs:
+				profile = getattr(self.instance, 'bootcamp_profile', None)
+				validator = BootcampProfileSerializer(profile, data=self.initial_data['bootcamp_profile'], partial=self.partial)
+				validator.is_valid(raise_exception=True)
+				attrs['bootcamp_profile'] = validator.validated_data
+				days = attrs['bootcamp_profile'].get('days')
+				if self.instance and days and self.instance.lessons.filter(day_number__gt=days).exists():
+					raise serializers.ValidationError({'bootcamp_profile': 'Existing lessons exceed the proposed days.'})
+		elif any(key in attrs for key in ['lead_instructor_id', 'instructors', 'bootcamp_profile']):
+			raise serializers.ValidationError('Bootcamp fields require course_type=bootcamp.')
+
 		if course_type == 'academic':
 			if subject is None:
 				raise serializers.ValidationError({
@@ -1271,11 +1360,50 @@ class CourseSerializer(serializers.ModelSerializer):
 		return attrs
 
 
+class BootcampCardSerializer(CourseSerializer):
+	short_description = serializers.CharField(read_only=True)
+	venue_name = serializers.CharField(read_only=True)
+	days = serializers.IntegerField(read_only=True)
+	starts_on = serializers.DateField(read_only=True)
+	ends_on = serializers.DateField(read_only=True)
+	status = serializers.ChoiceField(choices=BootcampProfile.STATUS_CHOICES, read_only=True)
+	episode_no = serializers.IntegerField(read_only=True, allow_null=True)
+	hero_video_url = serializers.URLField(read_only=True)
+	hero_poster_url = serializers.URLField(read_only=True)
+	quality_label = serializers.CharField(read_only=True)
+	view_count = serializers.IntegerField(read_only=True)
+	instructors = CourseInstructorDisplaySerializer(many=True, read_only=True)
+
+	class Meta(CourseSerializer.Meta):
+		fields = [field for field in CourseSerializer.Meta.fields if field not in ['lead_instructor_id', 'bootcamp_profile']] + [
+			'short_description', 'venue_name', 'days', 'starts_on', 'ends_on', 'status', 'episode_no',
+			'hero_video_url', 'hero_poster_url', 'quality_label', 'view_count']
+
+
+class BootcampDetailSerializer(BootcampCardSerializer):
+	resources_count = serializers.IntegerField(read_only=True)
+	discussions_count = serializers.IntegerField(read_only=True)
+
+	class Meta(BootcampCardSerializer.Meta):
+		fields = BootcampCardSerializer.Meta.fields + ['resources_count', 'discussions_count']
+
+
 class HomeCourseSerializer(CourseSerializer):
 	pass
 
 
 class LessonSerializer(serializers.ModelSerializer):
+	is_completed = serializers.SerializerMethodField()
+
+	def get_is_completed(self, obj) -> bool:
+		if hasattr(obj, 'is_completed'):
+			return obj.is_completed
+		request = self.context.get('request')
+		if '_completed_lesson_ids' not in self.context:
+			self.context['_completed_lesson_ids'] = set(LessonProgress.objects.filter(
+				student=request.user, is_completed=True).values_list('lesson_id', flat=True)) if request and request.user.is_authenticated else set()
+		return obj.pk in self.context['_completed_lesson_ids']
+
 	def to_representation(self, instance):
 		data = super().to_representation(instance)
 		request = self.context.get('request')
@@ -1311,7 +1439,7 @@ class LessonSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = Lesson
 		fields = [
-			'section', 'duration_seconds', 'is_preview',
+			'section', 'duration_seconds', 'is_preview', 'day_number', 'is_completed',
 			'id',
 			'topic',
 			'topic_name',
@@ -1356,6 +1484,19 @@ class LessonSerializer(serializers.ModelSerializer):
 			raise serializers.ValidationError({
 				'course': 'A lesson must belong to a course.'
 			})
+
+		request = self.context.get('request')
+		if request:
+			for target in [getattr(self.instance, 'course', None), course]:
+				if target:
+					require_bootcamp_admin(request.user, target.course_type)
+		if course.course_type == 'bootcamp':
+			day = attrs.get('day_number', getattr(self.instance, 'day_number', None))
+			profile = getattr(course, 'bootcamp_profile', None)
+			if day is not None and (day < 1 or (profile and day > profile.days)):
+				raise serializers.ValidationError({'day_number': 'Day must be within the bootcamp days.'})
+			if topic is not None:
+				raise serializers.ValidationError({'topic': 'Bootcamp lessons cannot link to academic topics.'})
 
 		if course.course_type == 'academic':
 			if course.subject is None or course.grade is None:
@@ -1427,8 +1568,8 @@ class EnrollCourseSerializer(serializers.Serializer):
 		course = self.context['course']
 		student = self.context['request'].user
 
-		if course.course_type != 'skill':
-			raise CourseAPIError('COURSE_NOT_ENROLLABLE', 'Only skill development courses require enrollment.')
+		if course.course_type == 'academic':
+			raise CourseAPIError('COURSE_NOT_ENROLLABLE', 'Academic courses do not support enrollment.')
 
 		if not course.is_published:
 			raise CourseAPIError('COURSE_NOT_PUBLISHED', 'This course is not available for enrollment.')

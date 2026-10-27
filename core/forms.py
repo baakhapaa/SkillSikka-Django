@@ -61,6 +61,9 @@ class SchoolForm(forms.ModelForm):
 
 
 class CourseForm(forms.ModelForm):
+	# This legacy form cannot submit the required profile and instructor roster.
+	course_type = forms.ChoiceField(choices=[choice for choice in Course.COURSE_TYPE_CHOICES if choice[0] != 'bootcamp'])
+
 	instructor = forms.ModelChoiceField(
 		queryset=User.objects.filter(role__name='instructor').order_by('name'),
 	)

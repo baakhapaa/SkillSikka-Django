@@ -215,7 +215,7 @@ class CourseSectionTests(TestCase):
         initial_courses = count(self.list_url)
         initial_lessons = count(self.lesson_url)
         self.assertEqual(initial_courses, 2)
-        self.assertEqual(initial_lessons, 2)
+        self.assertEqual(initial_lessons, 3)  # One bulk completion lookup.
         for i in range(15):
             course = self.course_for(f'Growth {i}', skill_category=LearningInterest.objects.first())
             Lesson.objects.create(course=course, title='Growth lesson', content_type='text', content_text='Secret')

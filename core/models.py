@@ -561,6 +561,7 @@ class Course(models.Model):
 	COURSE_TYPE_CHOICES = (
 		('academic', 'Academic'),
 		('skill', 'Skill Development'),
+		('bootcamp', 'Bootcamp'),
 	)
 
 	title = models.CharField(max_length=200)
@@ -612,6 +613,7 @@ class Lesson(models.Model):
 
 	title = models.CharField(max_length=200)
 	section = models.CharField(max_length=200, null=True, blank=True)
+	day_number = models.PositiveSmallIntegerField(null=True, blank=True)
 	duration_seconds = models.PositiveIntegerField(null=True, blank=True)
 	is_preview = models.BooleanField(default=False)
 	content_type = models.CharField(max_length=10, choices=CONTENT_TYPE_CHOICES)
@@ -1695,3 +1697,98 @@ class EventBookmark(models.Model):
 		db_table = 'event_bookmarks'
 		ordering = ['-created_at', '-id']
 		constraints = [models.UniqueConstraint(fields=['event', 'user'], name='unique_event_bookmark')]
+
+
+class BootcampProfile(models.Model):
+    STATUS_CHOICES = [(v, v.title()) for v in ['upcoming', 'ongoing', 'completed', 'cancelled']]
+    course = models.OneToOneField(Course, on_delete=models.CASCADE, related_name='bootcamp_profile')
+    venue_name = models.CharField(max_length=150)
+    days = models.PositiveSmallIntegerField(validators=[MinValueValidator(1)])
+    starts_on = models.DateField()
+    ends_on = models.DateField()
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='upcoming')
+    episode_no = models.PositiveSmallIntegerField(null=True, blank=True)
+    short_description = models.CharField(max_length=300, blank=True)
+    hero_video_url = models.URLField(blank=True)
+    hero_poster_url = models.URLField(blank=True)
+    quality_label = models.CharField(max_length=8, blank=True)
+    view_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        db_table = 'bootcamp_profiles'
+        constraints = [
+            models.CheckConstraint(condition=models.Q(days__gte=1), name='bootcamp_positive_days'),
+            models.CheckConstraint(condition=models.Q(ends_on__gte=models.F('starts_on')), name='bootcamp_valid_dates'),
+        ]
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if self.course_id and self.course.course_type != 'bootcamp':
+            raise ValidationError({'course': 'Only bootcamp courses may have a bootcamp profile.'})
+        if self.starts_on and self.ends_on and self.ends_on < self.starts_on:
+            raise ValidationError({'ends_on': 'End date must not precede start date.'})
+
+
+class CourseInstructor(models.Model):
+    ROLE_CHOICES = [(v, v.title()) for v in ['lead', 'coach', 'guest']]
+    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='instructors')
+    instructor = models.ForeignKey(User, on_delete=models.PROTECT, related_name='course_roster')
+    role = models.CharField(max_length=5, choices=ROLE_CHOICES)
+    order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        db_table = 'course_instructors'
+        ordering = ['order', 'pk']
+        constraints = [models.UniqueConstraint(fields=['course', 'instructor'], name='unique_course_instructor')]
+
+
+class BootcampResource(models.Model):
+    FORMAT_CHOICES = [(v, v.upper()) for v in ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'figma', 'svg', 'zip', 'link', 'other']]
+    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='bootcamp_resources')
+    section = models.CharField(max_length=200, blank=True)
+    title = models.CharField(max_length=200)
+    file_format = models.CharField(max_length=5, choices=FORMAT_CHOICES)
+    file_url = models.URLField()
+    file_size_bytes = models.PositiveBigIntegerField(null=True, blank=True)
+    order = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'bootcamp_resources'
+        ordering = ['order', 'pk']
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if self.course_id and self.course.course_type != 'bootcamp':
+            raise ValidationError({'course': 'Resources require a bootcamp course.'})
+
+
+class BootcampDiscussion(models.Model):
+    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='bootcamp_discussions')
+    author = models.ForeignKey(User, on_delete=models.CASCADE, related_name='bootcamp_discussions')
+    parent = models.ForeignKey('self', null=True, blank=True, on_delete=models.CASCADE, related_name='replies')
+    body = models.TextField(max_length=2000)
+    is_hidden = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'bootcamp_discussions'
+        ordering = ['-created_at', '-pk']
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if self.course_id and self.course.course_type != 'bootcamp':
+            raise ValidationError({'course': 'Discussions require a bootcamp course.'})
+        if self.parent_id and (self.parent.course_id != self.course_id or self.parent.parent_id):
+            raise ValidationError({'parent': 'Replies must reference a top-level discussion in the same course.'})
+
+
+class DiscussionLike(models.Model):
+    discussion = models.ForeignKey(BootcampDiscussion, on_delete=models.CASCADE, related_name='likes')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='bootcamp_discussion_likes')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'discussion_likes'
+        constraints = [models.UniqueConstraint(fields=['discussion', 'user'], name='unique_discussion_like')]

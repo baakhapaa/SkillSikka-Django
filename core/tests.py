@@ -930,7 +930,7 @@ class LearningCompatibilityTests(TestCase):
 
 
 class HomeFeedTests(TestCase):
-    sections = {'featured_courses', 'recommended_courses', 'skill_courses',
+    sections = {'featured_courses', 'recommended_courses', 'skill_courses', 'bootcamps',
                 'events', 'advertisements', 'top_instructors'}
 
     def setUp(self):
@@ -1146,7 +1146,7 @@ class HomeFeedTests(TestCase):
         self.ad()
         with CaptureQueriesContext(connection) as initial:
             self.feed()
-        self.assertLessEqual(len(initial), 12)
+        self.assertLessEqual(len(initial), 13)  # Includes the new bootcamp collection.
         for index in range(10):
             teacher = self.user(f'HomeExtra{index}')
             self.course_for(f'Course {index}', instructor=teacher)

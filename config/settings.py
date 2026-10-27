@@ -249,6 +249,7 @@ REST_FRAMEWORK = {
 
 SPECTACULAR_SETTINGS = {
     'TITLE': 'SkillSikka API',
+    'ENUM_NAME_OVERRIDES': {'BootcampStatusEnum': 'core.models.BootcampProfile.STATUS_CHOICES'},
     'DESCRIPTION': 'SkillSikka backend REST API',
     'VERSION': 'v1',
 }

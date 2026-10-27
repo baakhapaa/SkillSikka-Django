@@ -20,7 +20,7 @@ def academic_eligible(user, course):
 
 
 def require_course_access(user, course, *, managers=True):
-    """Return skill enrollment, or None for academic access/management."""
+    """Return skill/bootcamp enrollment, or None for academic access/management."""
     from .models import Enrollment
     if managers and is_course_manager(user, course):
         return None
@@ -34,3 +34,8 @@ def require_course_access(user, course, *, managers=True):
     if enrollment is None:
         raise CourseAPIError('NOT_ENROLLED', 'You must be enrolled in this course to access it.', 403)
     return enrollment
+
+
+def require_bootcamp_admin(user, course_type='bootcamp'):
+    if course_type == 'bootcamp' and not (user.is_superuser or getattr(getattr(user, 'role', None), 'name', '') == 'super_admin'):
+        raise CourseAPIError('ADMIN_ONLY', 'Only administrators can manage bootcamps.', 403)

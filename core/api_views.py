@@ -20,7 +20,8 @@ from rest_framework import serializers
 
 
 from .authentication import EmailVerifiedJWTAuthentication as JWTAuthentication
-from .course_access import CourseAPIError, require_course_access
+from .course_access import CourseAPIError, require_course_access, require_bootcamp_admin
+from .bootcamp_serializers import with_bootcamp_data, load_bootcamp_rosters
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -1096,7 +1097,7 @@ class HomeFeedAPIView(APIView):
 			student=request.user, course_id=OuterRef('pk'), status__in=['active', 'completed'],
 		)
 		def course_cards(courses):
-			courses = courses.with_review_stats().annotate(is_enrolled=Exists(enrolled))[:self.COURSE_LIMIT]
+			courses = with_bootcamp_data(courses).with_review_stats().annotate(is_enrolled=Exists(enrolled))[:self.COURSE_LIMIT]
 			return HomeCourseSerializer(courses, many=True, context={'request': request}).data
 
 		courses = GeminiService.course_candidates().with_review_stats()
@@ -1108,6 +1109,7 @@ class HomeFeedAPIView(APIView):
 			'featured_courses': course_cards(featured),
 			'recommended_courses': course_cards(GeminiService.home_course_candidates(request.user, profile)),
 			'skill_courses': course_cards(courses.filter(course_type='skill').order_by('-created_at', 'pk')),
+			'bootcamps': course_cards(Course.objects.filter(course_type='bootcamp', is_published=True).select_related('instructor', 'subject', 'grade').order_by('-bootcamp_profile__starts_on', 'pk')),
 			'events': EventSerializer(events, many=True, context=_viewer_context(request, events)).data,
 			'advertisements': AdvertisementDisplaySerializer(
 				visible_advertisements(now)[:self.ADVERTISEMENT_LIMIT], many=True, context={'request': request},
@@ -1136,7 +1138,7 @@ class PublicInstructorDetailAPIView(generics.RetrieveAPIView):
 	def get_queryset(self):
 		return _public_instructors().prefetch_related(Prefetch(
 			'courses', to_attr='public_courses',
-			queryset=Course.objects.filter(is_published=True).with_review_stats().with_access(self.request.user)
+			queryset=with_bootcamp_data(Course.objects.filter(is_published=True).with_review_stats().with_access(self.request.user))
 			.select_related('instructor', 'subject', 'grade').order_by('-created_at', 'pk'),
 		))
 
@@ -1160,7 +1162,7 @@ class CourseListCreateAPIView(generics.ListCreateAPIView):
 	permission_classes = [IsAuthenticated]
 
 	def get_queryset(self):
-		queryset = Course.objects.with_review_stats().with_access(self.request.user).select_related(
+		queryset = with_bootcamp_data(Course.objects.with_review_stats().with_access(self.request.user), detail=False).select_related(
 			'instructor',
 			'subject',
 			'grade',
@@ -1241,15 +1243,16 @@ class CourseListCreateAPIView(generics.ListCreateAPIView):
 		return queryset.order_by(ordering, 'pk')
 
 	def perform_create(self, serializer):
-		if not _is_instructor(self.request.user):
+		require_bootcamp_admin(self.request.user, serializer.validated_data.get('course_type'))
+		if not (_is_instructor(self.request.user) or _is_admin(self.request.user)):
 			raise PermissionDenied(
 				'Only instructors can create courses.'
 			)
 
-		serializer.save(
-			instructor=self.request.user,
-			is_published=False,
-		)
+		if serializer.validated_data.get('course_type') == 'bootcamp':
+			serializer.save()
+		else:
+			serializer.save(instructor=self.request.user, is_published=False)
 
 
 class CourseDetailAPIView(
@@ -1263,6 +1266,9 @@ class CourseDetailAPIView(
 	permission_classes = [IsAuthenticated]
 
 	def get_object(self):
+		if self.request.method not in ['GET', 'HEAD', 'OPTIONS']:
+			kind = Course.objects.filter(pk=self.kwargs['pk']).values_list('course_type', flat=True).first()
+			require_bootcamp_admin(self.request.user, kind)
 		from django.http import Http404
 		try:
 			return super().get_object()
@@ -1270,7 +1276,7 @@ class CourseDetailAPIView(
 			raise CourseAPIError('COURSE_NOT_FOUND', 'Course not found.', 404)
 
 	def get_queryset(self):
-		queryset = Course.objects.with_review_stats().with_access(self.request.user).select_related(
+		queryset = with_bootcamp_data(Course.objects.with_review_stats().with_access(self.request.user), detail=True).select_related(
 			'instructor',
 			'subject',
 			'grade',
@@ -1280,6 +1286,7 @@ class CourseDetailAPIView(
 
 	def _check_owner_or_admin(self, course):
 		user = self.request.user
+		require_bootcamp_admin(user, course.course_type)
 
 		if not (
 			_is_admin(user)
@@ -1356,11 +1363,19 @@ class LessonListCreateAPIView(generics.ListCreateAPIView):
 				course_id=course_id
 			)
 
+		day = self.request.query_params.get('day_number')
+		if day:
+			try:
+				queryset = queryset.filter(day_number=int(day))
+			except ValueError:
+				raise ValidationError({'day_number': 'A valid integer is required.'})
 		return queryset.order_by('order', 'title')
 
 	def perform_create(self, serializer):
 		user = self.request.user
 		course = serializer.validated_data.get('course')
+		if course:
+			require_bootcamp_admin(user, course.course_type)
 
 		if not (
 			_is_instructor(user)
@@ -1384,6 +1399,12 @@ class LessonListCreateAPIView(generics.ListCreateAPIView):
 class LessonDetailAPIView(
 	generics.RetrieveUpdateDestroyAPIView
 ):
+	def get_object(self):
+		if self.request.method not in ['GET', 'HEAD', 'OPTIONS']:
+			kind = Lesson.objects.filter(pk=self.kwargs['pk']).values_list('course__course_type', flat=True).first()
+			require_bootcamp_admin(self.request.user, kind)
+		return super().get_object()
+
 	serializer_class = LessonSerializer
 	authentication_classes = [
 		JWTAuthentication,
@@ -1401,6 +1422,8 @@ class LessonDetailAPIView(
 
 	def _check_permission(self, lesson):
 		user = self.request.user
+		if lesson.course:
+			require_bootcamp_admin(user, lesson.course.course_type)
 
 		if _is_admin(user):
 			return
@@ -1424,6 +1447,8 @@ class LessonDetailAPIView(
 			lesson.course,
 		)
 
+		if new_course:
+			require_bootcamp_admin(self.request.user, new_course.course_type)
 		if (
 			not _is_admin(self.request.user)
 			and new_course.instructor_id != self.request.user.id
@@ -1601,8 +1626,9 @@ class MyLearningAPIView(APIView):
 		enrollments = list(Enrollment.objects.filter(
 			student=student, status__in=['active', 'completed'],
 		).prefetch_related(Prefetch(
-			'course', queryset=Course.objects.with_review_stats().with_access(student).select_related('instructor', 'subject', 'grade'),
+			'course', queryset=with_bootcamp_data(Course.objects.with_review_stats().with_access(student)).select_related('instructor', 'subject', 'grade'),
 		)))
+		load_bootcamp_rosters([enrollment.course for enrollment in enrollments])
 		course_ids = [enrollment.course_id for enrollment in enrollments]
 		# Compact bulk metadata avoids loading lesson content or querying each course.
 		lessons = {}
@@ -1833,9 +1859,9 @@ class CheckCourseCertificateAPIView(APIView):
 	permission_classes = [IsAuthenticated]
 
 	def post(self, request, course_id):
-		course = Course.objects.filter(pk=course_id, course_type='skill').first()
+		course = Course.objects.filter(pk=course_id, course_type__in=['skill', 'bootcamp']).first()
 		if course is None:
-			raise CourseAPIError('COURSE_NOT_FOUND', 'Skill course not found.', 404)
+			raise CourseAPIError('COURSE_NOT_FOUND', 'Enrollable course not found.', 404)
 
 		student = request.user
 
@@ -2608,6 +2634,7 @@ class QuizListCreateAPIView(generics.ListCreateAPIView):
 	def perform_create(self, serializer):
 		course = serializer.validated_data['course']
 		user = self.request.user
+		require_bootcamp_admin(user, course.course_type)
 
 		if not (
 			_is_instructor(user)
@@ -2659,6 +2686,10 @@ class QuizDetailAPIView(
 	def perform_update(self, serializer):
 		quiz = self.get_object()
 		user = self.request.user
+		require_bootcamp_admin(user, quiz.course.course_type)
+		target = serializer.validated_data.get('course')
+		if target:
+			require_bootcamp_admin(user, target.course_type)
 
 		if not (
 			_is_admin(user)
@@ -2673,6 +2704,7 @@ class QuizDetailAPIView(
 
 	def perform_destroy(self, instance):
 		user = self.request.user
+		require_bootcamp_admin(user, instance.course.course_type)
 
 		if not (
 			_is_admin(user)
@@ -2721,6 +2753,7 @@ class QuestionListCreateAPIView(
 	def perform_create(self, serializer):
 		quiz = serializer.validated_data['quiz']
 		user = self.request.user
+		require_bootcamp_admin(user, quiz.course.course_type)
 
 		if not (
 			_is_instructor(user)
@@ -2773,6 +2806,10 @@ class QuestionDetailAPIView(
 	def perform_update(self, serializer):
 		question = self.get_object()
 		user = self.request.user
+		require_bootcamp_admin(user, question.quiz.course.course_type)
+		target = serializer.validated_data.get('quiz')
+		if target:
+			require_bootcamp_admin(user, target.course.course_type)
 
 		if (
 			not _is_admin(user)
@@ -2787,6 +2824,7 @@ class QuestionDetailAPIView(
 
 	def perform_destroy(self, instance):
 		user = self.request.user
+		require_bootcamp_admin(user, instance.quiz.course.course_type)
 
 		if (
 			not _is_admin(user)
@@ -2834,6 +2872,7 @@ class QuestionOptionListCreateAPIView(
 	def perform_create(self, serializer):
 		question = serializer.validated_data['question']
 		user = self.request.user
+		require_bootcamp_admin(user, question.quiz.course.course_type)
 
 		if not (
 			_is_instructor(user)
@@ -2885,6 +2924,10 @@ class QuestionOptionDetailAPIView(
 	def perform_update(self, serializer):
 		option = self.get_object()
 		user = self.request.user
+		require_bootcamp_admin(user, option.question.quiz.course.course_type)
+		target = serializer.validated_data.get('question')
+		if target:
+			require_bootcamp_admin(user, target.quiz.course.course_type)
 
 		if (
 			not _is_admin(user)
@@ -2899,6 +2942,7 @@ class QuestionOptionDetailAPIView(
 
 	def perform_destroy(self, instance):
 		user = self.request.user
+		require_bootcamp_admin(user, instance.question.quiz.course.course_type)
 
 		if (
 			not _is_admin(user)
