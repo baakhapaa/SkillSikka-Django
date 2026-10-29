@@ -35,7 +35,7 @@ class Command(BaseCommand):
         counts = {}
         for payment_id in pending:
             try:
-                status = refresh_payment(payment_id).status
+                status = refresh_payment(payment_id, settle_missing=True).status
             except GatewayError as exc:
                 status = 'gateway error'
                 self.stderr.write(f'payment {payment_id}: {exc}')

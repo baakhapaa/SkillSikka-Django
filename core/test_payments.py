@@ -162,9 +162,37 @@ class PaymentFlowTests(TestCase):
 			'transaction_reference': payment.transaction_reference, 'gateway_status': 'success',
 		}, format='json')
 		self.assertEqual(response.status_code, 200)
-		self.assertEqual(response.json()['status'], 'failed')
+		# `gateway_status: success` in the body is ignored, as it must be. The
+		# row stays `initiated` rather than `failed`: `NOT_FOUND` means eSewa has
+		# no transaction with this uuid *yet*, and settling on it would kill a
+		# payment the student is still completing.
+		self.assertEqual(response.json()['status'], 'initiated')
 		self.enrollment.refresh_from_db()
 		self.assertEqual(self.enrollment.status, 'pending_payment')
+
+	@patch('core.payments.requests.get')
+	def test_a_status_read_never_settles_a_missing_transaction(self, get):
+		# The client polls this endpoint while the student is on eSewa's page.
+		# eSewa answers NOT_FOUND until the form is submitted, so a read that
+		# settled would mark every payment failed within one poll — and
+		# `refresh_payment` returns early for a row that is not `initiated`, so
+		# the payment could never be confirmed afterwards.
+		self.initiate('esewa')
+		payment = Payment.objects.get()
+		get.return_value = gateway_response({'status': 'NOT_FOUND', 'total_amount': 1500.0})
+
+		for _ in range(3):
+			response = self.client.get(f'/api/v1/payments/{payment.pk}/')
+			self.assertEqual(response.status_code, 200)
+			self.assertEqual(response.json()['status'], 'initiated')
+
+		# And the same transaction completing later is still able to settle it.
+		get.return_value = gateway_response(
+			{'status': 'COMPLETE', 'total_amount': 1500.0, 'ref_id': 'R9'})
+		response = self.client.get(f'/api/v1/payments/{payment.pk}/')
+		self.assertEqual(response.json()['status'], 'successful')
+		self.enrollment.refresh_from_db()
+		self.assertEqual(self.enrollment.status, 'active')
 
 	def test_cannot_verify_someone_elses_payment(self):
 		self.initiate('esewa')

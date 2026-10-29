@@ -169,10 +169,20 @@ def esewa_check(payment):
 # Shared
 # =========================================================
 
-def refresh_payment(payment_id):
+def refresh_payment(payment_id, *, settle_missing=False):
 	"""Ask the gateway about an initiated payment and apply the result once.
 
 	Safe to call repeatedly and concurrently. Returns the payment.
+
+	**`settle_missing` is the difference between a status read and a verdict.**
+	eSewa answers `NOT_FOUND` for a `transaction_uuid` it has never seen, and
+	that is *every* payment between `initiate` and the student submitting the
+	form. Settling on that answer marks the row `failed` permanently — the guard
+	above returns early for anything not `initiated`, so a payment completed two
+	seconds later could never be confirmed, and the student would have paid for a
+	course that stayed locked. Only the sweeper and an admin's recheck, which
+	look at payments old enough for "not found" to mean "never happened", may
+	settle it. Everything a client can trigger leaves it `initiated`.
 	"""
 	with transaction.atomic():
 		payment = Payment.objects.select_for_update().select_related('enrollment', 'course').get(pk=payment_id)
@@ -183,6 +193,8 @@ def refresh_payment(payment_id):
 
 		check = khalti_check if payment.provider == 'khalti' else esewa_check
 		new_status, gateway_transaction_id, body = check(payment)
+		if not settle_missing and body.get('status') == 'NOT_FOUND':
+			new_status = None
 
 		payment.gateway_response = {**payment.gateway_response, 'last_check': body}
 		updated = ['gateway_response']

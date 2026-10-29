@@ -536,7 +536,7 @@ def recheck_payment(request, payment_id):
 
 	payment = get_object_or_404(Payment, pk=payment_id)
 	try:
-		payment = refresh_payment(payment.pk)
+		payment = refresh_payment(payment.pk, settle_missing=True)
 		messages.success(request, f'Payment #{payment.pk} is now: {payment.get_status_display()}.')
 	except GatewayError as exc:
 		messages.error(request, f'Could not reach the gateway for payment #{payment.pk}: {exc}')
