@@ -169,6 +169,51 @@ def esewa_check(payment):
 # Shared
 # =========================================================
 
+def settle_payment(payment_id, new_status, gateway_transaction_id='', body=None):
+	"""Apply a gateway verdict to an `initiated` payment, exactly once.
+
+	**The single place a payment changes state.** `refresh_payment` calls this
+	after asking the gateway; the sandbox `mark_paid` command calls it without
+	asking. Both therefore produce the same enrolment activation and the same
+	notification, so a payment settled in testing looks like one settled for
+	real — a separate code path would have been a test that proves nothing.
+
+	`new_status=None` means "the gateway has not decided" — the row keeps
+	`initiated` and only the last check is recorded. Returns the payment as it
+	stands after the call.
+	"""
+	with transaction.atomic():
+		payment = Payment.objects.select_for_update().select_related('enrollment', 'course').get(pk=payment_id)
+		# Re-read under the lock: a concurrent poll may have settled this while
+		# the caller was on the wire.
+		if payment.status != 'initiated':
+			return payment
+
+		updated = []
+		if body is not None:
+			payment.gateway_response = {**payment.gateway_response, 'last_check': body}
+			updated.append('gateway_response')
+		if new_status is not None:
+			payment.status = new_status
+			payment.verified_at = timezone.now()
+			payment.gateway_transaction_id = gateway_transaction_id
+			updated += ['status', 'verified_at', 'gateway_transaction_id']
+		if updated:
+			payment.save(update_fields=updated)
+
+		if new_status == 'successful':
+			enrollment = payment.enrollment
+			enrollment.status = 'active'
+			enrollment.amount_paid = payment.amount
+			enrollment.payment_reference = payment.transaction_reference
+			enrollment.save(update_fields=['status', 'amount_paid', 'payment_reference'])
+
+		if new_status is not None:
+			_notify_result(payment)
+
+	return payment
+
+
 def refresh_payment(payment_id, *, settle_missing=False):
 	"""Ask the gateway about an initiated payment and apply the result once.
 
@@ -206,34 +251,7 @@ def refresh_payment(payment_id, *, settle_missing=False):
 	if not settle_missing and body.get('status') == 'NOT_FOUND':
 		new_status = None
 
-	with transaction.atomic():
-		payment = Payment.objects.select_for_update().select_related('enrollment', 'course').get(pk=payment_id)
-		# A concurrent poll may have settled this while we were on the wire.
-		# Re-reading under the lock is what makes the write happen exactly once;
-		# the check before the gateway call is only an optimisation.
-		if payment.status != 'initiated':
-			return payment
-
-		payment.gateway_response = {**payment.gateway_response, 'last_check': body}
-		updated = ['gateway_response']
-		if new_status is not None:
-			payment.status = new_status
-			payment.verified_at = timezone.now()
-			payment.gateway_transaction_id = gateway_transaction_id
-			updated += ['status', 'verified_at', 'gateway_transaction_id']
-		payment.save(update_fields=updated)
-
-		if new_status == 'successful':
-			enrollment = payment.enrollment
-			enrollment.status = 'active'
-			enrollment.amount_paid = payment.amount
-			enrollment.payment_reference = payment.transaction_reference
-			enrollment.save(update_fields=['status', 'amount_paid', 'payment_reference'])
-
-		if new_status is not None:
-			_notify_result(payment)
-
-	return payment
+	return settle_payment(payment_id, new_status, gateway_transaction_id, body)
 
 
 def _notify_result(payment):
