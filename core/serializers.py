@@ -1161,6 +1161,21 @@ class CourseSerializer(serializers.ModelSerializer):
 			for key in ['resources_count', 'discussions_count']:
 				if hasattr(instance, key):
 					data[key] = getattr(instance, key)
+		# `thumbnail_url` holds either an outside URL or a storage name produced
+		# by `POST /courses/{id}/assets/` (the same convention `profile_photo_url`
+		# has always used). Resolving it here keeps the stored value independent
+		# of the host it was uploaded through — the dev host moves, and a baked-in
+		# absolute URL would 404 for every cover the moment it did.
+		#
+		# **This must stay in this method, not a second one.** A class body keeps
+		# only the last definition of a name, so a second `to_representation`
+		# further down silently replaced this one and dropped the whole bootcamp
+		# block — venue, dates, roster and counts vanished from every bootcamp
+		# response while the diff looked purely additive.
+		data['thumbnail_url'] = self._asset_url(
+			instance.thumbnail_url,
+			self.context.get('request'),
+		)
 		return data
 
 	@transaction.atomic
@@ -1285,19 +1300,6 @@ class CourseSerializer(serializers.ModelSerializer):
 			'created_at',
 			'updated_at',
 		]
-
-	def to_representation(self, instance):
-		data = super().to_representation(instance)
-		# `thumbnail_url` holds either an outside URL or a storage name produced
-		# by `POST /courses/{id}/assets/` (the same convention `profile_photo_url`
-		# has always used). Resolving it here keeps the stored value independent
-		# of the host it was uploaded through — the dev host moves, and a baked-in
-		# absolute URL would 404 for every cover the moment it did.
-		data['thumbnail_url'] = self._asset_url(
-			instance.thumbnail_url,
-			self.context.get('request'),
-		)
-		return data
 
 	@staticmethod
 	def _asset_url(stored, request):
