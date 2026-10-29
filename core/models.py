@@ -1754,9 +1754,25 @@ class CourseInstructor(models.Model):
         constraints = [models.UniqueConstraint(fields=['course', 'instructor'], name='unique_course_instructor')]
 
 
-class BootcampResource(models.Model):
+class CourseResource(models.Model):
+    """One downloadable file attached to a course, usually to one lesson.
+
+    **Any published course, not only a bootcamp.** This started as
+    `BootcampResource` and `clean()` refused every other `course_type`, so
+    `GET /courses/{id}/resources/` 404'd every course the builder can create.
+    The player's Resources tab exists on skill courses too.
+
+    `lesson` is what makes a resource per-lesson: the builder attaches files
+    while it is editing a lesson, and the player's tab shows the current
+    lesson's files. It is nullable because a bootcamp's pack predates this and
+    is course-wide, and because a lesson's `course` is itself nullable (a
+    lesson may hang off a `Topic` instead) — so the consistency check below
+    only compares when both sides are set.
+    """
+
     FORMAT_CHOICES = [(v, v.upper()) for v in ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'figma', 'svg', 'zip', 'link', 'other']]
-    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='bootcamp_resources')
+    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='course_resources')
+    lesson = models.ForeignKey('Lesson', on_delete=models.CASCADE, null=True, blank=True, related_name='resources')
     section = models.CharField(max_length=200, blank=True)
     title = models.CharField(max_length=200)
     file_format = models.CharField(max_length=5, choices=FORMAT_CHOICES)
@@ -1766,13 +1782,15 @@ class BootcampResource(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = 'bootcamp_resources'
+        db_table = 'course_resources'
         ordering = ['order', 'pk']
 
     def clean(self):
         from django.core.exceptions import ValidationError
-        if self.course_id and self.course.course_type != 'bootcamp':
-            raise ValidationError({'course': 'Resources require a bootcamp course.'})
+        # A resource may not point at a lesson belonging to another course —
+        # that would publish one course's files under another's tab.
+        if self.lesson_id and self.lesson.course_id and self.course_id and self.lesson.course_id != self.course_id:
+            raise ValidationError({'lesson': 'That lesson belongs to a different course.'})
 
 
 class CourseDiscussion(models.Model):

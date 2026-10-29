@@ -7,7 +7,7 @@ from django.db import connection, IntegrityError, transaction
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APIClient
-from core.models import (Course, BootcampProfile, CourseInstructor, BootcampResource, CourseDiscussion,
+from core.models import (Course, BootcampProfile, CourseInstructor, CourseResource, CourseDiscussion,
     DiscussionLike, Enrollment, Lesson, LessonProgress, Role, User, StudentProfile, Grade, Payment, Certificate)
 
 
@@ -131,18 +131,29 @@ class BootcampTests(TestCase):
         profile.course = Course.objects.create(title='Skill', instructor=self.lead, course_type='skill')
         with self.assertRaises(ValidationError): profile.full_clean()
 
-    def test_model_resources_are_bootcamp_only(self):
+    def test_model_resources_accept_any_course_type(self):
+        """The Resources tab exists on every player, so the model must not refuse one.
+
+        This used to be asserted the other way round: `clean()` rejected every
+        non-bootcamp course, which is why `GET /courses/{id}/resources/` 404'd
+        every course the builder can create.
+        """
         skill = Course.objects.create(title='Skill', instructor=self.lead, course_type='skill')
-        obj = BootcampResource(course=skill, title='Guide', file_format='pdf', file_url='https://example.com/a.pdf')
+        obj = CourseResource(course=skill, title='Guide', file_format='pdf', file_url='https://example.com/a.pdf')
+        obj.full_clean()  # must not raise
+        obj.save()
+        self.assertEqual(obj.course_id, skill.pk)
+
+    def test_model_resource_lesson_must_belong_to_its_course(self):
+        """A resource may not publish another course's lesson files."""
+        skill = Course.objects.create(title='Skill', instructor=self.lead, course_type='skill')
+        foreign = Lesson.objects.create(course=self.course, title='Theirs', content_type='video')
+        obj = CourseResource(course=skill, lesson=foreign, title='Guide', file_format='pdf', file_url='https://example.com/a.pdf')
         with self.assertRaises(ValidationError):
             obj.full_clean()
 
     def test_model_discussions_accept_any_course_type(self):
-        """The Q&A tab exists on every player, so the model must not refuse one.
-
-        This used to be asserted the other way round, together with resources.
-        Resources are still bootcamp-only; discussions are not.
-        """
+        """The Q&A tab exists on every player, so the model must not refuse one."""
         skill = Course.objects.create(title='Skill', instructor=self.lead, course_type='skill')
         obj = CourseDiscussion(course=skill, author=self.student, body='Hello')
         obj.full_clean()  # must not raise
@@ -199,7 +210,7 @@ class BootcampTests(TestCase):
 
     def test_list_detail_contract(self):
         self.enroll()
-        BootcampResource.objects.create(course=self.course, title='Guide', file_format='pdf', file_url='https://example.com/a.pdf')
+        CourseResource.objects.create(course=self.course, title='Guide', file_format='pdf', file_url='https://example.com/a.pdf')
         self.discussion(); self.discussion(is_hidden=True)
         data = self.client.get('/api/v1/courses/', {'course_type': 'bootcamp'}).data
         self.assertEqual(set(data), {'count', 'next', 'previous', 'results'})
@@ -321,13 +332,23 @@ class BootcampTests(TestCase):
         self.assertEqual(self.client.delete(self.url(f'resources/{ids[0]}/', second)).status_code, 404)
         self.assertEqual(self.client.delete(url).status_code, 204)
 
-    def test_resource_authoring_admin_only(self):
-        resource = BootcampResource.objects.create(course=self.course, title='Guide', file_format='pdf', file_url='https://example.com/a')
-        for user in [self.student, self.lead, self.coach]:
+    def test_resource_authoring_owner_roster_and_admin(self):
+        """The instructor who builds the course attaches its files.
+
+        This used to be admin-only, which is why "add a resource" was impossible
+        from the builder: the owner got `ADMIN_ONLY` on their own course.
+        """
+        resource = CourseResource.objects.create(course=self.course, title='Guide', file_format='pdf', file_url='https://example.com/a')
+        for user in [self.lead, self.coach]:
             self.client.force_authenticate(user)
-            self.error(self.client.post(self.url('resources/'), {}, format='json'), 'ADMIN_ONLY', 403)
-            self.error(self.client.patch(self.url(f'resources/{resource.pk}/'), {'title': 'Bad'}, format='json'), 'ADMIN_ONLY', 403)
-            self.error(self.client.delete(self.url(f'resources/{resource.pk}/')), 'ADMIN_ONLY', 403)
+            response = self.client.post(self.url('resources/'), {'title': 'New', 'file_format': 'pdf', 'file_url': 'https://example.com/b'}, format='json')
+            self.assertEqual(response.status_code, 201, response.data)
+            self.assertEqual(self.client.patch(self.url(f'resources/{resource.pk}/'), {'title': 'Bad'}, format='json').status_code, 200)
+            self.assertEqual(self.client.delete(self.url(f'resources/{response.data["id"]}/')).status_code, 204)
+        self.client.force_authenticate(self.student)
+        self.enroll('active')
+        self.error(self.client.post(self.url('resources/'), {'title': 'Mine', 'file_format': 'pdf', 'file_url': 'https://example.com/c'}, format='json'), 'NOT_COURSE_OWNER', 403)
+        self.error(self.client.delete(self.url(f'resources/{resource.pk}/')), 'NOT_COURSE_OWNER', 403)
 
     def test_discussion_read_and_post_access(self):
         self.discussion()
@@ -489,7 +510,7 @@ class BootcampTests(TestCase):
     def test_seed_idempotent_counts_and_progress(self):
         self.student.email = 'student@skillsikka.com'; self.student.save(); self.course.delete()
         out = StringIO(); call_command('seed_bootcamps', stdout=out)
-        models = [Course, BootcampProfile, CourseInstructor, Lesson, BootcampResource, CourseDiscussion, DiscussionLike, Enrollment, LessonProgress]
+        models = [Course, BootcampProfile, CourseInstructor, Lesson, CourseResource, CourseDiscussion, DiscussionLike, Enrollment, LessonProgress]
         first = [model.objects.count() for model in models]
         call_command('seed_bootcamps', stdout=out)
         self.assertEqual(first, [model.objects.count() for model in models])
@@ -590,7 +611,7 @@ class BootcampTests(TestCase):
         from drf_spectacular.generators import SchemaGenerator
         with redirect_stderr(StringIO()): schema = SchemaGenerator().get_schema(public=True)
         components = schema['components']['schemas']
-        self.assertTrue({'BootcampCard', 'BootcampDetail', 'BootcampProfile', 'CourseDiscussion', 'BootcampResource'} <= set(components))
+        self.assertTrue({'BootcampCard', 'BootcampDetail', 'BootcampProfile', 'CourseDiscussion', 'CourseResource'} <= set(components))
         self.assertTrue(components['Course']['properties']['lead_instructor_id']['writeOnly'])
         self.assertTrue({'day_number', 'is_completed'} <= set(components['Lesson']['properties']))
         self.assertIn('bootcamps', components['HomeResponse']['properties'])

@@ -1158,9 +1158,14 @@ class CourseSerializer(serializers.ModelSerializer):
 			if profile:
 				data.update(BootcampProfileSerializer(profile).data)
 			data['instructors'] = CourseInstructorDisplaySerializer(instance.instructors.all(), many=True, context=self.context).data
-			for key in ['resources_count', 'discussions_count']:
-				if hasattr(instance, key):
-					data[key] = getattr(instance, key)
+		# **Every course type, not only a bootcamp.** Resources and discussions
+		# are no longer bootcamp-only, so the player's `N support files` row and
+		# the Q&A tab need these counts on a skill course too. `hasattr` is the
+		# guard: the detail queryset annotates them via `with_bootcamp_data`,
+		# list querysets do not, and an absent annotation must not print `None`.
+		for key in ['resources_count', 'discussions_count']:
+			if hasattr(instance, key):
+				data[key] = getattr(instance, key)
 		# `thumbnail_url` holds either an outside URL or a storage name produced
 		# by `POST /courses/{id}/assets/` (the same convention `profile_photo_url`
 		# has always used). Resolving it here keeps the stored value independent

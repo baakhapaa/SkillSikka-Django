@@ -1,4 +1,4 @@
-"""Course subresources: bootcamp-only ones (resources) and course-wide ones (discussions)."""
+"""Course subresources: resources (optionally per lesson) and discussions."""
 from django.db import transaction
 from django.db.models import Count, Exists, OuterRef, Prefetch, Q
 from rest_framework import generics, serializers
@@ -8,29 +8,18 @@ from rest_framework.exceptions import PermissionDenied
 from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiParameter
 from .authentication import EmailVerifiedJWTAuthentication
 from .api_views import _is_admin, _is_instructor
-from .course_access import CourseAPIError, require_bootcamp_admin, require_course_access
+from .course_access import CourseAPIError, is_course_manager, require_course_access
 from .course_pagination import CoursePagination
-from .models import Course, BootcampResource, CourseDiscussion, DiscussionLike
-
-
-def bootcamp_for(request, course_id, *, write=False, access=False):
-    if write:
-        require_bootcamp_admin(request.user)
-    course = Course.objects.filter(pk=course_id, course_type='bootcamp').first()
-    if course is None:
-        raise CourseAPIError('COURSE_NOT_FOUND', 'Bootcamp not found.', 404)
-    if not _is_admin(request.user) and not course.is_published:
-        raise CourseAPIError('COURSE_NOT_PUBLISHED', 'This course is not published.', 403)
-    if access and not (_is_admin(request.user) or _is_instructor(request.user)):
-        require_course_access(request.user, course, managers=False)
-    return course
+from .models import Course, CourseResource, CourseDiscussion, DiscussionLike
 
 
 def course_for(request, course_id, *, access=False):
-    """Any course, for endpoints that are not bootcamp-specific.
+    """Any course, for the subresource endpoints.
 
     **Reading is open to any authenticated user** on a published course — the
     player's Q&A tab has to render for a preview watcher who has not enrolled.
+    The resources endpoint asks for `access=True` on top of this, because a file
+    is the course's material rather than a public conversation.
     **Writing requires access**: the course's owner, anyone on its instructor
     roster, an administrator, or whatever `require_course_access` grants — an
     active/completed enrollment for a skill or bootcamp course, grade
@@ -54,11 +43,26 @@ def course_for(request, course_id, *, access=False):
     return course
 
 
-class BootcampResourceSerializer(serializers.ModelSerializer):
+class CourseResourceSerializer(serializers.ModelSerializer):
+    lesson_title = serializers.CharField(source='lesson.title', read_only=True, default=None)
+
     class Meta:
-        model = BootcampResource
-        fields = ['id', 'course', 'section', 'title', 'file_format', 'file_url', 'file_size_bytes', 'order', 'created_at']
+        model = CourseResource
+        fields = ['id', 'course', 'lesson', 'lesson_title', 'section', 'title', 'file_format', 'file_url', 'file_size_bytes', 'order', 'created_at']
         read_only_fields = ['id', 'course', 'created_at']
+
+    def validate(self, attrs):
+        """A resource may not point at a lesson belonging to another course.
+
+        `Model.clean()` says the same thing, but DRF never calls `full_clean`,
+        so without this the API would happily publish one course's files under
+        another course's tab and only the shell would complain.
+        """
+        lesson = attrs.get('lesson')
+        course_id = self.context['view'].kwargs.get('course_id')
+        if lesson is not None and course_id and lesson.course_id and lesson.course_id != int(course_id):
+            raise serializers.ValidationError({'lesson': 'That lesson belongs to a different course.'})
+        return attrs
 
 
 class CourseEndpointMixin:
@@ -66,34 +70,59 @@ class CourseEndpointMixin:
     permission_classes = [IsAuthenticated]
 
 
+def require_course_manager(user, course):
+    """Who may change a course's subresources: admin, owner, or roster instructor.
+
+    `course_for(access=True)` is deliberately *not* enough here — it also passes
+    an enrolled student, which is right for reading and for posting a comment,
+    and wrong for attaching or deleting a file.
+
+    `is_course_manager` covers the admin and the owner; the roster half is added
+    here because a bootcamp's `coach` teaches the course without owning it.
+    """
+    if is_course_manager(user, course) or course.instructors.filter(instructor_id=user.pk).exists():
+        return
+    raise CourseAPIError('NOT_COURSE_OWNER', 'Only the course owner or an administrator can change its resources.', 403)
+
+
 @extend_schema_view(
-    get=extend_schema(description='Bootcamp resources. Active/completed enrollment required for students; administrators and authenticated instructors may read.'),
-    post=extend_schema(description='Admin only. ADMIN_ONLY (403) for non-admin authors. URLs only; no binary upload.'))
-class BootcampResourceListAPIView(CourseEndpointMixin, generics.ListCreateAPIView):
-    serializer_class = BootcampResourceSerializer
+    get=extend_schema(description='Course resources, optionally per lesson. Active/completed enrollment required for students; administrators, the owner and roster instructors may read.'),
+    post=extend_schema(description='Course owner or administrator. URLs only; upload the file through POST /courses/{id}/assets/ with kind="resource" first.'))
+class CourseResourceListAPIView(CourseEndpointMixin, generics.ListCreateAPIView):
+    serializer_class = CourseResourceSerializer
     pagination_class = None
 
     def get_queryset(self):
-        course = bootcamp_for(self.request, self.kwargs['course_id'], write=self.request.method != 'GET', access=True)
-        return BootcampResource.objects.filter(course=course)
+        course = course_for(self.request, self.kwargs['course_id'], access=True)
+        queryset = CourseResource.objects.filter(course=course).select_related('lesson')
+        # `?lesson=<id>` is how the player asks for one lesson's files without
+        # pulling the whole pack; the tab also filters locally because it
+        # already holds the list.
+        lesson_id = self.request.query_params.get('lesson')
+        if lesson_id:
+            queryset = queryset.filter(lesson_id=lesson_id)
+        return queryset
 
     def perform_create(self, serializer):
-        serializer.save(course=bootcamp_for(self.request, self.kwargs['course_id'], write=True))
+        course = course_for(self.request, self.kwargs['course_id'])
+        require_course_manager(self.request.user, course)
+        serializer.save(course=course)
 
     def create(self, request, *args, **kwargs):
-        bootcamp_for(request, kwargs['course_id'], write=True)
+        require_course_manager(request.user, course_for(request, kwargs['course_id']))
         return super().create(request, *args, **kwargs)
 
 
-@extend_schema_view(patch=extend_schema(description='Admin only (ADMIN_ONLY).'), delete=extend_schema(description='Admin only (ADMIN_ONLY).'))
-class BootcampResourceDetailAPIView(CourseEndpointMixin, generics.UpdateAPIView, generics.DestroyAPIView):
-    serializer_class = BootcampResourceSerializer
+@extend_schema_view(patch=extend_schema(description='Course owner or administrator.'), delete=extend_schema(description='Course owner or administrator.'))
+class CourseResourceDetailAPIView(CourseEndpointMixin, generics.UpdateAPIView, generics.DestroyAPIView):
+    serializer_class = CourseResourceSerializer
     http_method_names = ['patch', 'delete', 'options']
     lookup_url_kwarg = 'resource_id'
 
     def get_queryset(self):
-        course = bootcamp_for(self.request, self.kwargs['course_id'], write=True)
-        return BootcampResource.objects.filter(course=course)
+        course = course_for(self.request, self.kwargs['course_id'])
+        require_course_manager(self.request.user, course)
+        return CourseResource.objects.filter(course=course)
 
 
 class DiscussionAuthorSerializer(serializers.Serializer):
@@ -237,9 +266,10 @@ class CourseDiscussionDetailAPIView(CourseEndpointMixin, generics.GenericAPIView
         return Response(status=204)
 
     def patch(self, request, course_id, discussion_id):
-        # Moderation is admin-only on every course type. `bootcamp_for(write=True)`
-        # used to answer `ADMIN_ONLY` here because the endpoint only served
-        # bootcamps; now the check has to be stated rather than inherited.
+        # Moderation is admin-only on every course type. The old
+        # `bootcamp_for(write=True)` answered `ADMIN_ONLY` here because the
+        # endpoint only served bootcamps; now the check is stated rather than
+        # inherited.
         if not _is_admin(request.user):
             raise CourseAPIError('ADMIN_ONLY', 'Only administrators can moderate discussions.', 403)
         course = course_for(request, course_id)

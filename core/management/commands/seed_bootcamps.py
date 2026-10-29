@@ -3,7 +3,7 @@ from datetime import date
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
-from core.models import (Course, BootcampProfile, CourseInstructor, Lesson, BootcampResource,
+from core.models import (Course, BootcampProfile, CourseInstructor, Lesson, CourseResource,
     CourseDiscussion, DiscussionLike, Enrollment, LessonProgress, User)
 
 
@@ -74,7 +74,7 @@ class Command(BaseCommand):
             formats = ['pdf', 'doc', 'xls', 'figma', 'svg', 'zip', 'docx', 'xlsx', 'link', 'other']
             for index in range(resource_count):
                 fmt = formats[index % len(formats)]
-                BootcampResource.objects.update_or_create(course=course, order=index + 1, defaults={
+                CourseResource.objects.update_or_create(course=course, order=index + 1, defaults={
                     'section': ['Workshop Guides', 'Practice Files', 'Project Toolkit'][index % 3],
                     'title': f'{["Digital safety checklist", "AI prompt workbook", "Project planning template", "Data practice sheet", "Design starter kit"][index % 5]} {index + 1}',
                     'file_format': fmt, 'file_url': f'https://example.com/bootcamp-demo/{venue.lower()}/resource-{index + 1}.{fmt}',
@@ -107,7 +107,7 @@ class Command(BaseCommand):
         for model, label, filters in [
             (Course, 'courses', {'pk__in': [c.pk for c in courses]}),
             (BootcampProfile, 'profiles', {'course__in': courses}), (CourseInstructor, 'roster', {'course__in': courses}),
-            (Lesson, 'lessons', {'course__in': courses}), (BootcampResource, 'resources', {'course__in': courses}),
+            (Lesson, 'lessons', {'course__in': courses}), (CourseResource, 'resources', {'course__in': courses}),
             (CourseDiscussion, 'top-level discussions', {'course__in': courses, 'parent': None}),
             (CourseDiscussion, 'replies', {'course__in': courses, 'parent__isnull': False}),
             (DiscussionLike, 'likes', {'discussion__course__in': courses}), (Enrollment, 'enrollments', {'course__in': courses}),

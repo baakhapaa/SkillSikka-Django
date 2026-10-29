@@ -1342,11 +1342,18 @@ class CourseAssetUploadAPIView(APIView):
 	Multipart fields:
 
 	* `file` — required.
-	* `kind` — `cover` or `lesson` (default `lesson`). It selects the size cap and
-	  the allowed content types; both are stored under `course-assets/<kind>/`.
+	* `kind` — `cover`, `lesson` or `resource` (default `lesson`). It selects
+	  the size cap and the allowed content types; all three are stored under
+	  `course-assets/<kind>/`.
 
 	Answers **201** with `{"url", "path", "kind"}`, where `url` is absolute and
-	ready to store in `Course.thumbnail_url` or `Lesson.content_url`.
+	ready to store in `Course.thumbnail_url`, `Lesson.content_url` or
+	`CourseResource.file_url`.
+
+	**A resource is a document, not a recording.** `kind=resource` exists because
+	a `.docx` template or a `.zip` starter pack is neither a cover nor a lesson
+	file, and the lesson list is a video/pdf/epub list on purpose — a 500 MB cap
+	on a spreadsheet is a mistake waiting to happen.
 	"""
 
 	authentication_classes = [
@@ -1360,6 +1367,7 @@ class CourseAssetUploadAPIView(APIView):
 	# are per kind because a 500 MB cover is a mistake, not a course.
 	COVER_MAX_BYTES = 8 * 1024 * 1024
 	LESSON_MAX_BYTES = 500 * 1024 * 1024
+	RESOURCE_MAX_BYTES = 25 * 1024 * 1024
 
 	COVER_TYPES = {'image/jpeg', 'image/png', 'image/webp', 'image/gif'}
 	LESSON_TYPES = {
@@ -1369,6 +1377,24 @@ class CourseAssetUploadAPIView(APIView):
 		'application/pdf',
 		'application/epub+zip',
 	}
+	# Documents and archives — what an instructor actually hands out. The
+	# `CourseResource.FORMAT_CHOICES` list is the same vocabulary seen from the
+	# other side, so a `.docx` a client may upload is a `.docx` a row may name.
+	RESOURCE_TYPES = {
+		'application/pdf',
+		'application/msword',
+		'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+		'application/vnd.ms-excel',
+		'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+		'application/vnd.ms-powerpoint',
+		'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+		'application/zip',
+		'application/x-zip-compressed',
+		'text/csv',
+		'image/png',
+		'image/jpeg',
+		'image/svg+xml',
+	}
 
 	def post(self, request, course_id):
 		try:
@@ -1376,9 +1402,14 @@ class CourseAssetUploadAPIView(APIView):
 		except Course.DoesNotExist:
 			raise CourseAPIError('COURSE_NOT_FOUND', 'Course not found.', 404)
 
+		# The owner, an administrator, or a roster instructor. The roster half
+		# matters now that `kind=resource` exists: a bootcamp's `coach` may add a
+		# resource row, and refusing them the upload would leave that row with no
+		# file behind it.
 		if not (
 			_is_admin(request.user)
 			or course.instructor_id == request.user.pk
+			or course.instructors.filter(instructor_id=request.user.pk).exists()
 		):
 			raise PermissionDenied(
 				'Only the course owner or administrator can upload files to '
@@ -1386,9 +1417,9 @@ class CourseAssetUploadAPIView(APIView):
 			)
 
 		kind = (request.data.get('kind') or 'lesson').strip().lower()
-		if kind not in {'cover', 'lesson'}:
+		if kind not in {'cover', 'lesson', 'resource'}:
 			raise ValidationError({
-				'kind': 'Must be "cover" or "lesson".'
+				'kind': 'Must be "cover", "lesson" or "resource".'
 			})
 
 		uploaded = request.FILES.get('file')
@@ -1397,6 +1428,8 @@ class CourseAssetUploadAPIView(APIView):
 
 		if kind == 'cover':
 			allowed, limit = self.COVER_TYPES, self.COVER_MAX_BYTES
+		elif kind == 'resource':
+			allowed, limit = self.RESOURCE_TYPES, self.RESOURCE_MAX_BYTES
 		else:
 			allowed, limit = self.LESSON_TYPES, self.LESSON_MAX_BYTES
 

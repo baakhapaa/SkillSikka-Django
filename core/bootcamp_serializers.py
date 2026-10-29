@@ -2,7 +2,7 @@
 from django.db.models import Count, OuterRef, Prefetch, Subquery, prefetch_related_objects
 from django.db.models.functions import Coalesce
 from rest_framework import serializers
-from .models import BootcampProfile, CourseInstructor, BootcampResource, CourseDiscussion, User
+from .models import BootcampProfile, CourseInstructor, CourseResource, CourseDiscussion, User
 
 
 class BootcampProfileSerializer(serializers.ModelSerializer):
@@ -44,7 +44,7 @@ class CourseInstructorDisplaySerializer(serializers.ModelSerializer):
 def with_bootcamp_data(queryset, *, detail=False):
     queryset = queryset.select_related('bootcamp_profile')
     if detail:
-        resources = BootcampResource.objects.filter(course=OuterRef('pk')).order_by().values('course')
+        resources = CourseResource.objects.filter(course=OuterRef('pk')).order_by().values('course')
         discussions = CourseDiscussion.objects.filter(course=OuterRef('pk'), parent=None, is_hidden=False).order_by().values('course')
         queryset = queryset.annotate(
             resources_count=Coalesce(Subquery(resources.annotate(n=Count('pk')).values('n')), 0),

@@ -1,4 +1,4 @@
-from .bootcamp_views import (BootcampResourceListAPIView, BootcampResourceDetailAPIView, CourseDiscussionListAPIView, CourseDiscussionDetailAPIView, CourseDiscussionLikeAPIView)
+from .bootcamp_views import (CourseResourceListAPIView, CourseResourceDetailAPIView, CourseDiscussionListAPIView, CourseDiscussionDetailAPIView, CourseDiscussionLikeAPIView)
 from django.urls import path
 from .course_quiz_views import CourseQuizListAPIView
 from . import payment_views
@@ -142,8 +142,8 @@ from .api_views import (
 
 
 urlpatterns = [
-    path('courses/<int:course_id>/resources/', BootcampResourceListAPIView.as_view(), name='api-bootcamp-resources'),
-    path('courses/<int:course_id>/resources/<int:resource_id>/', BootcampResourceDetailAPIView.as_view(), name='api-bootcamp-resource-detail'),
+    path('courses/<int:course_id>/resources/', CourseResourceListAPIView.as_view(), name='api-course-resources'),
+    path('courses/<int:course_id>/resources/<int:resource_id>/', CourseResourceDetailAPIView.as_view(), name='api-course-resource-detail'),
     path('courses/<int:course_id>/discussions/', CourseDiscussionListAPIView.as_view(), name='api-course-discussions'),
     path('courses/<int:course_id>/discussions/<int:discussion_id>/', CourseDiscussionDetailAPIView.as_view(), name='api-course-discussion-detail'),
     path('courses/<int:course_id>/discussions/<int:discussion_id>/like/', CourseDiscussionLikeAPIView.as_view(), name='api-course-discussion-like'),
