@@ -1,11 +1,12 @@
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
+from django.db import transaction
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from .models import Course, Enrollment, Notification, Payment, Role, User
-from .payments import esewa_signature
+from .payments import esewa_signature, refresh_payment
 
 
 def gateway_response(body, status_code=200):
@@ -232,6 +233,73 @@ class PaymentFlowTests(TestCase):
 		self.assertEqual(response.json()['status'], 'successful')
 		self.enrollment.refresh_from_db()
 		self.assertEqual(self.enrollment.status, 'active')
+
+	# ---------- the lock ----------
+
+	@patch('core.payments.requests.get')
+	def test_the_gateway_is_asked_outside_the_transaction(self, get):
+		"""The status call must not hold a database transaction open.
+
+		It is an HTTP request with a 15-second timeout, and the client polls this
+		path every two seconds while the checkout sheet is open. Holding a row
+		lock across it makes each poll block the next, which on SQLite reaches
+		the student as `OperationalError: database is locked` in the middle of
+		paying — the return view is a plain browser page, so it renders as a
+		Django error page.
+
+		Counts nesting depth instead of patching `atomic` away, because
+		`select_for_update()` outside a transaction raises, and the real
+		transaction has to stay.
+		"""
+		self.initiate('esewa')
+		payment = Payment.objects.get()
+
+		depth = {'now': 0}
+		seen = {}
+		real_atomic = transaction.atomic
+
+		def spy(*args, **kwargs):
+			manager = real_atomic(*args, **kwargs)
+
+			class Recorder:
+				def __enter__(self):
+					depth['now'] += 1
+					return manager.__enter__()
+
+				def __exit__(self, *exc):
+					depth['now'] -= 1
+					return manager.__exit__(*exc)
+
+			return Recorder()
+
+		def answer(*args, **kwargs):
+			seen['depth'] = depth['now']
+			return gateway_response({'status': 'COMPLETE', 'total_amount': 1500.0})
+
+		get.side_effect = answer
+		with patch('core.payments.transaction.atomic', spy):
+			refresh_payment(payment.pk)
+
+		self.assertIn('depth', seen, 'the gateway was never asked')
+		self.assertEqual(
+			seen['depth'], 0,
+			'the gateway call is inside a transaction; it would hold the row '
+			'lock for as long as eSewa takes to answer',
+		)
+
+	@patch('core.payments.requests.get')
+	def test_a_settled_payment_is_not_asked_about_again(self, get):
+		self.initiate('esewa')
+		payment = Payment.objects.get()
+		get.return_value = gateway_response(
+			{'status': 'COMPLETE', 'total_amount': 1500.0, 'ref_id': 'R1'})
+		refresh_payment(payment.pk)
+		self.assertEqual(Payment.objects.get().status, 'successful')
+
+		get.reset_mock()
+		refresh_payment(payment.pk)
+		get.assert_not_called()
+		self.assertEqual(Notification.objects.filter(notification_type='payment').count(), 1)
 
 	def test_cannot_verify_someone_elses_payment(self):
 		self.initiate('esewa')

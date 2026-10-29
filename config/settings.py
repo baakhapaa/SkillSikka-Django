@@ -128,6 +128,19 @@ else:
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
             'NAME': BASE_DIR / 'db.sqlite3',
+            'OPTIONS': {
+                # SQLite serialises writers, and this app writes from several
+                # places at once by design: the checkout sheet polls a payment
+                # every two seconds while the gateway's return view is doing the
+                # same refresh. The 5-second default is short enough that the
+                # loser of that race raises `database is locked`, which the
+                # student sees as a Django error page in the middle of paying.
+                'timeout': 20,
+                # Take the write lock at BEGIN instead of at the first write.
+                # DEFERRED acquires a read lock first and upgrades later, and
+                # that upgrade is the case SQLite cannot resolve by waiting.
+                'transaction_mode': 'IMMEDIATE',
+            },
         }
     }
 

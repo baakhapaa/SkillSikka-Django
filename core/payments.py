@@ -183,18 +183,36 @@ def refresh_payment(payment_id, *, settle_missing=False):
 	course that stayed locked. Only the sweeper and an admin's recheck, which
 	look at payments old enough for "not found" to mean "never happened", may
 	settle it. Everything a client can trigger leaves it `initiated`.
+
+	**The gateway call is deliberately outside the transaction.** It is an HTTP
+	request with a 15-second timeout, and the client polls this path every two
+	seconds while the checkout sheet is open — so holding a row lock across it
+	means every poll blocks on the last one. On SQLite that surfaced as
+	`OperationalError: database is locked` on the *student's* browser, mid
+	payment. The shape is read → ask the gateway → lock → **re-check** → apply:
+	the second check is what keeps "apply once" true when two polls raced, and it
+	is the only guard that works on SQLite, where `select_for_update()` is a
+	no-op (the backend has no `SELECT … FOR UPDATE`).
 	"""
+	payment = Payment.objects.select_related('enrollment', 'course').get(pk=payment_id)
+	if payment.status != 'initiated':
+		return payment
+	if payment.provider == 'khalti' and not payment.gateway_token:
+		return payment
+
+	# Outside the transaction: up to `GATEWAY_TIMEOUT` seconds on the wire.
+	check = khalti_check if payment.provider == 'khalti' else esewa_check
+	new_status, gateway_transaction_id, body = check(payment)
+	if not settle_missing and body.get('status') == 'NOT_FOUND':
+		new_status = None
+
 	with transaction.atomic():
 		payment = Payment.objects.select_for_update().select_related('enrollment', 'course').get(pk=payment_id)
+		# A concurrent poll may have settled this while we were on the wire.
+		# Re-reading under the lock is what makes the write happen exactly once;
+		# the check before the gateway call is only an optimisation.
 		if payment.status != 'initiated':
 			return payment
-		if payment.provider == 'khalti' and not payment.gateway_token:
-			return payment
-
-		check = khalti_check if payment.provider == 'khalti' else esewa_check
-		new_status, gateway_transaction_id, body = check(payment)
-		if not settle_missing and body.get('status') == 'NOT_FOUND':
-			new_status = None
 
 		payment.gateway_response = {**payment.gateway_response, 'last_check': body}
 		updated = ['gateway_response']
