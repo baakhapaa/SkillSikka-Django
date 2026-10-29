@@ -6,7 +6,11 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0045_course_learning_outcomes_course_requirements_and_more'),
+        # `0046` is the bootcamp integration's migration, which landed on main
+        # while this branch was in flight. Depending on it rather than on `0045`
+        # keeps a single leaf: two migrations both numbered 0046 is a fork Django
+        # refuses to run.
+        ('core', '0046_lesson_day_number_alter_course_course_type_and_more'),
     ]
 
     operations = [
