@@ -150,6 +150,45 @@ class PaymentFlowTests(TestCase):
 		payment.refresh_from_db()
 		self.assertEqual(payment.status, 'cancelled')
 
+	# ---------- the deep link home ----------
+
+	@override_settings(PAYMENT_APP_RETURN_URL='skillsikka://payment')
+	@patch('core.payments.requests.get')
+	def test_esewa_return_hands_the_browser_to_the_app(self, get):
+		"""The custom scheme has to survive Django's redirect check.
+
+		`HttpResponseRedirect` trusts only http/https/ftp, so `redirect()` to
+		`skillsikka://…` raises `DisallowedRedirect` and the student gets a 400
+		in their browser *after* the money was taken. This branch is invisible
+		while `PAYMENT_APP_RETURN_URL` is empty, which is how it shipped broken.
+		"""
+		self.initiate('esewa')
+		payment = Payment.objects.get()
+		get.return_value = gateway_response(
+			{'status': 'COMPLETE', 'total_amount': 1500.0, 'ref_id': 'REF88'},
+		)
+
+		response = self.client.get(f'/api/v1/payments/esewa/return/{payment.transaction_reference}/')
+		self.assertEqual(response.status_code, 302)
+		location = response['Location']
+		self.assertTrue(location.startswith('skillsikka://payment?'), location)
+		self.assertIn(f'payment_id={payment.pk}', location)
+		self.assertIn('status=successful', location)
+
+	@override_settings(PAYMENT_APP_RETURN_URL='https://app.skillsikka.com/paid')
+	@patch('core.payments.requests.get')
+	def test_an_https_return_url_is_not_disturbed(self, get):
+		self.initiate('esewa')
+		payment = Payment.objects.get()
+		get.return_value = gateway_response({'status': 'COMPLETE', 'total_amount': 1500.0})
+
+		response = self.client.get(f'/api/v1/payments/esewa/return/{payment.transaction_reference}/')
+		self.assertEqual(response.status_code, 302)
+		self.assertTrue(
+			response['Location'].startswith('https://app.skillsikka.com/paid?'),
+			response['Location'],
+		)
+
 	# ---------- the old hole ----------
 
 	@patch('core.payments.requests.get')
