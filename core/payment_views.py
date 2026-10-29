@@ -1,8 +1,10 @@
 """Browser pages the payment gateways send the user through (no login: they
 are reached inside the gateway's flow, and only act on gateway-confirmed state)."""
+import logging
 from urllib.parse import urlencode
 
 from django.conf import settings
+from django.db import OperationalError
 from django.http import HttpResponseRedirect
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -10,6 +12,8 @@ from django.views.decorators.http import require_GET
 
 from .models import Payment
 from .payments import GatewayError, esewa_form, refresh_payment
+
+logger = logging.getLogger(__name__)
 
 
 class _AppRedirect(HttpResponseRedirect):
@@ -43,6 +47,14 @@ def _refresh_quietly(payment):
 		return refresh_payment(payment.pk)
 	except GatewayError:
 		# Stays "initiated"; the app can ask again via GET /payments/{id}/.
+		return payment
+	except OperationalError:
+		# **This view is a redirect, and its only job is to hand the browser
+		# back to the app.** A write collision — the app polls the same row every
+		# two seconds, so they do happen — must not turn the way back into a 500
+		# error page with the student's payment in flight. The row keeps its
+		# `initiated` status and the poll settles it moments later.
+		logger.warning('Payment %s could not be refreshed: database busy', payment.pk)
 		return payment
 
 

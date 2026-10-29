@@ -1,7 +1,7 @@
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
-from django.db import transaction
+from django.db import OperationalError, transaction
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
@@ -189,6 +189,24 @@ class PaymentFlowTests(TestCase):
 			response['Location'].startswith('https://app.skillsikka.com/paid?'),
 			response['Location'],
 		)
+
+	@override_settings(PAYMENT_APP_RETURN_URL='skillsikka://payment')
+	@patch('core.payment_views.refresh_payment')
+	def test_a_busy_database_still_sends_the_student_back(self, refresh):
+		"""A write collision must not become a 500 in the student's browser.
+
+		The return view is a redirect; failing it strands someone whose money may
+		already have moved. The row keeps its status and the app polls.
+		"""
+		self.initiate('esewa')
+		payment = Payment.objects.get()
+		refresh.side_effect = OperationalError('database is locked')
+
+		response = self.client.get(f'/api/v1/payments/esewa/return/{payment.transaction_reference}/')
+		self.assertEqual(response.status_code, 302)
+		self.assertIn('status=initiated', response['Location'])
+		payment.refresh_from_db()
+		self.assertEqual(payment.status, 'initiated')
 
 	# ---------- the old hole ----------
 
