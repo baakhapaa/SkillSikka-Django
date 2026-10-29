@@ -1,4 +1,4 @@
-"""Bootcamp-only Course subresources; Course remains the enrollment/payment owner."""
+"""Course subresources: bootcamp-only ones (resources) and course-wide ones (discussions)."""
 from django.db import transaction
 from django.db.models import Count, Exists, OuterRef, Prefetch, Q
 from rest_framework import generics, serializers
@@ -10,7 +10,7 @@ from .authentication import EmailVerifiedJWTAuthentication
 from .api_views import _is_admin, _is_instructor
 from .course_access import CourseAPIError, require_bootcamp_admin, require_course_access
 from .course_pagination import CoursePagination
-from .models import Course, BootcampResource, BootcampDiscussion, DiscussionLike
+from .models import Course, BootcampResource, CourseDiscussion, DiscussionLike
 
 
 def bootcamp_for(request, course_id, *, write=False, access=False):
@@ -26,6 +26,34 @@ def bootcamp_for(request, course_id, *, write=False, access=False):
     return course
 
 
+def course_for(request, course_id, *, access=False):
+    """Any course, for endpoints that are not bootcamp-specific.
+
+    **Reading is open to any authenticated user** on a published course — the
+    player's Q&A tab has to render for a preview watcher who has not enrolled.
+    **Writing requires access**: the course's owner, anyone on its instructor
+    roster, an administrator, or whatever `require_course_access` grants — an
+    active/completed enrollment for a skill or bootcamp course, grade
+    eligibility for an academic one. That also covers `pending_payment`, which
+    is deliberately not enough.
+
+    The roster matters: a bootcamp's `coach` is not its owner and is not
+    enrolled, so an owner-only check would mute every teaching assistant.
+    """
+    course = Course.objects.filter(pk=course_id).first()
+    if course is None:
+        raise CourseAPIError('COURSE_NOT_FOUND', 'Course not found.', 404)
+    if not _is_admin(request.user) and not course.is_published:
+        raise CourseAPIError('COURSE_NOT_PUBLISHED', 'This course is not published.', 403)
+    if access and not (
+        _is_admin(request.user)
+        or course.instructor_id == request.user.pk
+        or course.instructors.filter(instructor_id=request.user.pk).exists()
+    ):
+        require_course_access(request.user, course, managers=False)
+    return course
+
+
 class BootcampResourceSerializer(serializers.ModelSerializer):
     class Meta:
         model = BootcampResource
@@ -33,7 +61,7 @@ class BootcampResourceSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'course', 'created_at']
 
 
-class BootcampEndpointMixin:
+class CourseEndpointMixin:
     authentication_classes = [EmailVerifiedJWTAuthentication]
     permission_classes = [IsAuthenticated]
 
@@ -41,7 +69,7 @@ class BootcampEndpointMixin:
 @extend_schema_view(
     get=extend_schema(description='Bootcamp resources. Active/completed enrollment required for students; administrators and authenticated instructors may read.'),
     post=extend_schema(description='Admin only. ADMIN_ONLY (403) for non-admin authors. URLs only; no binary upload.'))
-class BootcampResourceListAPIView(BootcampEndpointMixin, generics.ListCreateAPIView):
+class BootcampResourceListAPIView(CourseEndpointMixin, generics.ListCreateAPIView):
     serializer_class = BootcampResourceSerializer
     pagination_class = None
 
@@ -58,7 +86,7 @@ class BootcampResourceListAPIView(BootcampEndpointMixin, generics.ListCreateAPIV
 
 
 @extend_schema_view(patch=extend_schema(description='Admin only (ADMIN_ONLY).'), delete=extend_schema(description='Admin only (ADMIN_ONLY).'))
-class BootcampResourceDetailAPIView(BootcampEndpointMixin, generics.UpdateAPIView, generics.DestroyAPIView):
+class BootcampResourceDetailAPIView(CourseEndpointMixin, generics.UpdateAPIView, generics.DestroyAPIView):
     serializer_class = BootcampResourceSerializer
     http_method_names = ['patch', 'delete', 'options']
     lookup_url_kwarg = 'resource_id'
@@ -102,12 +130,12 @@ class DiscussionReplySerializer(serializers.ModelSerializer):
         return obj.author_id == self.context['request'].user.pk
 
     class Meta:
-        model = BootcampDiscussion
+        model = CourseDiscussion
         fields = ['id', 'course', 'parent', 'author', 'body', 'likes_count', 'is_liked', 'is_mine', 'is_hidden', 'created_at']
         read_only_fields = fields
 
 
-class BootcampDiscussionSerializer(DiscussionReplySerializer):
+class CourseDiscussionSerializer(DiscussionReplySerializer):
     replies_count = serializers.IntegerField(read_only=True)
     replies = DiscussionReplySerializer(source='inline_replies', many=True, read_only=True)
 
@@ -144,7 +172,7 @@ class DiscussionLikeResponseSerializer(serializers.Serializer):
 
 
 def discussion_rows(request, course):
-    rows = BootcampDiscussion.objects.filter(course=course).select_related('author__role', 'author__student_profile__grade')
+    rows = CourseDiscussion.objects.filter(course=course).select_related('author__role', 'author__student_profile__grade')
     if not _is_admin(request.user):
         rows = rows.filter(is_hidden=False).filter(Q(parent=None) | Q(parent__is_hidden=False))
     return rows.annotate(likes_count=Count('likes', distinct=True), is_liked=Exists(
@@ -166,14 +194,14 @@ def find_discussion(request, course, discussion_id):
 
 
 @extend_schema_view(
-    get=extend_schema(responses=BootcampDiscussionSerializer(many=True), parameters=[OpenApiParameter('ordering', str, enum=['-created_at', 'created_at', '-likes_count'])], description='Authenticated read of published bootcamp discussions; enrollment is not required. Inline replies capped at 50; replies_count counts visible replies. Hidden threads excluded except for administrators.'),
-    post=extend_schema(request=DiscussionCreateSerializer, responses={201: BootcampDiscussionSerializer}, description='Active/completed students, instructors or admins may participate. Errors: BODY_REQUIRED, BODY_TOO_LONG, DISCUSSION_NOT_FOUND, NOT_ENROLLED. One reply level only.'))
-class BootcampDiscussionListAPIView(BootcampEndpointMixin, generics.ListCreateAPIView):
-    serializer_class = BootcampDiscussionSerializer
+    get=extend_schema(responses=CourseDiscussionSerializer(many=True), parameters=[OpenApiParameter('ordering', str, enum=['-created_at', 'created_at', '-likes_count'])], description='Authenticated read of a published course discussion; enrollment is not required. Inline replies capped at 50; replies_count counts visible replies. Hidden threads excluded except for administrators.'),
+    post=extend_schema(request=DiscussionCreateSerializer, responses={201: CourseDiscussionSerializer}, description='Active/completed students, the course instructor or an admin may participate. Errors: BODY_REQUIRED, BODY_TOO_LONG, DISCUSSION_NOT_FOUND, NOT_ENROLLED, COURSE_NOT_PUBLISHED. One reply level only.'))
+class CourseDiscussionListAPIView(CourseEndpointMixin, generics.ListCreateAPIView):
+    serializer_class = CourseDiscussionSerializer
     pagination_class = CoursePagination
 
     def get_queryset(self):
-        course = bootcamp_for(self.request, self.kwargs['course_id'])
+        course = course_for(self.request, self.kwargs['course_id'])
         ordering = self.request.query_params.get('ordering', '-created_at')
         if ordering not in ['-created_at', 'created_at', '-likes_count']:
             ordering = '-created_at'
@@ -181,27 +209,27 @@ class BootcampDiscussionListAPIView(BootcampEndpointMixin, generics.ListCreateAP
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
-        course = bootcamp_for(request, kwargs['course_id'], access=True)
+        course = course_for(request, kwargs['course_id'], access=True)
         serializer = DiscussionCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         parent_id = serializer.validated_data.get('parent')
         parent = find_discussion(request, course, parent_id) if parent_id else None
         if parent and parent.parent_id:
             raise CourseAPIError('DISCUSSION_NOT_FOUND', 'Replies must reference a top-level discussion.', 400)
-        discussion = BootcampDiscussion.objects.create(course=course, author=request.user,
+        discussion = CourseDiscussion.objects.create(course=course, author=request.user,
             parent=parent, body=serializer.validated_data['body'])
         row = discussion_with_replies(request, course).get(pk=discussion.pk)
         return Response(self.get_serializer(row).data, status=201)
 
 
 @extend_schema_view(
-    patch=extend_schema(request=DiscussionModerationSerializer, responses=BootcampDiscussionSerializer, description='Admin-only hide/unhide; ADMIN_ONLY (403). Body editing is unsupported.'),
+    patch=extend_schema(request=DiscussionModerationSerializer, responses=CourseDiscussionSerializer, description='Admin-only hide/unhide; ADMIN_ONLY (403). Body editing is unsupported.'),
     delete=extend_schema(responses={204: None}, description='Author or admin may delete. Deleting a parent cascades its replies and all associated likes.'))
-class BootcampDiscussionDetailAPIView(BootcampEndpointMixin, generics.GenericAPIView):
-    serializer_class = BootcampDiscussionSerializer
+class CourseDiscussionDetailAPIView(CourseEndpointMixin, generics.GenericAPIView):
+    serializer_class = CourseDiscussionSerializer
 
     def delete(self, request, course_id, discussion_id):
-        course = bootcamp_for(request, course_id)
+        course = course_for(request, course_id)
         discussion = find_discussion(request, course, discussion_id)
         if discussion.author_id != request.user.pk and not _is_admin(request.user):
             raise PermissionDenied('Only the author or administrator may delete this discussion.')
@@ -209,7 +237,12 @@ class BootcampDiscussionDetailAPIView(BootcampEndpointMixin, generics.GenericAPI
         return Response(status=204)
 
     def patch(self, request, course_id, discussion_id):
-        course = bootcamp_for(request, course_id, write=True)
+        # Moderation is admin-only on every course type. `bootcamp_for(write=True)`
+        # used to answer `ADMIN_ONLY` here because the endpoint only served
+        # bootcamps; now the check has to be stated rather than inherited.
+        if not _is_admin(request.user):
+            raise CourseAPIError('ADMIN_ONLY', 'Only administrators can moderate discussions.', 403)
+        course = course_for(request, course_id)
         discussion = find_discussion(request, course, discussion_id)
         serializer = DiscussionModerationSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -222,7 +255,7 @@ class BootcampDiscussionDetailAPIView(BootcampEndpointMixin, generics.GenericAPI
 @extend_schema_view(
     post=extend_schema(request=None, responses=DiscussionLikeResponseSerializer, description='Idempotently like a discussion. Participation access required. Wrong-course/hidden rows: DISCUSSION_NOT_FOUND.'),
     delete=extend_schema(request=None, responses=DiscussionLikeResponseSerializer, description='Idempotently remove own like.'))
-class BootcampDiscussionLikeAPIView(BootcampEndpointMixin, generics.GenericAPIView):
+class CourseDiscussionLikeAPIView(CourseEndpointMixin, generics.GenericAPIView):
     serializer_class = DiscussionLikeResponseSerializer
 
     @transaction.atomic
@@ -234,10 +267,10 @@ class BootcampDiscussionLikeAPIView(BootcampEndpointMixin, generics.GenericAPIVi
         return self.change(request, course_id, discussion_id, False)
 
     def change(self, request, course_id, discussion_id, liked):
-        course = bootcamp_for(request, course_id, access=True)
+        course = course_for(request, course_id, access=True)
         discussion = find_discussion(request, course, discussion_id)
         # Serialize mutations on the discussion where the database supports row locks.
-        BootcampDiscussion.objects.select_for_update().get(pk=discussion.pk)
+        CourseDiscussion.objects.select_for_update().get(pk=discussion.pk)
         if liked:
             DiscussionLike.objects.get_or_create(discussion=discussion, user=request.user)
         else:

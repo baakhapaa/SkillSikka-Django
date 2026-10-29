@@ -4,7 +4,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 from core.models import (Course, BootcampProfile, CourseInstructor, Lesson, BootcampResource,
-    BootcampDiscussion, DiscussionLike, Enrollment, LessonProgress, User)
+    CourseDiscussion, DiscussionLike, Enrollment, LessonProgress, User)
 
 
 class Command(BaseCommand):
@@ -84,11 +84,11 @@ class Command(BaseCommand):
                 'How can we protect personal data?', 'What makes a useful prompt?', 'Share feedback on the team activity.', 'What will you practice next?']
             threads = []
             for index in range(discussion_count):
-                thread, _ = BootcampDiscussion.objects.get_or_create(course=course, parent=None, body=prompts[index],
+                thread, _ = CourseDiscussion.objects.get_or_create(course=course, parent=None, body=prompts[index],
                     defaults={'author': authors[index % len(authors)]})
                 threads.append(thread)
             for index in range(2):
-                BootcampDiscussion.objects.get_or_create(course=course, parent=threads[index], body='I will try this in the next practice session.',
+                CourseDiscussion.objects.get_or_create(course=course, parent=threads[index], body='I will try this in the next practice session.',
                     defaults={'author': teachers[index % len(teachers)]})
             DiscussionLike.objects.get_or_create(discussion=threads[0], user=teachers[0])
             courses.append(course)
@@ -108,8 +108,8 @@ class Command(BaseCommand):
             (Course, 'courses', {'pk__in': [c.pk for c in courses]}),
             (BootcampProfile, 'profiles', {'course__in': courses}), (CourseInstructor, 'roster', {'course__in': courses}),
             (Lesson, 'lessons', {'course__in': courses}), (BootcampResource, 'resources', {'course__in': courses}),
-            (BootcampDiscussion, 'top-level discussions', {'course__in': courses, 'parent': None}),
-            (BootcampDiscussion, 'replies', {'course__in': courses, 'parent__isnull': False}),
+            (CourseDiscussion, 'top-level discussions', {'course__in': courses, 'parent': None}),
+            (CourseDiscussion, 'replies', {'course__in': courses, 'parent__isnull': False}),
             (DiscussionLike, 'likes', {'discussion__course__in': courses}), (Enrollment, 'enrollments', {'course__in': courses}),
             (LessonProgress, 'progress', {'lesson__course__in': courses}),
         ]:

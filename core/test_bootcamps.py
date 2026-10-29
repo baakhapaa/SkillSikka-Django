@@ -7,7 +7,7 @@ from django.db import connection, IntegrityError, transaction
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APIClient
-from core.models import (Course, BootcampProfile, CourseInstructor, BootcampResource, BootcampDiscussion,
+from core.models import (Course, BootcampProfile, CourseInstructor, BootcampResource, CourseDiscussion,
     DiscussionLike, Enrollment, Lesson, LessonProgress, Role, User, StudentProfile, Grade, Payment, Certificate)
 
 
@@ -57,7 +57,7 @@ class BootcampTests(TestCase):
         self.assertEqual(response.data['code'], code)
 
     def discussion(self, **kwargs):
-        return BootcampDiscussion.objects.create(course=kwargs.pop('course', self.course), author=kwargs.pop('author', self.student), body=kwargs.pop('body', 'How can we check AI answers?'), **kwargs)
+        return CourseDiscussion.objects.create(course=kwargs.pop('course', self.course), author=kwargs.pop('author', self.student), body=kwargs.pop('body', 'How can we check AI answers?'), **kwargs)
 
     def test_create_admin_owner_and_roster(self):
         response = self.post_course()
@@ -131,11 +131,23 @@ class BootcampTests(TestCase):
         profile.course = Course.objects.create(title='Skill', instructor=self.lead, course_type='skill')
         with self.assertRaises(ValidationError): profile.full_clean()
 
-    def test_model_subresources_bootcamp_only(self):
+    def test_model_resources_are_bootcamp_only(self):
         skill = Course.objects.create(title='Skill', instructor=self.lead, course_type='skill')
-        for obj in [BootcampResource(course=skill, title='Guide', file_format='pdf', file_url='https://example.com/a.pdf'),
-                    BootcampDiscussion(course=skill, author=self.student, body='Hello')]:
-            with self.assertRaises(ValidationError): obj.full_clean()
+        obj = BootcampResource(course=skill, title='Guide', file_format='pdf', file_url='https://example.com/a.pdf')
+        with self.assertRaises(ValidationError):
+            obj.full_clean()
+
+    def test_model_discussions_accept_any_course_type(self):
+        """The Q&A tab exists on every player, so the model must not refuse one.
+
+        This used to be asserted the other way round, together with resources.
+        Resources are still bootcamp-only; discussions are not.
+        """
+        skill = Course.objects.create(title='Skill', instructor=self.lead, course_type='skill')
+        obj = CourseDiscussion(course=skill, author=self.student, body='Hello')
+        obj.full_clean()  # must not raise
+        obj.save()
+        self.assertEqual(obj.course_id, skill.pk)
 
     def test_patch_without_resending_lead(self):
         self.client.force_authenticate(self.admin)
@@ -418,7 +430,7 @@ class BootcampTests(TestCase):
             self.assertEqual(self.client.delete(self.url(f'discussions/{thread.pk}/')).status_code, 403)
         self.client.force_authenticate(self.student)
         self.assertEqual(self.client.delete(self.url(f'discussions/{thread.pk}/')).status_code, 204)
-        self.assertFalse(BootcampDiscussion.objects.filter(pk=reply.pk).exists()); self.assertEqual(DiscussionLike.objects.count(), 0)
+        self.assertFalse(CourseDiscussion.objects.filter(pk=reply.pk).exists()); self.assertEqual(DiscussionLike.objects.count(), 0)
         own = self.discussion(author=self.coach)
         self.client.force_authenticate(self.coach)
         self.assertEqual(self.client.delete(self.url(f'discussions/{own.pk}/')).status_code, 204)
@@ -477,7 +489,7 @@ class BootcampTests(TestCase):
     def test_seed_idempotent_counts_and_progress(self):
         self.student.email = 'student@skillsikka.com'; self.student.save(); self.course.delete()
         out = StringIO(); call_command('seed_bootcamps', stdout=out)
-        models = [Course, BootcampProfile, CourseInstructor, Lesson, BootcampResource, BootcampDiscussion, DiscussionLike, Enrollment, LessonProgress]
+        models = [Course, BootcampProfile, CourseInstructor, Lesson, BootcampResource, CourseDiscussion, DiscussionLike, Enrollment, LessonProgress]
         first = [model.objects.count() for model in models]
         call_command('seed_bootcamps', stdout=out)
         self.assertEqual(first, [model.objects.count() for model in models])
@@ -533,7 +545,7 @@ class BootcampTests(TestCase):
         thread = self.discussion(author=self.coach)
         reply = self.discussion(parent=thread)
         self.assertEqual(self.client.delete(self.url(f'discussions/{reply.pk}/')).status_code, 204)
-        self.assertTrue(BootcampDiscussion.objects.filter(pk=thread.pk).exists())
+        self.assertTrue(CourseDiscussion.objects.filter(pk=thread.pk).exists())
 
     def test_draft_discussions_are_private(self):
         self.course.is_published = False; self.course.save()
@@ -578,7 +590,7 @@ class BootcampTests(TestCase):
         from drf_spectacular.generators import SchemaGenerator
         with redirect_stderr(StringIO()): schema = SchemaGenerator().get_schema(public=True)
         components = schema['components']['schemas']
-        self.assertTrue({'BootcampCard', 'BootcampDetail', 'BootcampProfile', 'BootcampDiscussion', 'BootcampResource'} <= set(components))
+        self.assertTrue({'BootcampCard', 'BootcampDetail', 'BootcampProfile', 'CourseDiscussion', 'BootcampResource'} <= set(components))
         self.assertTrue(components['Course']['properties']['lead_instructor_id']['writeOnly'])
         self.assertTrue({'day_number', 'is_completed'} <= set(components['Lesson']['properties']))
         self.assertIn('bootcamps', components['HomeResponse']['properties'])

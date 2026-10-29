@@ -1775,9 +1775,21 @@ class BootcampResource(models.Model):
             raise ValidationError({'course': 'Resources require a bootcamp course.'})
 
 
-class BootcampDiscussion(models.Model):
-    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='bootcamp_discussions')
-    author = models.ForeignKey(User, on_delete=models.CASCADE, related_name='bootcamp_discussions')
+class CourseDiscussion(models.Model):
+    """One Q&A message on a course's player tab.
+
+    **Any published course, not only a bootcamp.** This started as a bootcamp
+    subresource and `clean()` refused every other `course_type`; the player's Q&A
+    tab exists on skill and academic courses too, so the restriction only meant
+    that endpoint 404'd for every course the builder can create.
+
+    Threads are **one level deep**: a row with `parent` set is a reply, and a
+    reply may not itself be answered. That is enforced here and re-checked by
+    `DiscussionCreateSerializer` so the API answers 400 instead of 500.
+    """
+
+    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='course_discussions')
+    author = models.ForeignKey(User, on_delete=models.CASCADE, related_name='course_discussions')
     parent = models.ForeignKey('self', null=True, blank=True, on_delete=models.CASCADE, related_name='replies')
     body = models.TextField(max_length=2000)
     is_hidden = models.BooleanField(default=False)
@@ -1785,20 +1797,18 @@ class BootcampDiscussion(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = 'bootcamp_discussions'
+        db_table = 'course_discussions'
         ordering = ['-created_at', '-pk']
 
     def clean(self):
         from django.core.exceptions import ValidationError
-        if self.course_id and self.course.course_type != 'bootcamp':
-            raise ValidationError({'course': 'Discussions require a bootcamp course.'})
         if self.parent_id and (self.parent.course_id != self.course_id or self.parent.parent_id):
             raise ValidationError({'parent': 'Replies must reference a top-level discussion in the same course.'})
 
 
 class DiscussionLike(models.Model):
-    discussion = models.ForeignKey(BootcampDiscussion, on_delete=models.CASCADE, related_name='likes')
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='bootcamp_discussion_likes')
+    discussion = models.ForeignKey(CourseDiscussion, on_delete=models.CASCADE, related_name='likes')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='course_discussion_likes')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
