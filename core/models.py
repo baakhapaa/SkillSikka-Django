@@ -563,6 +563,11 @@ class Course(models.Model):
 		('skill', 'Skill Development'),
 		('bootcamp', 'Bootcamp'),
 	)
+	LEVEL_CHOICES = (
+		('beginner', 'Beginner'),
+		('intermediate', 'Intermediate'),
+		('advanced', 'Advanced'),
+	)
 
 	title = models.CharField(max_length=200)
 	description = models.TextField(blank=True)
@@ -570,6 +575,13 @@ class Course(models.Model):
 	learning_outcomes = models.JSONField(default=list, blank=True)
 	requirements = models.JSONField(default=list, blank=True)
 	course_type = models.CharField(max_length=10, choices=COURSE_TYPE_CHOICES)
+	# Optional: an instructor who does not pick one gets no level row on the
+	# student card rather than a wrong one.
+	level = models.CharField(max_length=20, choices=LEVEL_CHOICES, blank=True, default='')
+	# The language the lessons are taught in. One value, because the client
+	# renders it as a single line; a course taught in several languages would
+	# need an M2M, and no screen asks for that yet.
+	language = models.CharField(max_length=50, blank=True, default='English')
 	skill_category = models.ForeignKey(LearningInterest, on_delete=models.SET_NULL, null=True, blank=True, related_name='courses')
 	subject = models.ForeignKey(Subject, on_delete=models.PROTECT, null=True, blank=True, related_name='courses')
 	grade = models.ForeignKey(Grade, on_delete=models.PROTECT, null=True, blank=True, related_name='courses')

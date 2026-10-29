@@ -45,6 +45,7 @@ from .api_views import (
 	CompleteLessonAPIView,
 	CompleteStudentProfileAPIView,
 	CourseDetailAPIView,
+	CourseAssetUploadAPIView,
 	CourseReviewListCreateAPIView,
 	MyCourseReviewAPIView,
 	CourseListCreateAPIView,
@@ -54,6 +55,7 @@ from .api_views import (
 	EBookListCreateAPIView,
 	EBookDetailAPIView,
 	EnrollCourseAPIView,
+	CourseEnrollmentAPIView,
 	ForgotPasswordAPIView,
 	GradeListAPIView,
 	InitiatePaymentAPIView,
@@ -379,6 +381,14 @@ urlpatterns = [
 		name='api-course-detail'
 	),
 
+	# Cover image and lesson files. Course-scoped because a lesson's video is
+	# uploaded before the lesson row exists.
+	path(
+		'courses/<int:course_id>/assets/',
+		CourseAssetUploadAPIView.as_view(),
+		name='api-course-asset-upload'
+	),
+
 	path(
 		'lessons/',
 		LessonListCreateAPIView.as_view(),
@@ -405,6 +415,12 @@ urlpatterns = [
 		'my-enrollments/',
 		MyEnrollmentsAPIView.as_view(),
 		name='api-my-enrollments'
+	),
+
+	path(
+		'courses/<int:course_id>/enrollment/',
+		CourseEnrollmentAPIView.as_view(),
+		name='api-course-enrollment'
 	),
 
 	path(

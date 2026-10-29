@@ -1,6 +1,7 @@
 from datetime import timedelta
 from collections.abc import Mapping
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 import secrets
 
 from django.conf import settings
@@ -24,6 +25,7 @@ from rest_framework_simplejwt.token_blacklist.models import (
 	OutstandingToken,
 )
 from .documents import (
+	media_src,
 	save_upload,
 	validate_certificate_files,
 	validate_cv_resume_file,
@@ -1265,6 +1267,8 @@ class CourseSerializer(serializers.ModelSerializer):
 			'instructor',
 			'instructor_name',
 			'course_type',
+			'level',
+			'language',
 			'subject',
 			'subject_name',
 			'grade',
@@ -1281,6 +1285,49 @@ class CourseSerializer(serializers.ModelSerializer):
 			'created_at',
 			'updated_at',
 		]
+
+	def to_representation(self, instance):
+		data = super().to_representation(instance)
+		# `thumbnail_url` holds either an outside URL or a storage name produced
+		# by `POST /courses/{id}/assets/` (the same convention `profile_photo_url`
+		# has always used). Resolving it here keeps the stored value independent
+		# of the host it was uploaded through — the dev host moves, and a baked-in
+		# absolute URL would 404 for every cover the moment it did.
+		data['thumbnail_url'] = self._asset_url(
+			instance.thumbnail_url,
+			self.context.get('request'),
+		)
+		return data
+
+	@staticmethod
+	def _asset_url(stored, request):
+		if not stored:
+			return ''
+		value = str(stored)
+		prefix = '/' + (getattr(settings, 'MEDIA_URL', '') or '').strip('/') + '/'
+		if value.startswith(('http://', 'https://')):
+			# An outside URL — a seeded row, or an admin pasting a link — is not
+			# ours to rewrite. Only our own media URLs get resolved again.
+			if not unquote(urlparse(value).path).startswith(prefix):
+				return value
+		src = media_src(value)
+		if not src:
+			return ''
+		return request.build_absolute_uri(src) if request else src
+
+	def validate_thumbnail_url(self, value):
+		"""Store one of our own media URLs as a storage name, keep anyone else's.
+
+		The client echoes back exactly the URL this serializer handed it, so
+		without this every save would rewrite the absolute URL of the day.
+		"""
+		if not value:
+			return value
+		path = unquote(urlparse(value).path)
+		prefix = '/' + (getattr(settings, 'MEDIA_URL', '') or '').strip('/') + '/'
+		if path.startswith(prefix):
+			return path[len(prefix):]
+		return value
 
 	def validate(self, attrs):
 		course_type = attrs.get(

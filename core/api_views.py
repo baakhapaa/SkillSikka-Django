@@ -7,6 +7,7 @@ from django.db import transaction, IntegrityError
 from decimal import Decimal
 from django.db.models import Sum, Count, Avg
 from django.core.exceptions import ObjectDoesNotExist
+from django.core.files.storage import default_storage
 from django.urls import reverse
 
 from rest_framework import generics, status
@@ -76,7 +77,7 @@ from .models import (
 )
 
 from .ai_service import GeminiService
-from .documents import document_file_response
+from .documents import document_file_response, save_upload
 from .payments import GatewayError, GatewayNotConfigured, esewa_form, khalti_initiate, refresh_payment
 from .learning_interest_serializers import selected_interests_payload
 
@@ -1326,6 +1327,104 @@ class CourseDetailAPIView(
 
 
 # =========================================================
+# Course assets (cover image, lesson file)
+# =========================================================
+
+class CourseAssetUploadAPIView(APIView):
+	"""`POST /courses/{id}/assets/` — one file, filed under the course.
+
+	**Why a course-scoped route and not a lesson one.** A lesson's video has to be
+	uploaded *before* the lesson exists: the builder uploads on save, and the
+	lesson row is only created by the `POST /lessons/` that follows. Scoping the
+	asset to the course also means the cover — which belongs to no lesson at all —
+	uses the same endpoint and the same validation.
+
+	Multipart fields:
+
+	* `file` — required.
+	* `kind` — `cover` or `lesson` (default `lesson`). It selects the size cap and
+	  the allowed content types; both are stored under `course-assets/<kind>/`.
+
+	Answers **201** with `{"url", "path", "kind"}`, where `url` is absolute and
+	ready to store in `Course.thumbnail_url` or `Lesson.content_url`.
+	"""
+
+	authentication_classes = [
+		JWTAuthentication,
+		SessionAuthentication,
+	]
+	permission_classes = [IsAuthenticated]
+	parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+	# Covers are small and go on a card; a lesson file is a recording. The caps
+	# are per kind because a 500 MB cover is a mistake, not a course.
+	COVER_MAX_BYTES = 8 * 1024 * 1024
+	LESSON_MAX_BYTES = 500 * 1024 * 1024
+
+	COVER_TYPES = {'image/jpeg', 'image/png', 'image/webp', 'image/gif'}
+	LESSON_TYPES = {
+		'video/mp4',
+		'video/quicktime',
+		'video/x-m4v',
+		'application/pdf',
+		'application/epub+zip',
+	}
+
+	def post(self, request, course_id):
+		try:
+			course = Course.objects.get(pk=course_id)
+		except Course.DoesNotExist:
+			raise CourseAPIError('COURSE_NOT_FOUND', 'Course not found.', 404)
+
+		if not (
+			_is_admin(request.user)
+			or course.instructor_id == request.user.pk
+		):
+			raise PermissionDenied(
+				'Only the course owner or administrator can upload files to '
+				'this course.'
+			)
+
+		kind = (request.data.get('kind') or 'lesson').strip().lower()
+		if kind not in {'cover', 'lesson'}:
+			raise ValidationError({
+				'kind': 'Must be "cover" or "lesson".'
+			})
+
+		uploaded = request.FILES.get('file')
+		if uploaded is None:
+			raise ValidationError({'file': 'Attach a file.'})
+
+		if kind == 'cover':
+			allowed, limit = self.COVER_TYPES, self.COVER_MAX_BYTES
+		else:
+			allowed, limit = self.LESSON_TYPES, self.LESSON_MAX_BYTES
+
+		# `content_type` is what the client declared; the extension is what the
+		# storage layer will serve it as. Checking both stops a `.mp4` full of
+		# HTML from being published as a video.
+		content_type = (getattr(uploaded, 'content_type', '') or '').lower()
+		if content_type not in allowed:
+			raise ValidationError({
+				'file': f'{content_type or "Unknown file type"} is not accepted '
+				        f'for a {kind}.'
+			})
+
+		if uploaded.size > limit:
+			raise ValidationError({
+				'file': f'That file is larger than {limit // (1024 * 1024)} MB.'
+			})
+
+		stored = save_upload(uploaded, f'course-assets/{kind}', course.pk)
+		url = request.build_absolute_uri(default_storage.url(stored))
+
+		return Response(
+			{'url': url, 'path': stored, 'kind': kind},
+			status=status.HTTP_201_CREATED,
+		)
+
+
+# =========================================================
 # Lesson Management
 # =========================================================
 
@@ -1490,6 +1589,30 @@ class EnrollCourseAPIView(APIView):
 			EnrollmentSerializer(enrollment).data,
 			status=status.HTTP_201_CREATED,
 		)
+
+
+class CourseEnrollmentAPIView(APIView):
+	"""This student's enrolment in one course, or 404 when there is none.
+
+	Exists because `POST enroll/` answers 400 `ALREADY_ENROLLED` for *any*
+	existing row, including a `pending_payment` one, and the status is the only
+	thing that says whether the student may open the course. Without this the
+	client had to guess, and guessing "already enrolled means they are in" let a
+	student into a paid course they had not paid for.
+	"""
+
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def get(self, request, course_id):
+		enrollment = Enrollment.objects.filter(
+			student=request.user, course_id=course_id
+		).select_related('course').first()
+
+		if enrollment is None:
+			return Response({'detail': 'You are not enrolled in this course.'}, status=status.HTTP_404_NOT_FOUND)
+
+		return Response(EnrollmentSerializer(enrollment).data, status=status.HTTP_200_OK)
 
 
 class MyEnrollmentsAPIView(generics.ListAPIView):

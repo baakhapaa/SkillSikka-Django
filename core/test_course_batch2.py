@@ -119,6 +119,29 @@ class CourseBatch2Tests(TestCase):
             if not allowed:
                 self.assert_code(response, 'NOT_ENROLLED', 403)
 
+    def test_enrollment_status_endpoint_reports_the_state_enroll_hides(self):
+        """`enroll/` refuses a second call whatever the row's status, so the status
+        is the only thing that says whether a student may open the course. The
+        client reads a 404 as "no row" and must not read a 403 as one."""
+        url = reverse('api-course-enrollment', args=[self.skill.pk])
+
+        self.assertEqual(self.client.get(url).status_code, 404)
+
+        for state in ['pending_payment', 'active', 'completed', 'cancelled']:
+            Enrollment.objects.filter(student=self.student).delete()
+            Enrollment.objects.create(student=self.student, course=self.skill, status=state)
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data['status'], state)
+
+        # Someone else's enrolment is not this student's answer.
+        Enrollment.objects.filter(student=self.student).delete()
+        Enrollment.objects.create(student=self.other, course=self.skill, status='active')
+        self.assertEqual(self.client.get(url).status_code, 404)
+
+        self.client.force_authenticate(user=None)
+        self.assertEqual(self.client.get(url).status_code, 401)
+
     def test_grade_certificate_uses_new_academic_progress(self):
         self.assert_code(self.client.post(reverse('api-check-grade-certificate')), 'CERTIFICATE_NOT_ELIGIBLE', 400)
         self.client.post(reverse('api-complete-lesson', args=[self.lesson.pk]))
