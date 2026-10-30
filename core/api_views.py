@@ -1152,6 +1152,21 @@ class PublicInstructorDetailAPIView(generics.RetrieveAPIView):
 from .course_pagination import CoursePagination
 
 
+class CourseIDFilterField(serializers.IntegerField):
+	def to_internal_value(self, data):
+		if isinstance(data, str) and (not data.isascii() or not data.isdecimal()):
+			self.fail('invalid')
+		return super().to_internal_value(data)
+
+
+class CourseIDFilterSerializer(serializers.Serializer):
+	# All four related models use positive BigAutoField primary keys.
+	subject = CourseIDFilterField(required=False, min_value=1, max_value=2**63 - 1)
+	grade = CourseIDFilterField(required=False, min_value=1, max_value=2**63 - 1)
+	instructor = CourseIDFilterField(required=False, min_value=1, max_value=2**63 - 1)
+	skill_category = CourseIDFilterField(required=False, min_value=1, max_value=2**63 - 1)
+
+
 class CourseListCreateAPIView(generics.ListCreateAPIView):
 	pagination_class = CoursePagination
 	serializer_class = CourseSerializer
@@ -1162,6 +1177,10 @@ class CourseListCreateAPIView(generics.ListCreateAPIView):
 	permission_classes = [IsAuthenticated]
 
 	def get_queryset(self):
+		# A plain mapping preserves explicit blanks; DRF treats optional HTML blanks as absent.
+		filters = CourseIDFilterSerializer(data={key: self.request.query_params[key]
+			for key in CourseIDFilterSerializer().fields if key in self.request.query_params})
+		filters.is_valid(raise_exception=True)
 		queryset = with_bootcamp_data(Course.objects.with_review_stats().with_access(self.request.user), detail=False).select_related(
 			'instructor',
 			'subject',
@@ -1173,16 +1192,16 @@ class CourseListCreateAPIView(generics.ListCreateAPIView):
 		course_type = self.request.query_params.get(
 			'course_type'
 		)
-		subject_id = self.request.query_params.get(
+		subject_id = filters.validated_data.get(
 			'subject'
 		)
-		grade_id = self.request.query_params.get(
+		grade_id = filters.validated_data.get(
 			'grade'
 		)
 		is_paid = self.request.query_params.get(
 			'is_paid'
 		)
-		instructor_id = self.request.query_params.get(
+		instructor_id = filters.validated_data.get(
 			'instructor'
 		)
 		is_published = self.request.query_params.get(
@@ -1231,7 +1250,7 @@ class CourseListCreateAPIView(generics.ListCreateAPIView):
 					is_published=False
 				)
 
-		category = self.request.query_params.get('skill_category')
+		category = filters.validated_data.get('skill_category')
 		if category:
 			queryset = queryset.filter(skill_category_id=category)
 		search = self.request.query_params.get('search', '').strip()
@@ -2690,6 +2709,8 @@ class QuizDetailAPIView(
 		target = serializer.validated_data.get('course')
 		if target:
 			require_bootcamp_admin(user, target.course_type)
+			if not _is_admin(user) and target.instructor_id != user.id:
+				raise PermissionDenied('You can only move quizzes to your own courses.')
 
 		if not (
 			_is_admin(user)
@@ -2810,6 +2831,8 @@ class QuestionDetailAPIView(
 		target = serializer.validated_data.get('quiz')
 		if target:
 			require_bootcamp_admin(user, target.course.course_type)
+			if not _is_admin(user) and target.course.instructor_id != user.id:
+				raise PermissionDenied('You can only move questions to your own quizzes.')
 
 		if (
 			not _is_admin(user)
@@ -2928,6 +2951,8 @@ class QuestionOptionDetailAPIView(
 		target = serializer.validated_data.get('question')
 		if target:
 			require_bootcamp_admin(user, target.quiz.course.course_type)
+			if not _is_admin(user) and target.quiz.course.instructor_id != user.id:
+				raise PermissionDenied('You can only move options to your own questions.')
 
 		if (
 			not _is_admin(user)
@@ -3079,8 +3104,7 @@ class SubmitQuizAttemptAPIView(APIView):
 				{'detail': 'Quiz attempt not found.'},
 				status=status.HTTP_404_NOT_FOUND,
 			)
-		if attempt.quiz.course.course_type == 'academic':
-			require_course_access(student, attempt.quiz.course, managers=False)
+		require_course_access(student, attempt.quiz.course, managers=False)
 
 		if attempt.completed_at is not None:
 			return Response(

@@ -2,7 +2,7 @@
 from django.db import transaction
 from django.db.models import Count, Exists, OuterRef, Prefetch, Q
 from rest_framework import generics, serializers
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, SAFE_METHODS
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied
 from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiParameter
@@ -46,7 +46,7 @@ class BootcampResourceListAPIView(BootcampEndpointMixin, generics.ListCreateAPIV
     pagination_class = None
 
     def get_queryset(self):
-        course = bootcamp_for(self.request, self.kwargs['course_id'], write=self.request.method != 'GET', access=True)
+        course = bootcamp_for(self.request, self.kwargs['course_id'], write=self.request.method not in SAFE_METHODS, access=True)
         return BootcampResource.objects.filter(course=course)
 
     def perform_create(self, serializer):
