@@ -204,3 +204,113 @@ class CourseResourceTests(TestCase):
         upload = SimpleUploadedFile('a.pdf', b'%PDF-1.4', content_type='application/pdf')
         response = self.client.post(self.url('assets/'), {'file': upload, 'kind': 'resource'}, format='multipart')
         self.assertEqual(response.status_code, 403)
+
+    # ── batch upload ──────────────────────────────────────────────────────────
+    #
+    # One pick of worksheets is one request. Before this, attaching five files
+    # from the lesson sheet was five uploads in a row, and a 20-lesson course
+    # meant 21 round-trips.
+
+    def _media(self):
+        media = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, media, ignore_errors=True)
+        return media
+
+    def _pdf(self, name='a.pdf'):
+        return SimpleUploadedFile(name, b'%PDF-1.4', content_type='application/pdf')
+
+    def test_upload_batch_stores_every_file_in_one_request(self):
+        with override_settings(MEDIA_ROOT=self._media()):
+            self.client.force_authenticate(self.owner)
+            files = [
+                self._pdf('worksheet.pdf'),
+                SimpleUploadedFile(
+                    'template.docx',
+                    b'PK\x03\x04doc',
+                    content_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                ),
+            ]
+            response = self.client.post(
+                self.url('assets/'), {'files': files, 'kind': 'resource'}, format='multipart'
+            )
+
+            self.assertEqual(response.status_code, 201, response.data)
+            self.assertEqual([asset['index'] for asset in response.data['assets']], [0, 1])
+            self.assertEqual(
+                [asset['name'] for asset in response.data['assets']],
+                ['worksheet.pdf', 'template.docx'],
+            )
+            self.assertEqual(response.data['rejected'], [])
+            for asset in response.data['assets']:
+                self.assertIn('course-assets/resource/', asset['path'])
+                self.assertTrue(asset['url'].startswith('http'))
+
+    def test_upload_batch_keeps_the_good_files_and_names_the_bad_one(self):
+        """One refusal must not discard the rest of the pick."""
+        with override_settings(MEDIA_ROOT=self._media()):
+            self.client.force_authenticate(self.owner)
+            files = [
+                self._pdf('good.pdf'),
+                SimpleUploadedFile('clip.mp4', b'\x00\x00\x00\x18ftypmp42', content_type='video/mp4'),
+                self._pdf('also-good.pdf'),
+            ]
+            response = self.client.post(
+                self.url('assets/'), {'files': files, 'kind': 'resource'}, format='multipart'
+            )
+
+            self.assertEqual(response.status_code, 201, response.data)
+            self.assertEqual([asset['index'] for asset in response.data['assets']], [0, 2])
+            self.assertEqual(len(response.data['rejected']), 1)
+            rejected = response.data['rejected'][0]
+            # The index is what lets the client map results back onto the pick
+            # order without matching filenames.
+            self.assertEqual(rejected['index'], 1)
+            self.assertEqual(rejected['name'], 'clip.mp4')
+            self.assertIn('video/mp4', rejected['error'])
+
+    def test_upload_batch_is_capped(self):
+        self.client.force_authenticate(self.owner)
+        files = [self._pdf(f'{index}.pdf') for index in range(11)]
+        response = self.client.post(
+            self.url('assets/'), {'files': files, 'kind': 'resource'}, format='multipart'
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('files', response.data)
+
+    def test_upload_with_no_file_at_all_is_still_a_400(self):
+        self.client.force_authenticate(self.owner)
+        response = self.client.post(self.url('assets/'), {'kind': 'resource'}, format='multipart')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('file', response.data)
+
+    # ── a draft's files, which is what the builder reads ──────────────────────
+
+    def test_manager_reads_a_drafts_resources(self):
+        """The builder lists what it already attached, before publishing."""
+        self.resource()
+        Course.objects.filter(pk=self.course.pk).update(is_published=False)
+        for user in [self.owner, self.coach, self.admin]:
+            self.client.force_authenticate(user)
+            response = self.client.get(self.url('resources/'))
+            self.assertEqual(response.status_code, 200, user.name)
+            self.assertEqual(len(response.data), 1)
+
+    def test_manager_attaches_a_course_wide_file_to_a_draft(self):
+        Course.objects.filter(pk=self.course.pk).update(is_published=False)
+        self.client.force_authenticate(self.owner)
+        response = self.post({
+            'title': 'Workbook',
+            'file_format': 'xlsx',
+            'file_url': 'https://example.com/w.xlsx',
+        })
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertIsNone(response.data['lesson'])
+        self.assertEqual(CourseResource.objects.filter(lesson__isnull=True).count(), 1)
+
+    def test_a_draft_stays_shut_to_everyone_else(self):
+        self.resource()
+        Course.objects.filter(pk=self.course.pk).update(is_published=False)
+        self.enroll()
+        self.assertEqual(self.client.get(self.url('resources/')).status_code, 403)
+        self.client.force_authenticate(self.stranger)
+        self.assertEqual(self.client.get(self.url('resources/')).status_code, 403)

@@ -23,35 +23,48 @@ class Command(BaseCommand):
             raise CommandError('No instructor or superuser exists. Create an authorized owner before seeding courses; no accounts were created.')
         import_module('core.migrations.0044_seed_course_categories').seed_categories(apps, type('Schema', (), {'connection': connection})())
         courses = []
+        # The level is part of the fixture, not a default: a catalogue where
+        # every row is blank teaches the Skills tab nothing, and the builder's
+        # level chips were added on 2026-10-28 without backfilling these rows.
         academic = [
-            (6, 'Mathematics', 'Fractions in Everyday Life'),
-            (7, 'Science', 'Explore Forces and Motion'),
-            (8, 'Mathematics', 'Algebra Foundations'),
-            (9, 'Science', 'Matter and Chemical Reactions'),
-            (10, 'Mathematics', 'Geometry and Trigonometry'),
-            (10, 'English', 'Reading and Writing with Confidence'),
+            (6, 'Mathematics', 'Fractions in Everyday Life', 'beginner'),
+            (7, 'Science', 'Explore Forces and Motion', 'beginner'),
+            (8, 'Mathematics', 'Algebra Foundations', 'beginner'),
+            (9, 'Science', 'Matter and Chemical Reactions', 'intermediate'),
+            (10, 'Mathematics', 'Geometry and Trigonometry', 'intermediate'),
+            (10, 'English', 'Reading and Writing with Confidence', 'intermediate'),
         ]
-        for number, subject_name, title in academic:
+        for number, subject_name, title, level in academic:
             grade, _ = Grade.objects.get_or_create(name=f'Grade {number}')
             subject, _ = Subject.objects.get_or_create(name=subject_name)
             course, _ = Course.objects.get_or_create(title=f'Grade {number}: {title}', instructor=teacher,
                 defaults={'course_type': 'academic', 'subject': subject, 'grade': grade,
                     'description': f'Build Grade {number} {subject_name.lower()} skills through guided examples, practice and real-world applications.',
-                    'is_published': True})
+                    'is_published': True, 'level': level, 'language': 'English'})
+            # Backfills a row seeded before `level` existed — `get_or_create`
+            # leaves an existing row's columns alone, which is why the first run
+            # of this command produced 22 level-less courses.
+            Course.objects.filter(pk=course.pk, level='').update(level=level)
             courses.append(course)
-        for category, title in [('Coding', 'Python: Build Your First Project'), ('Drawing', 'Drawing from Observation'),
-                                ('Public Speaking', 'Speak with Confidence'), ('Music', 'Rhythm and Melody Foundations')]:
+        for category, title, level in [('Coding', 'Python: Build Your First Project', 'intermediate'),
+                                       ('Drawing', 'Drawing from Observation', 'beginner'),
+                                       ('Public Speaking', 'Speak with Confidence', 'beginner'),
+                                       ('Music', 'Rhythm and Melody Foundations', 'beginner')]:
             interest = LearningInterest.objects.filter(name__iexact=category).first()
             if interest is None:
                 interest, _ = LearningInterest.objects.get_or_create(slug=category.lower().replace(' ', '-'), defaults={'name': category})
             paid = category == 'Coding'
             course, _ = Course.objects.get_or_create(title=title, instructor=teacher, defaults={
                 'course_type': 'skill', 'skill_category': interest, 'description': f'Learn {category.lower()} with practical activities and a final creative project.',
-                'is_published': True, 'is_paid': paid, 'price': Decimal('1299.00') if paid else None})
+                'is_published': True, 'is_paid': paid, 'price': Decimal('1299.00') if paid else None,
+                'level': level, 'language': 'English'})
+            Course.objects.filter(pk=course.pk, level='').update(level=level)
             courses.append(course)
         for title, published in [('Creative Practice: Coming Soon', True), ('Draft: Advanced Creative Workshop', False)]:
-            Course.objects.get_or_create(title=title, instructor=teacher, defaults={'course_type': 'skill',
-                'description': 'A forthcoming workshop for curious learners.', 'is_published': published})
+            course, _ = Course.objects.get_or_create(title=title, instructor=teacher, defaults={'course_type': 'skill',
+                'description': 'A forthcoming workshop for curious learners.', 'is_published': published,
+                'level': 'beginner', 'language': 'English'})
+            Course.objects.filter(pk=course.pk, level='').update(level='beginner')
         for course in courses:
             Course.objects.filter(pk=course.pk, learning_outcomes=[]).update(learning_outcomes=[
                 f'Explain the key ideas in {course.title}.', 'Apply the concepts in a guided practical activity.',

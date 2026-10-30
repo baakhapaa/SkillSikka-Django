@@ -8,12 +8,26 @@ from rest_framework.exceptions import PermissionDenied
 from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiParameter
 from .authentication import EmailVerifiedJWTAuthentication
 from .api_views import _is_admin, _is_instructor
-from .course_access import CourseAPIError, is_course_manager, require_course_access
+from .course_access import CourseAPIError, require_course_access
 from .course_pagination import CoursePagination
 from .models import Course, CourseResource, CourseDiscussion, DiscussionLike
 
 
-def course_for(request, course_id, *, access=False):
+def manages_course(user, course):
+    """Administrator, owner, or a member of the course's instructor roster.
+
+    Exactly the test `require_course_manager` used to inline, lifted into a
+    predicate so `course_for` can ask the same question. `_is_admin` rather than
+    `is_course_manager` because the latter reads `user.role.name` unguarded.
+    """
+    return bool(
+        _is_admin(user)
+        or course.instructor_id == user.pk
+        or course.instructors.filter(instructor_id=user.pk).exists()
+    )
+
+
+def course_for(request, course_id, *, access=False, allow_unpublished_manager=False):
     """Any course, for the subresource endpoints.
 
     **Reading is open to any authenticated user** on a published course — the
@@ -28,17 +42,22 @@ def course_for(request, course_id, *, access=False):
 
     The roster matters: a bootcamp's `coach` is not its owner and is not
     enrolled, so an owner-only check would mute every teaching assistant.
+
+    **`allow_unpublished_manager` is for the builder, and only for the
+    builder.** A course's own manager has to read and write its resources while
+    it is still a draft — the instructor attaches the worksheets before
+    publishing, and without this the whole resources tab of the wizard answers
+    `403 COURSE_NOT_PUBLISHED`. Students are unaffected: the flag only widens
+    the check for someone who already passes [manages_course], so an
+    unpublished course stays invisible to everyone else.
     """
     course = Course.objects.filter(pk=course_id).first()
     if course is None:
         raise CourseAPIError('COURSE_NOT_FOUND', 'Course not found.', 404)
     if not _is_admin(request.user) and not course.is_published:
-        raise CourseAPIError('COURSE_NOT_PUBLISHED', 'This course is not published.', 403)
-    if access and not (
-        _is_admin(request.user)
-        or course.instructor_id == request.user.pk
-        or course.instructors.filter(instructor_id=request.user.pk).exists()
-    ):
+        if not (allow_unpublished_manager and manages_course(request.user, course)):
+            raise CourseAPIError('COURSE_NOT_PUBLISHED', 'This course is not published.', 403)
+    if access and not manages_course(request.user, course):
         require_course_access(request.user, course, managers=False)
     return course
 
@@ -78,22 +97,32 @@ def require_course_manager(user, course):
     and wrong for attaching or deleting a file.
 
     `is_course_manager` covers the admin and the owner; the roster half is added
-    here because a bootcamp's `coach` teaches the course without owning it.
+    by [manages_course] because a bootcamp's `coach` teaches the course without
+    owning it.
     """
-    if is_course_manager(user, course) or course.instructors.filter(instructor_id=user.pk).exists():
+    if manages_course(user, course):
         return
     raise CourseAPIError('NOT_COURSE_OWNER', 'Only the course owner or an administrator can change its resources.', 403)
 
 
 @extend_schema_view(
-    get=extend_schema(description='Course resources, optionally per lesson. Active/completed enrollment required for students; administrators, the owner and roster instructors may read.'),
+    get=extend_schema(description='Course resources, optionally per lesson. Active/completed enrollment required for students; administrators, the owner and roster instructors may read. A manager may also read a draft, which is what the builder does before publishing.'),
     post=extend_schema(description='Course owner or administrator. URLs only; upload the file through POST /courses/{id}/assets/ with kind="resource" first.'))
 class CourseResourceListAPIView(CourseEndpointMixin, generics.ListCreateAPIView):
     serializer_class = CourseResourceSerializer
     pagination_class = None
 
     def get_queryset(self):
-        course = course_for(self.request, self.kwargs['course_id'], access=True)
+        # `allow_unpublished_manager`: the builder lists a draft's files so the
+        # instructor can see what they attached before publishing. A student is
+        # still refused an unpublished course, and still needs enrollment on a
+        # published one.
+        course = course_for(
+            self.request,
+            self.kwargs['course_id'],
+            access=True,
+            allow_unpublished_manager=True,
+        )
         queryset = CourseResource.objects.filter(course=course).select_related('lesson')
         # `?lesson=<id>` is how the player asks for one lesson's files without
         # pulling the whole pack; the tab also filters locally because it
@@ -104,12 +133,21 @@ class CourseResourceListAPIView(CourseEndpointMixin, generics.ListCreateAPIView)
         return queryset
 
     def perform_create(self, serializer):
-        course = course_for(self.request, self.kwargs['course_id'])
+        course = course_for(
+            self.request,
+            self.kwargs['course_id'],
+            allow_unpublished_manager=True,
+        )
         require_course_manager(self.request.user, course)
         serializer.save(course=course)
 
     def create(self, request, *args, **kwargs):
-        require_course_manager(request.user, course_for(request, kwargs['course_id']))
+        course = course_for(
+            request,
+            kwargs['course_id'],
+            allow_unpublished_manager=True,
+        )
+        require_course_manager(request.user, course)
         return super().create(request, *args, **kwargs)
 
 
@@ -120,7 +158,13 @@ class CourseResourceDetailAPIView(CourseEndpointMixin, generics.UpdateAPIView, g
     lookup_url_kwarg = 'resource_id'
 
     def get_queryset(self):
-        course = course_for(self.request, self.kwargs['course_id'])
+        # Same manager exemption as the list: a draft's own files have to be
+        # removable before the course is published.
+        course = course_for(
+            self.request,
+            self.kwargs['course_id'],
+            allow_unpublished_manager=True,
+        )
         require_course_manager(self.request.user, course)
         return CourseResource.objects.filter(course=course)
 

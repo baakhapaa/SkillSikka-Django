@@ -1330,6 +1330,24 @@ class CourseDetailAPIView(
 # Course assets (cover image, lesson file)
 # =========================================================
 
+def _first_message(detail):
+	"""The first human message out of a DRF `ValidationError.detail`.
+
+	DRF's detail is a `dict`, a `list`, or a bare `ErrorDetail` depending on how
+	the error was raised — `{'file': 'msg'}` comes back as
+	`{'file': ErrorDetail('msg')}`, not `{'file': ['msg']}`. Indexing blindly
+	returned the first *character* of the message, which is why this walks the
+	shape instead of assuming one.
+	"""
+	while True:
+		if isinstance(detail, dict):
+			detail = next(iter(detail.values()), '')
+		elif isinstance(detail, (list, tuple)):
+			detail = detail[0] if detail else ''
+		else:
+			return str(detail)
+
+
 class CourseAssetUploadAPIView(APIView):
 	"""`POST /courses/{id}/assets/` — one file, filed under the course.
 
@@ -1341,14 +1359,18 @@ class CourseAssetUploadAPIView(APIView):
 
 	Multipart fields:
 
-	* `file` — required.
+	* `file` — one file. Answers **201** with `{"url", "path", "kind"}`.
+	* `files` — the batch form, repeated. Answers **201** with
+	  `{"assets": [{"url", "path", "kind", "name", "index"}], "rejected": [...],
+	  "kind"}`, where `index` is the position in the submitted list. A file that
+	  fails validation is reported in `rejected` and the rest still store, so one
+	  oversized worksheet does not throw away four good ones.
 	* `kind` — `cover`, `lesson` or `resource` (default `lesson`). It selects
 	  the size cap and the allowed content types; all three are stored under
 	  `course-assets/<kind>/`.
 
-	Answers **201** with `{"url", "path", "kind"}`, where `url` is absolute and
-	ready to store in `Course.thumbnail_url`, `Lesson.content_url` or
-	`CourseResource.file_url`.
+	`url` is absolute and ready to store in `Course.thumbnail_url`,
+	`Lesson.content_url` or `CourseResource.file_url`.
 
 	**A resource is a document, not a recording.** `kind=resource` exists because
 	a `.docx` template or a `.zip` starter pack is neither a cover nor a lesson
@@ -1368,6 +1390,10 @@ class CourseAssetUploadAPIView(APIView):
 	COVER_MAX_BYTES = 8 * 1024 * 1024
 	LESSON_MAX_BYTES = 500 * 1024 * 1024
 	RESOURCE_MAX_BYTES = 25 * 1024 * 1024
+
+	# One pick of worksheets, not a whole course. Ten is what the resource
+	# picker offers in a single selection and well under any request-body cap.
+	BATCH_MAX_FILES = 10
 
 	COVER_TYPES = {'image/jpeg', 'image/png', 'image/webp', 'image/gif'}
 	LESSON_TYPES = {
@@ -1422,10 +1448,46 @@ class CourseAssetUploadAPIView(APIView):
 				'kind': 'Must be "cover", "lesson" or "resource".'
 			})
 
-		uploaded = request.FILES.get('file')
-		if uploaded is None:
-			raise ValidationError({'file': 'Attach a file.'})
+		# `file` is the original single-file contract and stays byte-identical.
+		# `files` is the batch form: one request for a whole pick of worksheets,
+		# which is what the builder sends. Both go through `_store`, so a rule
+		# added here applies to both.
+		single = request.FILES.get('file')
+		if single is not None:
+			asset = self._store(single, kind, course, request)
+			return Response(asset, status=status.HTTP_201_CREATED)
 
+		batch = request.FILES.getlist('files')
+		if not batch:
+			raise ValidationError({'file': 'Attach a file.'})
+		if len(batch) > self.BATCH_MAX_FILES:
+			raise ValidationError({
+				'files': f'Upload at most {self.BATCH_MAX_FILES} files at once.'
+			})
+
+		# **Partial success, deliberately.** A batch of five worksheets where one
+		# is a 30 MB spreadsheet should leave four attached and name the fifth,
+		# not throw away four good uploads because of one bad one. Each rejection
+		# carries its index so the client can map results back onto the pick
+		# order without guessing by filename.
+		assets, rejected = [], []
+		for index, uploaded in enumerate(batch):
+			try:
+				assets.append({**self._store(uploaded, kind, course, request), 'index': index})
+			except ValidationError as error:
+				rejected.append({
+					'index': index,
+					'name': uploaded.name,
+					'error': _first_message(error.detail),
+				})
+
+		return Response(
+			{'assets': assets, 'rejected': rejected, 'kind': kind},
+			status=status.HTTP_201_CREATED,
+		)
+
+	def _store(self, uploaded, kind, course, request):
+		"""Validates and stores one file. Raises `ValidationError` on refusal."""
 		if kind == 'cover':
 			allowed, limit = self.COVER_TYPES, self.COVER_MAX_BYTES
 		elif kind == 'resource':
@@ -1450,11 +1512,7 @@ class CourseAssetUploadAPIView(APIView):
 
 		stored = save_upload(uploaded, f'course-assets/{kind}', course.pk)
 		url = request.build_absolute_uri(default_storage.url(stored))
-
-		return Response(
-			{'url': url, 'path': stored, 'kind': kind},
-			status=status.HTTP_201_CREATED,
-		)
+		return {'url': url, 'path': stored, 'kind': kind, 'name': uploaded.name}
 
 
 # =========================================================
