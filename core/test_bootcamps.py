@@ -514,14 +514,18 @@ class BootcampTests(TestCase):
         first = [model.objects.count() for model in models]
         call_command('seed_bootcamps', stdout=out)
         self.assertEqual(first, [model.objects.count() for model in models])
-        self.assertEqual(first, [2, 2, 4, 34, 22, 18, 2, 1, 2])
+        # 20 lessons and 14 files per camp since 2026-10-31 — the design's own
+        # curriculum replaced the earlier 20/14 + 14/8 split.
+        self.assertEqual(first, [2, 2, 4, 40, 28, 24, 2, 1, 2])
         for profile in BootcampProfile.objects.all():
             self.assertEqual(set(profile.course.lessons.values_list('day_number', flat=True)), set(range(1, profile.days+1)))
-            self.assertTrue(profile.course.lessons.filter(title='Demo', is_preview=True).exists())
+            self.assertTrue(profile.course.lessons.filter(
+                title='Welcome and bootcamp orientation', is_preview=True).exists())
             self.assertFalse(profile.course.lessons.filter(duration_seconds=None).exists())
             self.assertEqual(profile.course.instructor, profile.course.instructors.get(role='lead').instructor)
         self.assertEqual(LessonProgress.objects.filter(is_completed=True).count(), 2)
-        self.assertEqual(Payment.objects.count(), 0); self.assertIn('shortfall: 6', out.getvalue())
+        self.assertEqual(Payment.objects.count(), 0)
+        self.assertIn('roster: 2 of 8 verified instructors available', out.getvalue())
 
     def test_seed_without_verified_instructor_fails(self):
         from django.core.management.base import CommandError
