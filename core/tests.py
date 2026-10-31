@@ -26,7 +26,7 @@ from .signup_otp import OTP_EXPIRY_SECONDS
 from .models import Short, ShortBookmark, ShortComment, ShortLike, ShortView
 from .models import PasswordResetOTP
 from .serializers import ShortSerializer
-from .models import Course, CourseReview, Enrollment, Lesson, LessonProgress, with_instructor_review_stats
+from .models import Course, CourseReview, Enrollment, Lesson, LessonProgress, Payment, with_instructor_review_stats
 from .serializers import CourseSerializer
 
 
@@ -582,7 +582,7 @@ class StudentRewardCompatibilityTests(RewardTestSetup):
 
 
 class MyLearningTests(TestCase):
-    sections = {'continue_learning', 'courses', 'stats', 'completed_courses', 'certificates'}
+    sections = {'continue_learning', 'courses', 'stats', 'completed_courses', 'certificates', 'pending_payment'}
     card_fields = {'enrollment_id', 'enrollment_status', 'enrolled_at', 'completed_at', 'course',
                    'progress_percentage', 'completed_lessons', 'total_lessons', 'is_completed',
                    'next_lesson', 'resume_url', 'last_learning_activity'}
@@ -738,11 +738,54 @@ class MyLearningTests(TestCase):
         ids = {card['course']['id'] for card in self.cards(data)}
         self.assertEqual(ids, {self.course.pk, private.pk})
         self.assertFalse({pending.pk, cancelled.pk, friend.pk} & ids)
+        # An unpaid enrolment is not a learning card, but it is no longer
+        # invisible either: it has its own section, so a student whose app died
+        # during checkout can still find the course they paid for.
+        self.assertEqual([row['course']['id'] for row in data['pending_payment']], [pending.pk])
         self.assertEqual(self.client.get(reverse('api-course-progress', kwargs={'course_id': private.pk})).status_code, 200)
         pending_enrollment.refresh_from_db()
         cancelled_enrollment.refresh_from_db()
         self.assertEqual(pending_enrollment.status, 'pending_payment')
         self.assertEqual(cancelled_enrollment.status, 'cancelled')
+
+    def test_pending_payment_row_carries_the_payment_to_recheck(self):
+        # The card must not invite a second payment: `latest_payment_id` is the
+        # row `GET /payments/{id}/` has to re-ask about, because a gateway may
+        # have taken the money while the server still says `initiated`.
+        _, enrollment = self.enroll('Unpaid', status='pending_payment')
+        first = Payment.objects.create(student=self.student, course=enrollment.course, enrollment=enrollment,
+            amount=1200, provider='esewa', transaction_reference='REF-OLD', status='failed')
+        latest = Payment.objects.create(student=self.student, course=enrollment.course, enrollment=enrollment,
+            amount=1200, provider='esewa', transaction_reference='REF-NEW', status='initiated')
+        row = self.feed()['pending_payment'][0]
+        self.assertEqual(row['enrollment_status'], 'pending_payment')
+        self.assertEqual(row['latest_payment_id'], latest.pk)
+        self.assertEqual(row['latest_payment_status'], 'initiated')
+        # Nothing to resume, and it is not counted as a completed course.
+        self.assertIsNone(row['next_lesson'])
+        self.assertIsNone(row['resume_url'])
+        self.assertIsNone(row['last_learning_activity'])
+        self.assertNotIn(first.pk, [row['latest_payment_id']])
+        self.assertEqual(self.feed()['stats']['courses_completed'], 0)
+
+    def test_pending_payment_never_becomes_continue_learning_or_completes(self):
+        # Every lesson of an unpaid course "done" is a state the server must not
+        # manufacture: completing a course nobody paid for is worse than a blank
+        # Continue learning card.
+        _, enrollment = self.enroll('Unpaid', status='pending_payment')
+        unpaid_lessons = [Lesson.objects.create(course=enrollment.course, title=f'L{i}', content_type='video', order=i) for i in range(1, 3)]
+        for lesson in unpaid_lessons:
+            self.progress(lesson, enrollment=enrollment)
+        data = self.feed()
+        # The setUp course is the hero; the unpaid one must be nowhere near it.
+        self.assertEqual(data['continue_learning']['course']['id'], self.course.pk)
+        self.assertEqual(data['courses'], [])
+        self.assertEqual(data['completed_courses'], [])
+        enrollment.refresh_from_db()
+        self.assertEqual(enrollment.status, 'pending_payment')
+        row = data['pending_payment'][0]
+        self.assertFalse(row['is_completed'])
+        self.assertEqual(row['total_lessons'], 2)
 
     def test_ownership_fields_cannot_override_user(self):
         for field in ['student', 'student_id', 'user', 'user_id']:

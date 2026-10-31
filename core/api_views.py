@@ -114,6 +114,7 @@ from .serializers import (
 	LoginSerializer,
 	MunicipalitySerializer,
 	PaymentSerializer,
+	PendingLearningCourseSerializer,
 	ProvinceSerializer,
 	QuestionManagementSerializer,
 	QuestionOptionManagementSerializer,
@@ -1838,7 +1839,7 @@ class MyLearningAPIView(APIView):
 		if ownership_fields & set(request.query_params) or (isinstance(request.data, dict) and ownership_fields & set(request.data)):
 			raise ValidationError({'detail': 'Ownership is derived from the authenticated student.'})
 		enrollments = list(Enrollment.objects.filter(
-			student=student, status__in=['active', 'completed'],
+			student=student, status__in=['active', 'completed', 'pending_payment'],
 		).prefetch_related(Prefetch(
 			'course', queryset=with_bootcamp_data(Course.objects.with_review_stats().with_access(student)).select_related('instructor', 'subject', 'grade'),
 		)))
@@ -1867,15 +1868,19 @@ class MyLearningAPIView(APIView):
 			if course_id not in last_activity or attempt['last'] > last_activity[course_id]:
 				last_activity[course_id] = attempt['last']
 
-		active, completed, transitions = [], [], []
+		active, completed, pending, transitions = [], [], [], []
 		now = timezone.now()
 		for enrollment in enrollments:
 			course_lessons = lessons.get(enrollment.course_id, [])
 			done = completed_ids.get(enrollment.course_id, set())
 			summary = _course_progress_summary(enrollment.course_id, len(course_lessons), len(done))
-			if _apply_course_completion(enrollment, summary['is_completed'], now):
+			# **An unpaid enrolment is not progress.** It has no lessons to resume
+			# and no completion to apply — treating one as learning is what would
+			# put a course nobody has paid for at the top of Continue learning.
+			unpaid = enrollment.status == 'pending_payment'
+			if not unpaid and _apply_course_completion(enrollment, summary['is_completed'], now):
 				transitions.append(enrollment)
-			next_lesson = next((dict(lesson, lesson_number=index) for index, lesson in enumerate(course_lessons, 1)
+			next_lesson = None if unpaid else next((dict(lesson, lesson_number=index) for index, lesson in enumerate(course_lessons, 1)
 				if lesson['id'] not in done), None)
 			row = dict(summary,
 				enrollment_id=enrollment.pk, enrollment_status=enrollment.status,
@@ -1884,13 +1889,41 @@ class MyLearningAPIView(APIView):
 				resume_url=request.build_absolute_uri(reverse('api-lesson-detail', kwargs={'pk': next_lesson['id']})) if next_lesson else None,
 				last_learning_activity=last_activity.get(enrollment.course_id),
 			)
-			(completed if enrollment.status == 'completed' else active).append(row)
+			if unpaid:
+				# **An unpaid card is never "completed".** `is_completed` is derived
+				# from `LessonProgress` rows, and a stray one (a course that used to
+				# be free, a lesson marked before the paywall landed) would otherwise
+				# print "Completed" on a course the student cannot open — and put it
+				# in the completed list the moment the enrolment settles.
+				row['is_completed'] = False
+				row['completed_at'] = None
+				pending.append(row)
+			elif enrollment.status == 'completed':
+				completed.append(row)
+			else:
+				active.append(row)
 		_persist_course_completions(transitions)
+		# The payment to chase for each unpaid row. A `pending_payment` enrolment
+		# is not proof of money: the gateway may have taken it and the server may
+		# not have noticed yet, so the client is given the row it must re-ask
+		# about (`GET /payments/{id}/` is what refreshes it) rather than being
+		# invited to start a second payment for the same course.
+		if pending:
+			latest = {}
+			for payment in Payment.objects.filter(
+				enrollment_id__in=[row['enrollment_id'] for row in pending],
+			).order_by('-created_at', '-pk').values('enrollment_id', 'id', 'status'):
+				latest.setdefault(payment['enrollment_id'], payment)
+			for row in pending:
+				payment = latest.get(row['enrollment_id'])
+				row['latest_payment_id'] = payment['id'] if payment else None
+				row['latest_payment_status'] = payment['status'] if payment else None
 		def activity_order(row):
 			return (row['last_learning_activity'] is not None,
 				row['last_learning_activity'] or row['enrolled_at'], row['enrolled_at'], row['enrollment_id'])
 		active.sort(key=activity_order, reverse=True)
 		completed.sort(key=lambda row: (row['completed_at'] or row['enrolled_at'], row['enrollment_id']), reverse=True)
+		pending.sort(key=lambda row: (row['enrolled_at'], row['enrollment_id']), reverse=True)
 		continue_learning = next((row for row in active if row['next_lesson'] is not None), None)
 		other_courses = [row for row in active if row is not continue_learning]
 		streak = LearningStreak.objects.filter(student=student).first()
@@ -1899,6 +1932,10 @@ class MyLearningAPIView(APIView):
 			'continue_learning': LearningCourseSerializer(continue_learning, context=context).data if continue_learning else None,
 			'courses': LearningCourseSerializer(other_courses, many=True, context=context).data,
 			'completed_courses': LearningCourseSerializer(completed, many=True, context=context).data,
+			# Unpaid enrolments, in their own bucket: they are neither in progress
+			# nor resumable, but hiding them meant a student whose app died during
+			# checkout saw nothing at all for a course they had paid for.
+			'pending_payment': PendingLearningCourseSerializer(pending, many=True, context=context).data,
 			'stats': {'courses_completed': len(completed), 'day_streak': streak.current_streak if streak else 0, 'hours_learned': None},
 			'certificates': CertificateSerializer(_student_certificates(student), many=True, context=context).data,
 		})
