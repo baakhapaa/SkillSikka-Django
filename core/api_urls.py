@@ -11,7 +11,7 @@ from .advertisement_views import AdvertisementListAPIView, AdvertisementAdminLis
 
 from rest_framework_simplejwt.views import TokenRefreshView
 from .signup_views import VerifyInstructorSignupOTPAPIView, ResendInstructorSignupOTPAPIView, VerifyStudentSignupOTPAPIView, ResendStudentSignupOTPAPIView
-from .learning_interest_views import LearningInterestListAPIView, MyLearningInterestsAPIView
+from .learning_interest_views import LearningInterestListAPIView, MyLearningInterestsAPIView, PremiumCategoryListAPIView
 
 from .analytics_views import (
 	TeacherChallengeAnalyticsAPIView,
@@ -173,6 +173,8 @@ urlpatterns = [
     path('admin/advertisements/', AdvertisementAdminListAPIView.as_view(), name='api-admin-advertisements'),
     path('admin/advertisements/<int:advertisement_id>/', AdvertisementAdminDetailAPIView.as_view(), name='api-admin-advertisement-detail'),
 	path('learning-interests/', LearningInterestListAPIView.as_view(), name='api-learning-interests'),
+	# The premium course's own category list — never the skill one above.
+	path('premium-categories/', PremiumCategoryListAPIView.as_view(), name='api-premium-categories'),
 	path('me/learning-interests/', MyLearningInterestsAPIView.as_view(), name='api-my-learning-interests'),
 	path('register/instructor/verify-otp/', VerifyInstructorSignupOTPAPIView.as_view(), name='api-instructor-signup-verify'),
 	path('register/student/verify-otp/', VerifyStudentSignupOTPAPIView.as_view(), name='api-student-signup-verify'),

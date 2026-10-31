@@ -1216,6 +1216,9 @@ class CourseSerializer(serializers.ModelSerializer):
 	learning_outcomes = CourseStringList(required=False)
 	requirements = CourseStringList(required=False)
 	skill_category_name = serializers.CharField(source='skill_category.name', read_only=True, allow_null=True)
+	# The premium list, parallel to the skill one and never the same table — see
+	# `PremiumCategory`.
+	premium_category_name = serializers.CharField(source='premium_category.name', read_only=True, allow_null=True)
 	students_enrolled = serializers.SerializerMethodField()
 	lessons_count = serializers.SerializerMethodField()
 	total_duration_seconds = serializers.SerializerMethodField()
@@ -1278,7 +1281,8 @@ class CourseSerializer(serializers.ModelSerializer):
 		model = Course
 		fields = [
 			'learning_outcomes', 'requirements', 'lead_instructor_id', 'bootcamp_profile', 'instructors',
-			'skill_category', 'skill_category_name', 'students_enrolled', 'lessons_count', 'total_duration_seconds', 'is_enrolled',
+			'skill_category', 'skill_category_name',
+			'premium_category', 'premium_category_name', 'students_enrolled', 'lessons_count', 'total_duration_seconds', 'is_enrolled',
 			'id',
 			'average_rating',
 			'review_count',
@@ -1399,14 +1403,58 @@ class CourseSerializer(serializers.ModelSerializer):
 					'grade': 'Grade is required for an academic course.'
 				})
 
-		elif course_type == 'skill':
+		elif course_type in ('skill', 'premium'):
+			# Premium is authored like a skill course — a category, no
+			# subject/grade — so it is placed the same way.
 			attrs['subject'] = None
 			attrs['grade'] = None
 
+		# **Two category lists, one field each.** A premium course is filed under
+		# `premium_category`; everything else under `skill_category`. The wrong
+		# one is cleared rather than rejected, so a type change cannot leave a
+		# course sitting in both taxonomies.
+		#
+		# Only when the field is actually being written: nulling it on every save
+		# would wipe a premium course's category on the next title edit, because a
+		# PATCH carries just the fields it changes.
+		wrong_category = 'skill_category' if course_type == 'premium' else 'premium_category'
+		if wrong_category in attrs or self.instance is None:
+			attrs[wrong_category] = None
+
+		if course_type == 'premium' and not is_paid:
+			# **There is no free premium course.** The type is a paid tier, not a
+			# cheaper one: a free one would hand the course out while the
+			# catalogue still called it premium. `Course.clean()` carries the same
+			# rule for the admin form, which is a separate path because the API
+			# writes rows without calling `full_clean`.
+			raise serializers.ValidationError({
+				'is_paid': 'A premium course must be paid.'
+			})
+
 		if is_paid:
-			if price is None or price <= 0:
+			# **A price is required to *publish*, not to save.**
+			#
+			# The builder creates the row at step 1 and asks for the amount at
+			# step 3, so a draft that is already marked paid has no price yet.
+			# Requiring one here made every premium course impossible to create:
+			# premium forces `is_paid` from the first save, so step 1 posted
+			# `is_paid: true, price: null` and got 400 — "A paid course must have
+			# a price greater than 0" — before the price field had ever been shown.
+			#
+			# `PublishReadiness.priceSet` is the client half of the same rule and
+			# refuses to publish without an amount; this is the half the server
+			# owns, so a course cannot reach the catalogue unpriced.
+			published = attrs.get(
+				'is_published',
+				getattr(self.instance, 'is_published', False)
+			)
+			if price is not None and price <= 0:
 				raise serializers.ValidationError({
 					'price': 'A paid course must have a price greater than 0.'
+				})
+			if published and price is None:
+				raise serializers.ValidationError({
+					'price': 'A paid course needs a price before it can be published.'
 				})
 		else:
 			attrs['price'] = None
@@ -1668,6 +1716,19 @@ class LearningCourseSerializer(serializers.Serializer):
 	next_lesson = ResumeLessonSerializer(read_only=True, allow_null=True)
 	resume_url = serializers.CharField(read_only=True, allow_null=True)
 	last_learning_activity = serializers.DateTimeField(read_only=True, allow_null=True)
+
+
+class PendingLearningCourseSerializer(LearningCourseSerializer):
+	"""A `pending_payment` card: the same shape, plus the payment to re-ask about.
+
+	**Only this list carries `latest_payment_*`.** An active course has nothing to
+	chase, and handing the client a payment id for one invites it to re-check a
+	settled row. `next_lesson` and `resume_url` are always null here — an unpaid
+	enrolment has nothing to resume — which is why they are not overridden.
+	"""
+
+	latest_payment_id = serializers.IntegerField(read_only=True, allow_null=True)
+	latest_payment_status = serializers.CharField(read_only=True, allow_null=True)
 
 
 class LessonProgressSerializer(serializers.ModelSerializer):

@@ -345,6 +345,35 @@ class LearningInterest(models.Model):
 		return self.name
 
 
+class PremiumCategory(models.Model):
+	"""The category list a **premium** course is filed under.
+
+	**Deliberately not `LearningInterest`.** That table is the student-facing
+	skill taxonomy — the signup interests step, the Skill tab's chips and
+	`/me/learning-interests/` all read it — so filing premium courses there would
+	put "Business" in front of a student choosing what they want to learn. Premium
+	is a paid tier with its own small set, seeded from the premium catalogue's own
+	chips (Art & Craft, Design, Physics, Business, Technology, Music).
+
+	Two lists, two tables. A premium course may not point at a skill category and
+	a skill course may not point at one of these; `Course.clean()` and
+	`CourseSerializer.validate` both enforce it.
+	"""
+
+	name = models.CharField(max_length=150)
+	slug = models.SlugField(max_length=150, unique=True)
+	display_order = models.PositiveSmallIntegerField(default=0)
+	is_active = models.BooleanField(default=True)
+	created_at = models.DateTimeField(auto_now_add=True)
+
+	class Meta:
+		db_table = 'premium_categories'
+		ordering = ['display_order', 'id']
+
+	def __str__(self):
+		return self.name
+
+
 class StudentProfile(models.Model):
 	LEGACY_ONBOARDING = 1
 	INTERESTS_ONBOARDING = 2
@@ -561,6 +590,12 @@ class Course(models.Model):
 	COURSE_TYPE_CHOICES = (
 		('academic', 'Academic'),
 		('skill', 'Skill Development'),
+		# **Premium is a paid skill course, not a fourth curriculum.** Same
+		# authoring as `skill` — a category, no subject/grade, no placement test —
+		# and the one difference is that it cannot be free. Enforced in `clean()`
+		# and in `CourseSerializer.validate`; both paths exist because the API
+		# writes rows without calling `full_clean`.
+		('premium', 'Premium'),
 		('bootcamp', 'Bootcamp'),
 	)
 	LEVEL_CHOICES = (
@@ -583,6 +618,10 @@ class Course(models.Model):
 	# need an M2M, and no screen asks for that yet.
 	language = models.CharField(max_length=50, blank=True, default='English')
 	skill_category = models.ForeignKey(LearningInterest, on_delete=models.SET_NULL, null=True, blank=True, related_name='courses')
+	# Premium courses are filed under their own list — see `PremiumCategory`. A
+	# course uses one or the other, never both; `clean()` and the serializer
+	# null the wrong one rather than letting a course sit in two taxonomies.
+	premium_category = models.ForeignKey(PremiumCategory, on_delete=models.SET_NULL, null=True, blank=True, related_name='courses')
 	subject = models.ForeignKey(Subject, on_delete=models.PROTECT, null=True, blank=True, related_name='courses')
 	grade = models.ForeignKey(Grade, on_delete=models.PROTECT, null=True, blank=True, related_name='courses')
 	is_paid = models.BooleanField(default=False)
@@ -594,6 +633,37 @@ class Course(models.Model):
 
 	class Meta:
 		db_table = 'courses'
+
+	def clean(self):
+		"""Rules the columns cannot express.
+
+		**A premium course must be paid.** The product has no free premium course,
+		so `is_paid=False` on one is not a cheaper premium course, it is a
+		contradiction — and it would hand the course out for nothing while the
+		catalogue still labelled it premium.
+
+		**Its price is required to publish, not to save.** The builder creates the
+		row at step 1 and asks for the amount at step 3, so a draft that is already
+		marked paid has no price yet; demanding one here would make the draft
+		unsaveable from the admin too.
+
+		This is the admin/form path; `CourseSerializer.validate` carries the same
+		rules for the API, which writes rows without calling `full_clean`.
+		"""
+		from django.core.exceptions import ValidationError
+		if self.course_type == 'premium':
+			if not self.is_paid:
+				raise ValidationError({'is_paid': 'A premium course must be paid.'})
+			if self.is_published and (self.price is None or self.price <= 0):
+				raise ValidationError({'price': 'A published premium course must have a price.'})
+			if self.skill_category_id:
+				raise ValidationError({
+					'skill_category': 'A premium course uses the premium categories, not the skill ones.'
+				})
+		elif self.premium_category_id:
+			raise ValidationError({
+				'premium_category': 'Only a premium course may use a premium category.'
+			})
 
 	def __str__(self):
 		return self.title

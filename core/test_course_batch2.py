@@ -305,6 +305,137 @@ class CourseBatch2Tests(TestCase):
         self.client.force_authenticate(self.other)
         self.assertEqual(self.client.patch(reverse('api-course-detail', args=[self.skill.pk]), {'requirements': ['Override']}, format='json').status_code, 403)
 
+    def test_premium_course_type_must_be_paid_and_priced(self):
+        """**There is no free premium course** — but a paid one may be saved
+        before it has a price.
+
+        The second half is the regression this test now pins: the builder creates
+        the row at step 1 and asks for the amount at step 3, and premium forces
+        `is_paid` from the very first save. Demanding a price at creation made
+        every premium course impossible to create — the app answered
+        "A paid course must have a price greater than 0" on step 1, before the
+        price field had ever been shown.
+        """
+        self.client.force_authenticate(self.owner)
+        url = reverse('api-course-list-create')
+        base = {'title': 'Premium DevOps', 'course_type': 'premium'}
+
+        response = self.client.post(url, {**base, 'is_paid': False}, format='json')
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn('is_paid', response.data)
+
+        # A draft with no amount yet: allowed, because step 3 has not happened.
+        response = self.client.post(url, {**base, 'is_paid': True}, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        draft_id = response.data['id']
+        self.assertIsNone(response.data['price'])
+
+        # …but it cannot reach the catalogue unpriced.
+        detail = reverse('api-course-detail', args=[draft_id])
+        response = self.client.patch(detail, {'is_published': True}, format='json')
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn('price', response.data)
+
+        # Publishing is gated on verification, so the instructor has to be
+        # verified before the price rule can even be reached.
+        self.owner.verification_status = 'verified'
+        self.owner.save(update_fields=['verification_status'])
+        response = self.client.patch(detail, {'price': '1999.00', 'is_published': True}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertTrue(response.data['is_published'])
+
+        # A zero amount is still nonsense, draft or not.
+        response = self.client.post(url, {**base, 'is_paid': True, 'price': '0'}, format='json')
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn('price', response.data)
+
+    def test_a_premium_course_enrols_into_pending_payment(self):
+        # Premium is authored like a skill course, so it must be buyable like one:
+        # `EnrollCourseSerializer` refuses only `academic`. A premium course that
+        # answered COURSE_NOT_ENROLLABLE would be a course nobody could buy.
+        premium = Course.objects.create(title='Premium DevOps', course_type='premium',
+            instructor=self.owner, is_published=True, is_paid=True, price='999.00')
+        self.client.force_authenticate(self.student)
+        response = self.client.post(reverse('api-enroll-course', args=[premium.pk]), {}, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['status'], 'pending_payment')
+
+    def test_premium_categories_are_their_own_list(self):
+        """Two tables, not one filtered list.
+
+        `/learning-interests/` is the student's own interest taxonomy — the
+        signup step reads it — so premium categories live in `PremiumCategory`
+        instead of being appended to it.
+
+        **The names are allowed to overlap** (`Music` is both a skill interest
+        and a premium category); what must not happen is the two endpoints
+        reading the same rows. That is what the id → name check below proves:
+        each id the premium endpoint returns resolves to a `PremiumCategory`, so
+        it cannot have come from the interest table.
+        """
+        from .models import PremiumCategory
+        self.client.force_authenticate(self.owner)
+
+        premium = self.client.get(reverse('api-premium-categories')).data
+        self.assertEqual(
+            [row['name'] for row in premium],
+            ['Art & Craft', 'Design', 'Physics', 'Business', 'Technology', 'Music'],
+        )
+        for row in premium:
+            self.assertEqual(PremiumCategory.objects.get(pk=row['id']).name, row['name'])
+
+        # The interest list is still served, and still a list of its own rows.
+        skills = self.client.get(reverse('api-learning-interests')).data
+        self.assertTrue(skills)
+        self.assertNotIn('Art & Craft', [row['name'] for row in skills])
+
+    def test_premium_course_files_under_its_own_category(self):
+        from .models import LearningInterest, PremiumCategory
+        self.client.force_authenticate(self.owner)
+        premium = PremiumCategory.objects.get(slug='design')
+        skill = LearningInterest.objects.create(name='Coding', slug='coding-premium-test')
+        url = reverse('api-course-list-create')
+
+        # Both ids are sent; the serializer keeps the one that belongs to the
+        # course type and clears the other, so a course cannot sit in two
+        # taxonomies at once.
+        response = self.client.post(url, {
+            'title': 'Premium design', 'course_type': 'premium',
+            'is_paid': True, 'price': '1999.00',
+            'premium_category': premium.pk,
+            'skill_category': skill.pk,
+        }, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['premium_category'], premium.pk)
+        self.assertEqual(response.data['premium_category_name'], 'Design')
+        self.assertIsNone(response.data['skill_category'])
+        self.assertIsNone(response.data['skill_category_name'])
+
+        # And the other way round: a skill course cannot take a premium category.
+        response = self.client.post(url, {
+            'title': 'Skill with the wrong category', 'course_type': 'skill',
+            'premium_category': premium.pk,
+        }, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertIsNone(response.data['premium_category'])
+
+    def test_clean_refuses_a_premium_course_in_the_skill_taxonomy(self):
+        from django.core.exceptions import ValidationError
+        from .models import LearningInterest, PremiumCategory
+        skill = LearningInterest.objects.create(name='Drawing', slug='drawing-premium-test')
+        premium = PremiumCategory.objects.get(slug='business')
+
+        wrong = Course(title='X', course_type='premium', instructor=self.owner,
+            is_paid=True, price='10.00', skill_category=skill)
+        with self.assertRaises(ValidationError):
+            wrong.full_clean()
+
+        # A skill course may not point at a premium category either.
+        also_wrong = Course(title='Y', course_type='skill', instructor=self.owner,
+            premium_category=premium)
+        with self.assertRaises(ValidationError):
+            also_wrong.full_clean()
+
     def test_course_lists_reject_invalid_json(self):
         self.client.force_authenticate(self.owner)
         url = reverse('api-course-detail', args=[self.skill.pk])
