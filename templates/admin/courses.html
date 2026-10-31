@@ -28,11 +28,12 @@
     <main class="dashboard-main">
         <header class="topbar"><div><p class="eyebrow">Content management</p><h1>Courses</h1></div><div class="top-actions"><a class="outline-button" href="{% url 'dashboard' %}">Back to overview</a></div></header>
         {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
-        <p class="page-intro">Add a course on behalf of any instructor. Instructors can also create their own courses directly through the app.</p>
+        <p class="page-intro">Add a course on behalf of any instructor. Instructors can also create their own courses directly through the app. <strong>Bootcamps are different:</strong> only an administrator can create one, and only from here — the app has no path to it.</p>
         <article class="management-card">
             <div class="section-heading"><div><p class="eyebrow">Add</p><h2>New course</h2></div></div>
             <form method="post" class="form-stack">
                 {% csrf_token %}
+                <input type="hidden" name="form" value="course">
                 {% for field in form %}
                     <label for="{{ field.id_for_label }}">{{ field.label }}</label>
                     {{ field }}
@@ -43,8 +44,24 @@
             </form>
         </article>
         <article class="management-card">
+            <div class="section-heading"><div><p class="eyebrow">Admin only</p><h2>New ICT &amp; AI bootcamp</h2></div></div>
+            <p class="page-intro">A bootcamp is a course with a venue, a run of days and a roster. Creating one here also creates its profile and its instructor roster; the next screen adds the Day tabs' lessons and the Resources tab's files.</p>
+            <form method="post" class="form-stack">
+                {% csrf_token %}
+                <input type="hidden" name="form" value="bootcamp">
+                {% for field in bootcamp_form %}
+                    <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                    {{ field }}
+                    {% if field.help_text %}<small class="count-label">{{ field.help_text }}</small>{% endif %}
+                    {% for error in field.errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                {% endfor %}
+                {% for error in bootcamp_form.non_field_errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                <button class="primary-button" type="submit">Add bootcamp</button>
+            </form>
+        </article>
+        <article class="management-card">
             <div class="section-heading"><div><p class="eyebrow">All courses</p><h2>Courses</h2></div><span class="count-label">{{ courses|length }} total</span></div>
-            <div class="table-wrap"><table><thead><tr><th>Title</th><th>Instructor</th><th>Type</th><th>Price</th><th>Status</th></tr></thead><tbody>
+            <div class="table-wrap"><table><thead><tr><th>Title</th><th>Instructor</th><th>Type</th><th>Price</th><th>Status</th><th></th></tr></thead><tbody>
                 {% for course in courses %}
                 <tr>
                     <td>{{ course.title }}</td>
@@ -52,9 +69,10 @@
                     <td>{{ course.get_course_type_display }}</td>
                     <td>{% if course.is_paid %}{{ course.price }}{% else %}Free{% endif %}</td>
                     <td><span class="pill {% if course.is_published %}verified{% else %}pending{% endif %}">{% if course.is_published %}Published{% else %}Draft{% endif %}</span></td>
+                    <td>{% if course.course_type == 'bootcamp' %}<a class="outline-button" href="{% url 'manage_bootcamp_content' course.id %}">Lessons &amp; files</a>{% endif %}</td>
                 </tr>
                 {% empty %}
-                <tr><td colspan="5" class="empty-state">No courses yet.</td></tr>
+                <tr><td colspan="6" class="empty-state">No courses yet.</td></tr>
                 {% endfor %}
             </tbody></table></div>
         </article>

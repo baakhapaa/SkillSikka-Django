@@ -10,6 +10,9 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
 
 from .forms import (
+	BootcampForm,
+	BootcampLessonForm,
+	BootcampResourceForm,
 	CertificateCriteriaForm,
 	CourseForm,
 	DistrictForm,
@@ -27,8 +30,10 @@ from .models import (
 	AdminAuditLog,
 	CertificateCriteria,
 	Course,
+	CourseResource,
 	District,
 	Grade,
+	Lesson,
 	Municipality,
 	Province,
 	Role,
@@ -345,16 +350,107 @@ def manage_courses(request):
 		return redirect('dashboard')
 
 	form = CourseForm()
+	bootcamp_form = BootcampForm()
+
 	if request.method == 'POST':
-		form = CourseForm(request.POST)
-		if form.is_valid():
-			course = form.save()
-			messages.success(request, f'Course "{course.title}" added successfully.')
-			return redirect('manage_courses')
+		# Two forms share this page and both post here, so the hidden `form`
+		# field decides which one is being submitted. Without it the course form
+		# would try to validate a bootcamp post and answer six field errors.
+		if request.POST.get('form') == 'bootcamp':
+			bootcamp_form = BootcampForm(request.POST)
+			if bootcamp_form.is_valid():
+				course = bootcamp_form.save()
+				messages.success(
+					request,
+					f'Bootcamp "{course.title}" added. Add its lessons and files next.',
+				)
+				return redirect('manage_bootcamp_content', course_id=course.pk)
+		else:
+			form = CourseForm(request.POST)
+			if form.is_valid():
+				course = form.save()
+				messages.success(request, f'Course "{course.title}" added successfully.')
+				return redirect('manage_courses')
 
 	return render(request, 'admin/courses.html', {
 		'form': form,
+		'bootcamp_form': bootcamp_form,
 		'courses': Course.objects.select_related('instructor', 'subject', 'grade').order_by('-created_at'),
+	})
+
+
+@login_required
+def manage_bootcamp_content(request, course_id):
+	"""A bootcamp's lessons and files, from the dashboard.
+
+	**Admin-only, like the bootcamp itself.** Instructors cannot reach this page
+	even for a bootcamp they coach: the API refuses their writes with
+	`ADMIN_ONLY`, and this view refuses the page, so the rule holds in both
+	directions rather than only where a client happens to look.
+	"""
+	if not is_admin(request.user):
+		messages.error(request, 'You do not have permission to manage bootcamps.')
+		return redirect('dashboard')
+
+	course = get_object_or_404(
+		Course.objects.select_related('bootcamp_profile', 'instructor'),
+		pk=course_id,
+	)
+	if course.course_type != 'bootcamp':
+		messages.error(request, 'That course is not a bootcamp.')
+		return redirect('manage_courses')
+
+	lesson_form = BootcampLessonForm(bootcamp=course)
+	resource_form = BootcampResourceForm(bootcamp=course)
+	details_form = BootcampForm(instance=course)
+
+	if request.method == 'POST':
+		action = request.POST.get('form')
+		if action == 'details':
+			details_form = BootcampForm(request.POST, instance=course)
+			if details_form.is_valid():
+				details_form.save()
+				messages.success(request, 'Bootcamp details updated.')
+				return redirect('manage_bootcamp_content', course_id=course.pk)
+		elif action == 'lesson':
+			lesson_form = BootcampLessonForm(request.POST, bootcamp=course)
+			if lesson_form.is_valid():
+				lesson = lesson_form.save(course)
+				messages.success(request, f'Lesson "{lesson.title}" added to Day {lesson.day_number}.')
+				return redirect('manage_bootcamp_content', course_id=course.pk)
+		elif action == 'resource':
+			resource_form = BootcampResourceForm(request.POST, bootcamp=course)
+			if resource_form.is_valid():
+				resource = resource_form.save(course)
+				messages.success(request, f'File "{resource.title}" added.')
+				return redirect('manage_bootcamp_content', course_id=course.pk)
+		elif action == 'delete_lesson':
+			Lesson.objects.filter(pk=request.POST.get('lesson_id'), course=course).delete()
+			messages.success(request, 'Lesson removed.')
+			return redirect('manage_bootcamp_content', course_id=course.pk)
+		elif action == 'delete_resource':
+			CourseResource.objects.filter(pk=request.POST.get('resource_id'), course=course).delete()
+			messages.success(request, 'File removed.')
+			return redirect('manage_bootcamp_content', course_id=course.pk)
+
+	lessons = Lesson.objects.filter(course=course).order_by('day_number', 'order', 'pk')
+	resources = CourseResource.objects.filter(course=course).select_related('lesson').order_by('order', 'pk')
+
+	# Grouped here rather than in the template: the page mirrors the app's Day
+	# tabs, and `regroup` on a nullable `day_number` would print an empty tab.
+	days = {}
+	for lesson in lessons:
+		days.setdefault(lesson.day_number or 1, []).append(lesson)
+
+	return render(request, 'admin/bootcamp_content.html', {
+		'course': course,
+		'profile': getattr(course, 'bootcamp_profile', None),
+		'details_form': details_form,
+		'lesson_form': lesson_form,
+		'resource_form': resource_form,
+		'days': sorted(days.items()),
+		'resources': resources,
+		'lessons_count': lessons.count(),
 	})
 
 

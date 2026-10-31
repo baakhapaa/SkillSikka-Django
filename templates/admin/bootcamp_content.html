@@ -1,0 +1,151 @@
+{% extends 'base.html' %}
+{% block title %}{{ course.title }} | SkillSikka{% endblock %}
+{% block content %}
+<style>
+.page-intro{color:var(--muted);max-width:620px;margin-bottom:28px}.management-card{background:var(--white);border:1px solid var(--line);padding:24px;border-radius:4px;box-shadow:var(--shadow);margin-bottom:24px}.management-card h2{margin-bottom:0}.count-label{color:var(--muted);font-size:13px}.management-card .form-stack{margin:18px 0 24px}.form-stack select,.form-stack input[type=text],.form-stack input[type=number],.form-stack input[type=url],.form-stack input[type=date],.form-stack textarea{width:100%;padding:15px 16px;border:1px solid #d7e1df;border-radius:3px;background:var(--white);font:inherit;color:var(--ink)}.form-error{color:#b64b45;font-size:12px}.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;margin-top:18px}.summary-grid div small{display:block;color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:5px}.summary-grid div strong{font-size:15px}.inline-form{display:inline}.link-button{background:none;border:0;color:#a5413b;font:600 12px 'DM Sans';cursor:pointer;padding:0}
+</style>
+<div class="app-shell">
+    <aside class="sidebar">
+        <div class="brand"><span class="brand-mark small">SS</span><strong>SkillSikka</strong></div>
+        <p class="sidebar-label">Workspace</p>
+        <nav>
+            <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
+            <a class="nav-item" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
+            <a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
+            <a class="nav-item active" href="{% url 'manage_courses' %}"><span>▣</span> Courses</a>
+            <a class="nav-item" href="{% url 'manage_events' %}"><span>◷</span> Events</a>
+            <a class="nav-item" href="{% url 'manage_payments' %}"><span>₨</span> Payments</a>
+            <a class="nav-item" href="{% url 'manage_streak_settings' %}"><span>◈</span> Streak settings</a>
+            <a class="nav-item" href="{% url 'manage_certificate_criteria' %}"><span>⚑</span> Certificate criteria</a>
+            <a class="nav-item" href="{% url 'manage_users' %}"><span>◎</span> Users</a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="avatar">{{ request.user.name|slice:':1'|upper }}</div>
+            <div><strong>{{ request.user.name }}</strong><small>{{ request.user.role.name|default:'Administrator' }}</small></div>
+            <a class="logout" href="{% url 'logout' %}" aria-label="Log out">↗</a>
+        </div>
+    </aside>
+    <main class="dashboard-main">
+        <header class="topbar"><div><p class="eyebrow">Bootcamp content</p><h1>{{ course.title }}</h1></div><div class="top-actions"><a class="outline-button" href="{% url 'manage_courses' %}">Back to courses</a></div></header>
+        {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
+        <p class="page-intro">Lessons appear under the app's Day tabs, in the order below. Files appear on the Resources tab, grouped by section.</p>
+
+        <article class="management-card">
+            <div class="section-heading"><div><p class="eyebrow">Overview</p><h2>{% if course.is_published %}Published{% else %}Draft{% endif %}</h2></div><span class="count-label">{{ lessons_count }} lesson{{ lessons_count|pluralize }}</span></div>
+            <div class="summary-grid">
+                <div><small>Venue</small><strong>{{ profile.venue_name|default:'—' }}</strong></div>
+                <div><small>Days</small><strong>{{ profile.days|default:'—' }}</strong></div>
+                <div><small>Runs</small><strong>{{ profile.starts_on|date:'d M Y'|default:'—' }} → {{ profile.ends_on|date:'d M Y'|default:'—' }}</strong></div>
+                <div><small>Status</small><strong>{{ profile.get_status_display|default:'—' }}</strong></div>
+                <div><small>Lead</small><strong>{{ course.instructor.name }}</strong></div>
+                <div><small>Roster</small><strong>{% for row in course.instructors.all %}{{ row.instructor.name }}{% if not forloop.last %}, {% endif %}{% empty %}—{% endfor %}</strong></div>
+            </div>
+        </article>
+
+        <article class="management-card">
+            <details>
+                <summary style="cursor:pointer"><span class="eyebrow" style="display:inline">Edit</span> <strong style="font-size:19px">Details</strong></summary>
+                <p class="page-intro" style="margin-top:14px">Venue, run, dates, roster and art. Shortening the run under an existing lesson's day is refused — move the lesson first.</p>
+                <form method="post" class="form-stack">
+                    {% csrf_token %}
+                    <input type="hidden" name="form" value="details">
+                    {% for field in details_form %}
+                        <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                        {{ field }}
+                        {% if field.help_text %}<small class="count-label">{{ field.help_text }}</small>{% endif %}
+                        {% for error in field.errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                    {% endfor %}
+                    {% for error in details_form.non_field_errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                    <button class="primary-button" type="submit">Save details</button>
+                </form>
+            </details>
+        </article>
+
+        <article class="management-card">
+            <div class="section-heading"><div><p class="eyebrow">Add</p><h2>Lesson</h2></div></div>
+            <form method="post" class="form-stack">
+                {% csrf_token %}
+                <input type="hidden" name="form" value="lesson">
+                {% for field in lesson_form %}
+                    <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                    {{ field }}
+                    {% if field.help_text %}<small class="count-label">{{ field.help_text }}</small>{% endif %}
+                    {% for error in field.errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                {% endfor %}
+                {% for error in lesson_form.non_field_errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                <button class="primary-button" type="submit">Add lesson</button>
+            </form>
+        </article>
+
+        <article class="management-card">
+            <div class="section-heading"><div><p class="eyebrow">Curriculum</p><h2>Lessons by day</h2></div></div>
+            {% for day, lessons in days %}
+                <div class="section-heading"><div><p class="eyebrow">Day {{ day }}</p></div><span class="count-label">{{ lessons|length }} lesson{{ lessons|length|pluralize }}</span></div>
+                <div class="table-wrap" style="margin-bottom:22px"><table><thead><tr><th>#</th><th>Section</th><th>Title</th><th>Kind</th><th>Duration</th><th>Preview</th><th></th></tr></thead><tbody>
+                    {% for lesson in lessons %}
+                    <tr>
+                        <td>{{ lesson.order }}</td>
+                        <td>{{ lesson.section|default:'—' }}</td>
+                        <td>{{ lesson.title }}</td>
+                        <td>{{ lesson.get_content_type_display }}</td>
+                        <td>{% if lesson.duration_seconds %}{{ lesson.duration_seconds }}s{% else %}—{% endif %}</td>
+                        <td>{% if lesson.is_preview %}<span class="pill verified">Free</span>{% else %}—{% endif %}</td>
+                        <td>
+                            <form method="post" class="inline-form">
+                                {% csrf_token %}
+                                <input type="hidden" name="form" value="delete_lesson">
+                                <input type="hidden" name="lesson_id" value="{{ lesson.id }}">
+                                <button class="link-button" type="submit">Remove</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody></table></div>
+            {% empty %}
+                <p class="empty-state">No lessons yet. Add the first one above.</p>
+            {% endfor %}
+        </article>
+
+        <article class="management-card">
+            <div class="section-heading"><div><p class="eyebrow">Add</p><h2>Resource file</h2></div></div>
+            <form method="post" class="form-stack">
+                {% csrf_token %}
+                <input type="hidden" name="form" value="resource">
+                {% for field in resource_form %}
+                    <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                    {{ field }}
+                    {% if field.help_text %}<small class="count-label">{{ field.help_text }}</small>{% endif %}
+                    {% for error in field.errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                {% endfor %}
+                {% for error in resource_form.non_field_errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                <button class="primary-button" type="submit">Add file</button>
+            </form>
+        </article>
+
+        <article class="management-card">
+            <div class="section-heading"><div><p class="eyebrow">Resources tab</p><h2>Files</h2></div><span class="count-label">{{ resources|length }} total</span></div>
+            <div class="table-wrap"><table><thead><tr><th>Section</th><th>Title</th><th>Format</th><th>Lesson</th><th>Order</th><th></th></tr></thead><tbody>
+                {% for resource in resources %}
+                <tr>
+                    <td>{{ resource.section|default:'Course-wide' }}</td>
+                    <td>{{ resource.title }}</td>
+                    <td>{{ resource.get_file_format_display }}</td>
+                    <td>{{ resource.lesson.title|default:'—' }}</td>
+                    <td>{{ resource.order }}</td>
+                    <td>
+                        <form method="post" class="inline-form">
+                            {% csrf_token %}
+                            <input type="hidden" name="form" value="delete_resource">
+                            <input type="hidden" name="resource_id" value="{{ resource.id }}">
+                            <button class="link-button" type="submit">Remove</button>
+                        </form>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="6" class="empty-state">No files yet.</td></tr>
+                {% endfor %}
+            </tbody></table></div>
+        </article>
+    </main>
+</div>
+{% endblock %}
