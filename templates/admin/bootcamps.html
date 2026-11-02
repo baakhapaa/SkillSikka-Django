@@ -1,0 +1,27 @@
+{% extends 'base.html' %}
+{% block title %}ICT &amp; AI Bootcamp | SkillSikka{% endblock %}
+{% block content %}
+<div class="app-shell">
+    {% include 'admin/bootcamp_sidebar.html' %}
+    <main class="dashboard-main">
+        <header class="topbar"><div><p class="eyebrow">Admin content management</p><h1>ICT &amp; AI Bootcamp</h1></div><a class="primary-button" href="{% url 'add_bootcamp' %}">Add Bootcamp</a></header>
+        {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
+        <p>Manage bootcamp runs, day-by-day content, instructors and resources.</p>
+        <div class="table-wrap"><table>
+            <thead><tr><th>Bootcamp</th><th>Status</th><th>Venue</th><th>Dates</th><th>Days</th><th>Lead instructor</th><th>Instructors</th><th>Lessons</th><th>Enrolled students</th><th>Publication</th><th>Actions</th></tr></thead>
+            <tbody>{% for camp in bootcamps %}<tr>
+                <td>{{ camp.title }}</td><td>{{ camp.bootcamp_profile.get_status_display|default:'—' }}</td>
+                <td>{{ camp.bootcamp_profile.venue_name|default:'—' }}</td>
+                <td>{{ camp.bootcamp_profile.starts_on|date:'d M Y' }} – {{ camp.bootcamp_profile.ends_on|date:'d M Y' }}</td>
+                <td>{{ camp.bootcamp_profile.days }}</td><td>{{ camp.instructor.name }}</td>
+                <td>{{ camp.instructors_count }}</td><td>{{ camp.lessons_count }}</td><td>{{ camp.enrolled_count }}</td>
+                <td><span class="pill {% if camp.is_published %}verified{% else %}pending{% endif %}">{% if camp.is_published %}Published{% else %}Draft{% endif %}</span></td>
+                <td><a href="{% url 'manage_bootcamp_content' camp.id %}#details">Edit / Publish</a> ·
+                    <a href="{% url 'manage_bootcamp_content' camp.id %}#content">Manage Content</a> ·
+                    <a href="{% url 'manage_bootcamp_instructors' camp.id %}">Manage Instructors</a> ·
+                    <a href="{% url 'manage_bootcamp_content' camp.id %}#resources">Manage Resources</a></td>
+            </tr>{% empty %}<tr><td colspan="11" class="empty-state">No bootcamps yet. Add the first bootcamp to get started.</td></tr>{% endfor %}</tbody>
+        </table></div>
+    </main>
+</div>
+{% endblock %}

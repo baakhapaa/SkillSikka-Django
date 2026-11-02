@@ -1,4 +1,5 @@
 from django import forms
+from decimal import Decimal
 from django.db import transaction
 
 from .models import (
@@ -120,9 +121,7 @@ class BootcampForm(forms.Form):
 	one. [save] writes all three in a single transaction so a rejected profile
 	cannot leave a half-built course behind.
 
-	A bootcamp is **free by construction**: the design has no price anywhere, and
-	a camp is sold as a seat, not as a course. `is_paid`/`price` are therefore not
-	fields here.
+	Free remains the default; paid bootcamps use the existing Course price rules.
 	"""
 
 	title = forms.CharField(
@@ -194,6 +193,8 @@ class BootcampForm(forms.Form):
 		required=False,
 	)
 	language = forms.CharField(required=False, max_length=50, initial='English')
+	is_paid = forms.BooleanField(required=False, label='Paid bootcamp')
+	price = forms.DecimalField(required=False, max_digits=8, decimal_places=2, min_value=Decimal('0.01'))
 	is_published = forms.BooleanField(
 		required=False,
 		initial=True,
@@ -235,6 +236,8 @@ class BootcampForm(forms.Form):
 			'thumbnail_url': instance.thumbnail_url,
 			'level': instance.level,
 			'language': instance.language,
+			'is_paid': instance.is_paid,
+			'price': instance.price,
 			'is_published': instance.is_published,
 		})
 
@@ -246,6 +249,10 @@ class BootcampForm(forms.Form):
 			# Same rule as `BootcampProfile.clean()`; caught here so the admin
 			# sees the message on the field instead of a 500 from the model.
 			self.add_error('ends_on', 'End date must not precede start date.')
+		if cleaned.get('is_paid') and not cleaned.get('price'):
+			self.add_error('price', 'A paid bootcamp must have a price greater than 0.')
+		if not cleaned.get('is_paid'):
+			cleaned['price'] = None
 		lead = cleaned.get('instructor')
 		coaches = cleaned.get('coaches')
 		if lead and coaches and lead in coaches:
@@ -272,8 +279,8 @@ class BootcampForm(forms.Form):
 				course_type='bootcamp',
 				level=data.get('level') or '',
 				language=data.get('language') or 'English',
-				is_paid=False,
-				price=None,
+				is_paid=data.get('is_paid', False),
+				price=data.get('price'),
 				thumbnail_url=data.get('thumbnail_url') or '',
 				is_published=data.get('is_published', False),
 			)
@@ -285,6 +292,8 @@ class BootcampForm(forms.Form):
 			course.language = data.get('language') or 'English'
 			course.thumbnail_url = data.get('thumbnail_url') or ''
 			course.is_published = data.get('is_published', False)
+			course.is_paid = data.get('is_paid', False)
+			course.price = data.get('price')
 			course.save()
 		BootcampProfile.objects.update_or_create(
 			course=course,
@@ -301,17 +310,8 @@ class BootcampForm(forms.Form):
 				'quality_label': data.get('quality_label') or '',
 			},
 		)
-		# The roster is replaced wholesale, the same way `CourseSerializer.update`
-		# does it: a coach removed in the form has to disappear from the roster,
-		# and merging by hand would keep stale rows.
-		course.instructors.all().delete()
-		CourseInstructor.objects.create(
-			course=course, instructor=data['instructor'], role='lead', order=0,
-		)
-		for index, coach in enumerate(data.get('coaches') or [], start=1):
-			CourseInstructor.objects.create(
-				course=course, instructor=coach, role='coach', order=index,
-			)
+		# Remove deselected members while preserving retained coach/guest roles.
+		_save_bootcamp_roster(course, data['instructor'], data.get('coaches'))
 		# The instance came in with `select_related('bootcamp_profile')`, so its
 		# cached profile is the pre-update one. Same clear as
 		# `CourseSerializer.update`, and for the same reason: the next read of
@@ -321,7 +321,67 @@ class BootcampForm(forms.Form):
 		return course
 
 
-class BootcampLessonForm(forms.Form):
+def _save_bootcamp_roster(course, lead, coaches):
+	"""Replace membership while retaining existing coach/guest roles."""
+	coaches = list(coaches or [])
+	course.instructors.exclude(instructor__in=[lead, *coaches]).delete()
+	CourseInstructor.objects.update_or_create(course=course, instructor=lead, defaults={'role': 'lead', 'order': 0})
+	for index, coach in enumerate(coaches, start=1):
+		row, created = CourseInstructor.objects.get_or_create(
+			course=course, instructor=coach, defaults={'role': 'coach', 'order': index})
+		if not created and row.role == 'lead':
+			row.role, row.order = 'coach', index
+			row.save(update_fields=['role', 'order'])
+
+
+class BootcampInstructorForm(forms.Form):
+	instructor = forms.ModelChoiceField(queryset=User.objects.filter(
+		role__name='instructor', is_active=True, verification_status='verified'), label='Lead instructor')
+	coaches = forms.ModelMultipleChoiceField(queryset=User.objects.filter(
+		role__name='instructor', is_active=True, verification_status='verified'), required=False,
+		label='Other instructors', help_text='Existing coach/guest roles are retained. New members join as coaches.')
+
+	def __init__(self, *args, instance, **kwargs):
+		self.instance = instance
+		super().__init__(*args, **kwargs)
+		self.initial.update(instructor=instance.instructor_id,
+			coaches=list(instance.instructors.exclude(instructor=instance.instructor).values_list('instructor_id', flat=True)))
+
+	def clean(self):
+		data = super().clean()
+		if data.get('instructor') and data.get('coaches') and data['instructor'] in data['coaches']:
+			self.add_error('coaches', 'The lead instructor is already on the roster.')
+		return data
+
+	@transaction.atomic
+	def save(self):
+		self.instance.instructor = self.cleaned_data['instructor']
+		self.instance.save(update_fields=['instructor'])
+		_save_bootcamp_roster(self.instance, self.instance.instructor, self.cleaned_data.get('coaches'))
+		return self.instance
+
+
+class BootcampUploadForm(forms.Form):
+	"""Use the existing course asset upload limits and storage path."""
+	def clean_upload(self, field, kind):
+		from .api_views import CourseAssetUploadAPIView
+		upload = self.cleaned_data.get(field)
+		if upload:
+			policy = CourseAssetUploadAPIView
+			allowed = policy.LESSON_TYPES if kind == 'lesson' else policy.RESOURCE_TYPES
+			limit = policy.LESSON_MAX_BYTES if kind == 'lesson' else policy.RESOURCE_MAX_BYTES
+			if upload.content_type.lower() not in allowed:
+				raise forms.ValidationError('This file type is not supported.')
+			if upload.size > limit:
+				raise forms.ValidationError(f'That file is larger than {limit // (1024 * 1024)} MB.')
+		return upload
+
+	def store_upload(self, field, kind, course, request):
+		from .api_views import CourseAssetUploadAPIView
+		return CourseAssetUploadAPIView()._store(self.cleaned_data[field], kind, course, request)['url']
+
+
+class BootcampLessonForm(BootcampUploadForm):
 	"""One lesson on a bootcamp's Day tab.
 
 	`day_number` is what the app groups by; it must sit inside the profile's
@@ -356,9 +416,10 @@ class BootcampLessonForm(forms.Form):
 	)
 	content_text = forms.CharField(
 		required=False,
-		label='Text body',
+		label='Description / text body',
 		widget=forms.Textarea(attrs={'rows': 3}),
 	)
+	content_file = forms.FileField(required=False, label='Upload video / PDF / ebook')
 	is_preview = forms.BooleanField(
 		required=False,
 		label='Free preview',
@@ -367,12 +428,24 @@ class BootcampLessonForm(forms.Form):
 	order = forms.IntegerField(
 		required=False,
 		min_value=0,
+		max_value=32767,
 		help_text='Leave blank to append to the day.',
 	)
 
-	def __init__(self, *args, bootcamp=None, **kwargs):
+	def __init__(self, *args, bootcamp=None, instance=None, **kwargs):
 		super().__init__(*args, **kwargs)
 		self.bootcamp = bootcamp
+		self.instance = instance
+		if bootcamp and getattr(bootcamp, 'bootcamp_profile', None):
+			self.fields['day_number'].widget = forms.Select(choices=[(day, f'Day {day}') for day in range(1, bootcamp.bootcamp_profile.days + 1)])
+		if instance:
+			self.initial.update({key: getattr(instance, key) for key in [
+				'day_number', 'section', 'title', 'content_type', 'content_url', 'content_text', 'is_preview', 'order']})
+			seconds = instance.duration_seconds
+			self.initial['duration'] = f'{seconds // 60}:{seconds % 60:02}' if seconds is not None else ''
+
+	def clean_content_file(self):
+		return self.clean_upload('content_file', 'lesson')
 
 	def clean_duration(self):
 		return parse_duration(self.cleaned_data.get('duration'))
@@ -386,17 +459,26 @@ class BootcampLessonForm(forms.Form):
 		kind = cleaned.get('content_type')
 		if kind == 'text' and not (cleaned.get('content_text') or '').strip():
 			self.add_error('content_text', 'Text content is required for a text lesson.')
-		if kind != 'text' and not cleaned.get('content_url'):
+		upload = cleaned.get('content_file')
+		if upload:
+			expected = {'video': {'video/mp4', 'video/quicktime', 'video/x-m4v'},
+				'pdf': {'application/pdf'}, 'ebook': {'application/epub+zip'}}
+			if upload.content_type.lower() not in expected.get(kind, set()):
+				self.add_error('content_file', 'The file must match the selected content kind.')
+		if kind != 'text' and not cleaned.get('content_url') and not upload:
 			self.add_error('content_url', 'A content URL is required for this lesson type.')
 		return cleaned
 
-	def save(self, course):
+	def save(self, course, request=None):
 		data = self.cleaned_data
 		order = data.get('order')
 		if order is None:
 			last = Lesson.objects.filter(course=course).order_by('-order').values_list('order', flat=True).first()
 			order = (last or 0) + 1
-		return Lesson.objects.create(
+		if data.get('content_file'):
+			data['content_url'] = self.store_upload('content_file', 'lesson', course, request)
+		lesson = self.instance or Lesson(course=course)
+		values = dict(
 			course=course,
 			title=data['title'],
 			section=(data.get('section') or '').strip() or None,
@@ -408,9 +490,13 @@ class BootcampLessonForm(forms.Form):
 			is_preview=data.get('is_preview', False),
 			order=order,
 		)
+		for key, value in values.items():
+			setattr(lesson, key, value)
+		lesson.save()
+		return lesson
 
 
-class BootcampResourceForm(forms.Form):
+class BootcampResourceForm(BootcampUploadForm):
 	"""One file on the bootcamp's Resources tab, optionally tied to a lesson."""
 
 	section = forms.CharField(
@@ -428,25 +514,42 @@ class BootcampResourceForm(forms.Form):
 		label='Format',
 	)
 	file_url = forms.URLField(
+		required=False,
 		label='File URL',
 		widget=forms.URLInput(attrs={'placeholder': 'https://.../template.pdf'}),
 	)
+	resource_file = forms.FileField(required=False, label='Upload resource')
 	lesson = forms.ModelChoiceField(
 		queryset=Lesson.objects.none(),
 		required=False,
 		label='Lesson',
 		help_text='Leave blank for a course-wide file.',
 	)
-	order = forms.IntegerField(required=False, min_value=0)
+	order = forms.IntegerField(required=False, min_value=0, max_value=32767)
 
-	def __init__(self, *args, bootcamp=None, **kwargs):
+	def __init__(self, *args, bootcamp=None, instance=None, **kwargs):
 		super().__init__(*args, **kwargs)
+		self.instance = instance
+		if instance:
+			self.initial.update({key: getattr(instance, key) for key in ['section', 'title', 'file_format', 'file_url', 'lesson', 'order']})
 		if bootcamp is not None:
 			self.fields['lesson'].queryset = Lesson.objects.filter(course=bootcamp).order_by('day_number', 'order', 'pk')
 
-	def save(self, course):
+	def clean_resource_file(self):
+		return self.clean_upload('resource_file', 'resource')
+
+	def clean(self):
+		data = super().clean()
+		if not data.get('file_url') and not data.get('resource_file'):
+			self.add_error('file_url', 'Provide a file URL or upload a resource.')
+		return data
+
+	def save(self, course, request=None):
 		data = self.cleaned_data
-		return CourseResource.objects.create(
+		if data.get('resource_file'):
+			data['file_url'] = self.store_upload('resource_file', 'resource', course, request)
+		resource = self.instance or CourseResource(course=course)
+		values = dict(
 			course=course,
 			lesson=data.get('lesson'),
 			section=(data.get('section') or '').strip(),
@@ -455,6 +558,12 @@ class BootcampResourceForm(forms.Form):
 			file_url=data['file_url'],
 			order=data.get('order') or 0,
 		)
+		for key, value in values.items():
+			setattr(resource, key, value)
+		if data.get('resource_file'):
+			resource.file_size_bytes = data['resource_file'].size
+		resource.save()
+		return resource
 
 
 def parse_duration(value):

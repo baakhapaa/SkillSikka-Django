@@ -12,7 +12,7 @@
             <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
             <a class="nav-item" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
             <a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
-            <a class="nav-item active" href="{% url 'manage_courses' %}"><span>▣</span> Courses</a>
+            {% include 'admin/course_navigation.html' %}
             <a class="nav-item" href="{% url 'manage_events' %}"><span>◷</span> Events</a>
             <a class="nav-item" href="{% url 'manage_payments' %}"><span>₨</span> Payments</a>
             <a class="nav-item" href="{% url 'manage_streak_settings' %}"><span>◈</span> Streak settings</a>
@@ -26,9 +26,11 @@
         </div>
     </aside>
     <main class="dashboard-main">
-        <header class="topbar"><div><p class="eyebrow">Bootcamp content</p><h1>{{ course.title }}</h1></div><div class="top-actions"><a class="outline-button" href="{% url 'manage_courses' %}">Back to courses</a></div></header>
+        <header class="topbar"><div><p class="eyebrow">ICT &amp; AI Bootcamp</p><h1>{{ course.title }}</h1></div><div class="top-actions"><a class="outline-button" href="{% url 'manage_bootcamps' %}">Back to bootcamps</a></div></header>
         {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
         <p class="page-intro">Lessons appear under the app's Day tabs, in the order below. Files appear on the Resources tab, grouped by section.</p>
+        <nav class="top-actions" aria-label="Bootcamp management"><a href="#details">Edit / Publish</a><a href="#content">Manage Content</a><a href="{% url 'manage_bootcamp_instructors' course.id %}">Manage Instructors</a><a href="#resources">Manage Resources</a></nav>
+        <p class="count-label">Publication applies to the whole bootcamp. Lessons use the bootcamp's publication state.</p>
 
         <article class="management-card">
             <div class="section-heading"><div><p class="eyebrow">Overview</p><h2>{% if course.is_published %}Published{% else %}Draft{% endif %}</h2></div><span class="count-label">{{ lessons_count }} lesson{{ lessons_count|pluralize }}</span></div>
@@ -42,8 +44,8 @@
             </div>
         </article>
 
-        <article class="management-card">
-            <details>
+        <article class="management-card" id="details">
+            <details open>
                 <summary style="cursor:pointer"><span class="eyebrow" style="display:inline">Edit</span> <strong style="font-size:19px">Details</strong></summary>
                 <p class="page-intro" style="margin-top:14px">Venue, run, dates, roster and art. Shortening the run under an existing lesson's day is refused — move the lesson first.</p>
                 <form method="post" class="form-stack">
@@ -61,11 +63,12 @@
             </details>
         </article>
 
-        <article class="management-card">
-            <div class="section-heading"><div><p class="eyebrow">Add</p><h2>Lesson</h2></div></div>
-            <form method="post" class="form-stack">
+        <article class="management-card" id="content">
+            <div class="section-heading"><div><p class="eyebrow">{% if editing_lesson %}Edit{% else %}Add{% endif %}</p><h2>Lesson</h2></div></div>
+            <form method="post" enctype="multipart/form-data" class="form-stack">
                 {% csrf_token %}
                 <input type="hidden" name="form" value="lesson">
+                {% if editing_lesson %}<input type="hidden" name="lesson_id" value="{{ editing_lesson.id }}">{% endif %}
                 {% for field in lesson_form %}
                     <label for="{{ field.id_for_label }}">{{ field.label }}</label>
                     {{ field }}
@@ -73,7 +76,8 @@
                     {% for error in field.errors %}<small class="form-error">{{ error }}</small>{% endfor %}
                 {% endfor %}
                 {% for error in lesson_form.non_field_errors %}<small class="form-error">{{ error }}</small>{% endfor %}
-                <button class="primary-button" type="submit">Add lesson</button>
+                <button class="primary-button" type="submit">{% if editing_lesson %}Save lesson{% else %}Add lesson{% endif %}</button>
+                {% if editing_lesson %}<a href="{% url 'manage_bootcamp_content' course.id %}#content">Cancel edit</a>{% endif %}
             </form>
         </article>
 
@@ -91,6 +95,7 @@
                         <td>{% if lesson.duration_seconds %}{{ lesson.duration_seconds }}s{% else %}—{% endif %}</td>
                         <td>{% if lesson.is_preview %}<span class="pill verified">Free</span>{% else %}—{% endif %}</td>
                         <td>
+                            <a href="?lesson_id={{ lesson.id }}#content">Edit</a>
                             <form method="post" class="inline-form">
                                 {% csrf_token %}
                                 <input type="hidden" name="form" value="delete_lesson">
@@ -100,17 +105,19 @@
                         </td>
                     </tr>
                     {% endfor %}
+                    {% if not lessons %}<tr><td colspan="7" class="empty-state">No lessons for Day {{ day }} yet.</td></tr>{% endif %}
                 </tbody></table></div>
             {% empty %}
                 <p class="empty-state">No lessons yet. Add the first one above.</p>
             {% endfor %}
         </article>
 
-        <article class="management-card">
-            <div class="section-heading"><div><p class="eyebrow">Add</p><h2>Resource file</h2></div></div>
-            <form method="post" class="form-stack">
+        <article class="management-card" id="resources">
+            <div class="section-heading"><div><p class="eyebrow">{% if editing_resource %}Edit{% else %}Add{% endif %}</p><h2>Resource file</h2></div></div>
+            <form method="post" enctype="multipart/form-data" class="form-stack">
                 {% csrf_token %}
                 <input type="hidden" name="form" value="resource">
+                {% if editing_resource %}<input type="hidden" name="resource_id" value="{{ editing_resource.id }}">{% endif %}
                 {% for field in resource_form %}
                     <label for="{{ field.id_for_label }}">{{ field.label }}</label>
                     {{ field }}
@@ -118,7 +125,8 @@
                     {% for error in field.errors %}<small class="form-error">{{ error }}</small>{% endfor %}
                 {% endfor %}
                 {% for error in resource_form.non_field_errors %}<small class="form-error">{{ error }}</small>{% endfor %}
-                <button class="primary-button" type="submit">Add file</button>
+                <button class="primary-button" type="submit">{% if editing_resource %}Save file{% else %}Add file{% endif %}</button>
+                {% if editing_resource %}<a href="{% url 'manage_bootcamp_content' course.id %}#resources">Cancel edit</a>{% endif %}
             </form>
         </article>
 
@@ -133,6 +141,7 @@
                     <td>{{ resource.lesson.title|default:'—' }}</td>
                     <td>{{ resource.order }}</td>
                     <td>
+                        <a href="?resource_id={{ resource.id }}#resources">Edit</a>
                         <form method="post" class="inline-form">
                             {% csrf_token %}
                             <input type="hidden" name="form" value="delete_resource">

@@ -1,0 +1,2 @@
+<a class="nav-item {% if request.resolver_match.url_name == 'manage_courses' %}active{% endif %}" href="{% url 'manage_courses' %}"><span>▣</span> Course Management</a>
+<a class="nav-item {% if request.resolver_match.url_name == 'manage_bootcamps' or request.resolver_match.url_name == 'add_bootcamp' or request.resolver_match.url_name == 'manage_bootcamp_content' or request.resolver_match.url_name == 'manage_bootcamp_instructors' %}active{% endif %}" href="{% url 'manage_bootcamps' %}"><span>▤</span> ICT &amp; AI Bootcamp</a>

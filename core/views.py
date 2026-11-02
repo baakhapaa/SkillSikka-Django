@@ -11,6 +11,7 @@ from django.views.decorators.http import require_POST
 
 from .forms import (
 	BootcampForm,
+	BootcampInstructorForm,
 	BootcampLessonForm,
 	BootcampResourceForm,
 	CertificateCriteriaForm,
@@ -350,43 +351,61 @@ def manage_courses(request):
 		return redirect('dashboard')
 
 	form = CourseForm()
-	bootcamp_form = BootcampForm()
-
 	if request.method == 'POST':
-		# Two forms share this page and both post here, so the hidden `form`
-		# field decides which one is being submitted. Without it the course form
-		# would try to validate a bootcamp post and answer six field errors.
-		if request.POST.get('form') == 'bootcamp':
-			bootcamp_form = BootcampForm(request.POST)
-			if bootcamp_form.is_valid():
-				course = bootcamp_form.save()
-				messages.success(
-					request,
-					f'Bootcamp "{course.title}" added. Add its lessons and files next.',
-				)
-				return redirect('manage_bootcamp_content', course_id=course.pk)
-		else:
-			form = CourseForm(request.POST)
-			if form.is_valid():
-				course = form.save()
-				messages.success(request, f'Course "{course.title}" added successfully.')
-				return redirect('manage_courses')
+		form = CourseForm(request.POST)
+		if form.is_valid():
+			course = form.save()
+			messages.success(request, f'Course "{course.title}" added successfully.')
+			return redirect('manage_courses')
 
 	return render(request, 'admin/courses.html', {
 		'form': form,
-		'bootcamp_form': bootcamp_form,
-		'courses': Course.objects.select_related('instructor', 'subject', 'grade').order_by('-created_at'),
+		'courses': Course.objects.filter(course_type__in=['academic', 'skill', 'premium']).select_related('instructor', 'subject', 'grade').order_by('-created_at'),
 	})
+
+
+@login_required
+def manage_bootcamps(request):
+	if not is_admin(request.user):
+		return redirect('dashboard')
+	bootcamps = Course.objects.filter(course_type='bootcamp').select_related('bootcamp_profile', 'instructor').annotate(
+		instructors_count=Count('instructors', distinct=True),
+		lessons_count=Count('lessons', distinct=True),
+		enrolled_count=Count('enrollments', filter=Q(enrollments__status__in=['active', 'completed']), distinct=True),
+	).order_by('-created_at')
+	return render(request, 'admin/bootcamps.html', {'bootcamps': bootcamps})
+
+
+@login_required
+def add_bootcamp(request):
+	if not is_admin(request.user):
+		return redirect('dashboard')
+	form = BootcampForm(request.POST if request.method == 'POST' else None)
+	if request.method == 'POST' and form.is_valid():
+		course = form.save()
+		messages.success(request, f'Bootcamp "{course.title}" added.')
+		return redirect('manage_bootcamp_content', course_id=course.pk)
+	return render(request, 'admin/bootcamp_form.html', {'form': form, 'heading': 'Add Bootcamp'})
+
+
+@login_required
+def manage_bootcamp_instructors(request, course_id):
+	if not is_admin(request.user):
+		return redirect('dashboard')
+	course = get_object_or_404(Course, pk=course_id, course_type='bootcamp')
+	form = BootcampInstructorForm(request.POST if request.method == 'POST' else None, instance=course)
+	if request.method == 'POST' and form.is_valid():
+		form.save()
+		messages.success(request, 'Instructor roster updated.')
+		return redirect('manage_bootcamp_instructors', course_id=course.pk)
+	return render(request, 'admin/bootcamp_form.html', {'form': form, 'course': course, 'heading': 'Manage Instructors'})
 
 
 @login_required
 def manage_bootcamp_content(request, course_id):
 	"""A bootcamp's lessons and files, from the dashboard.
 
-	**Admin-only, like the bootcamp itself.** Instructors cannot reach this page
-	even for a bootcamp they coach: the API refuses their writes with
-	`ADMIN_ONLY`, and this view refuses the page, so the rule holds in both
-	directions rather than only where a client happens to look.
+	Dashboard authoring is admin-only, including for roster instructors.
 	"""
 	if not is_admin(request.user):
 		messages.error(request, 'You do not have permission to manage bootcamps.')
@@ -400,8 +419,15 @@ def manage_bootcamp_content(request, course_id):
 		messages.error(request, 'That course is not a bootcamp.')
 		return redirect('manage_courses')
 
-	lesson_form = BootcampLessonForm(bootcamp=course)
-	resource_form = BootcampResourceForm(bootcamp=course)
+	lesson_id = request.POST.get('lesson_id') if request.method == 'POST' else request.GET.get('lesson_id')
+	resource_id = request.POST.get('resource_id') if request.method == 'POST' else request.GET.get('resource_id')
+	# Resolve all edits/deletes within this bootcamp, including forged IDs.
+	if any(value and (not value.isascii() or not value.isdecimal() or len(value) > 18) for value in [lesson_id, resource_id]):
+		raise Http404
+	editing_lesson = get_object_or_404(Lesson, pk=lesson_id, course=course) if lesson_id else None
+	editing_resource = get_object_or_404(CourseResource, pk=resource_id, course=course) if resource_id else None
+	lesson_form = BootcampLessonForm(bootcamp=course, instance=editing_lesson)
+	resource_form = BootcampResourceForm(bootcamp=course, instance=editing_resource)
 	details_form = BootcampForm(instance=course)
 
 	if request.method == 'POST':
@@ -413,16 +439,16 @@ def manage_bootcamp_content(request, course_id):
 				messages.success(request, 'Bootcamp details updated.')
 				return redirect('manage_bootcamp_content', course_id=course.pk)
 		elif action == 'lesson':
-			lesson_form = BootcampLessonForm(request.POST, bootcamp=course)
+			lesson_form = BootcampLessonForm(request.POST, request.FILES, bootcamp=course, instance=editing_lesson)
 			if lesson_form.is_valid():
-				lesson = lesson_form.save(course)
-				messages.success(request, f'Lesson "{lesson.title}" added to Day {lesson.day_number}.')
+				lesson = lesson_form.save(course, request=request)
+				messages.success(request, f'Lesson "{lesson.title}" saved to Day {lesson.day_number}.')
 				return redirect('manage_bootcamp_content', course_id=course.pk)
 		elif action == 'resource':
-			resource_form = BootcampResourceForm(request.POST, bootcamp=course)
+			resource_form = BootcampResourceForm(request.POST, request.FILES, bootcamp=course, instance=editing_resource)
 			if resource_form.is_valid():
-				resource = resource_form.save(course)
-				messages.success(request, f'File "{resource.title}" added.')
+				resource = resource_form.save(course, request=request)
+				messages.success(request, f'File "{resource.title}" saved.')
 				return redirect('manage_bootcamp_content', course_id=course.pk)
 		elif action == 'delete_lesson':
 			Lesson.objects.filter(pk=request.POST.get('lesson_id'), course=course).delete()
@@ -438,7 +464,8 @@ def manage_bootcamp_content(request, course_id):
 
 	# Grouped here rather than in the template: the page mirrors the app's Day
 	# tabs, and `regroup` on a nullable `day_number` would print an empty tab.
-	days = {}
+	profile = getattr(course, 'bootcamp_profile', None)
+	days = {day: [] for day in range(1, profile.days + 1)} if profile else {}
 	for lesson in lessons:
 		days.setdefault(lesson.day_number or 1, []).append(lesson)
 
@@ -451,6 +478,8 @@ def manage_bootcamp_content(request, course_id):
 		'days': sorted(days.items()),
 		'resources': resources,
 		'lessons_count': lessons.count(),
+		'editing_lesson': editing_lesson,
+		'editing_resource': editing_resource,
 	})
 
 
