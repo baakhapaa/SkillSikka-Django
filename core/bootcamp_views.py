@@ -9,6 +9,7 @@ from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiPara
 from .authentication import EmailVerifiedJWTAuthentication
 from .api_views import _is_admin, _is_instructor
 from .course_access import CourseAPIError, require_course_access
+from .course_filters import positive_id_param
 from .course_pagination import CoursePagination
 from .models import Course, CourseResource, CourseDiscussion, DiscussionLike
 
@@ -127,7 +128,7 @@ class CourseResourceListAPIView(CourseEndpointMixin, generics.ListCreateAPIView)
         # `?lesson=<id>` is how the player asks for one lesson's files without
         # pulling the whole pack; the tab also filters locally because it
         # already holds the list.
-        lesson_id = self.request.query_params.get('lesson')
+        lesson_id = positive_id_param(self.request.query_params, 'lesson')
         if lesson_id:
             queryset = queryset.filter(lesson_id=lesson_id)
         return queryset

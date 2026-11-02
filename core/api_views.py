@@ -22,6 +22,7 @@ from rest_framework import serializers
 
 from .authentication import EmailVerifiedJWTAuthentication as JWTAuthentication
 from .course_access import CourseAPIError, require_course_access, require_bootcamp_admin
+from .course_filters import positive_id_param
 from .bootcamp_serializers import with_bootcamp_data, load_bootcamp_rosters
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -1175,18 +1176,12 @@ class CourseListCreateAPIView(generics.ListCreateAPIView):
 		course_type = self.request.query_params.get(
 			'course_type'
 		)
-		subject_id = self.request.query_params.get(
-			'subject'
-		)
-		grade_id = self.request.query_params.get(
-			'grade'
-		)
+		subject_id = positive_id_param(self.request.query_params, 'subject')
+		grade_id = positive_id_param(self.request.query_params, 'grade')
 		is_paid = self.request.query_params.get(
 			'is_paid'
 		)
-		instructor_id = self.request.query_params.get(
-			'instructor'
-		)
+		instructor_id = positive_id_param(self.request.query_params, 'instructor')
 		is_published = self.request.query_params.get(
 			'is_published'
 		)
@@ -1233,7 +1228,7 @@ class CourseListCreateAPIView(generics.ListCreateAPIView):
 					is_published=False
 				)
 
-		category = self.request.query_params.get('skill_category')
+		category = positive_id_param(self.request.query_params, 'skill_category')
 		if category:
 			queryset = queryset.filter(skill_category_id=category)
 		search = self.request.query_params.get('search', '').strip()
@@ -2941,6 +2936,8 @@ class QuizDetailAPIView(
 		target = serializer.validated_data.get('course')
 		if target:
 			require_bootcamp_admin(user, target.course_type)
+			if not _is_admin(user) and target.instructor_id != user.id:
+				raise PermissionDenied('You can only move quizzes to your own courses.')
 
 		if not (
 			_is_admin(user)
@@ -3061,6 +3058,8 @@ class QuestionDetailAPIView(
 		target = serializer.validated_data.get('quiz')
 		if target:
 			require_bootcamp_admin(user, target.course.course_type)
+			if not _is_admin(user) and target.course.instructor_id != user.id:
+				raise PermissionDenied('You can only move questions to your own quizzes.')
 
 		if (
 			not _is_admin(user)
@@ -3179,6 +3178,8 @@ class QuestionOptionDetailAPIView(
 		target = serializer.validated_data.get('question')
 		if target:
 			require_bootcamp_admin(user, target.quiz.course.course_type)
+			if not _is_admin(user) and target.quiz.course.instructor_id != user.id:
+				raise PermissionDenied('You can only move options to your own questions.')
 
 		if (
 			not _is_admin(user)
@@ -3330,8 +3331,7 @@ class SubmitQuizAttemptAPIView(APIView):
 				{'detail': 'Quiz attempt not found.'},
 				status=status.HTTP_404_NOT_FOUND,
 			)
-		if attempt.quiz.course.course_type == 'academic':
-			require_course_access(student, attempt.quiz.course, managers=False)
+		require_course_access(student, attempt.quiz.course, managers=False)
 
 		if attempt.completed_at is not None:
 			return Response(

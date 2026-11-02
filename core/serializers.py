@@ -1414,12 +1414,10 @@ class CourseSerializer(serializers.ModelSerializer):
 		# one is cleared rather than rejected, so a type change cannot leave a
 		# course sitting in both taxonomies.
 		#
-		# Only when the field is actually being written: nulling it on every save
-		# would wipe a premium course's category on the next title edit, because a
-		# PATCH carries just the fields it changes.
+		# Normalize the incompatible field even when PATCH omits it: it may be
+		# left over from the previous type. The compatible category is preserved.
 		wrong_category = 'skill_category' if course_type == 'premium' else 'premium_category'
-		if wrong_category in attrs or self.instance is None:
-			attrs[wrong_category] = None
+		attrs[wrong_category] = None
 
 		if course_type == 'premium' and not is_paid:
 			# **There is no free premium course.** The type is a paid tier, not a
