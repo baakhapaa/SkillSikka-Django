@@ -440,6 +440,30 @@ class BootcampDashboardTests(TestCase):
         self.assertEqual(self.client.post(url, {'instructor': self.coach.pk}).status_code, 302)
         self.assertEqual(camp.instructors.count(), 1)
 
+    def test_all_roster_forms_reject_ineligible_instructors(self):
+        camp = self.bootcamp()
+        unverified = self.user('unverified', 'instructor')
+        inactive = self.user('inactive', 'instructor', is_active=False, verification_status='verified')
+        original_roster = list(camp.instructors.order_by('pk').values_list('instructor_id', 'role', 'order'))
+        for instructor in [unverified, inactive, self.student]:
+            for field in ['instructor', 'coaches']:
+                for url, form in [
+                    (reverse('add_bootcamp'), 'bootcamp'),
+                    (self.content_url(camp), 'details'),
+                    (reverse('manage_bootcamp_instructors', args=[camp.pk]), 'roster'),
+                ]:
+                    with self.subTest(instructor=instructor, field=field, form=form):
+                        value = [instructor.pk] if field == 'coaches' else instructor.pk
+                        response = self.client.post(url, self.payload(**{'form': form, field: value}))
+                        self.assertEqual(response.status_code, 200)
+                        bound_form = response.context['details_form' if form == 'details' else 'form']
+                        self.assertIn(field, bound_form.errors)
+                        camp.refresh_from_db()
+                        self.assertEqual(camp.instructor_id, self.lead.pk)
+                        self.assertEqual(Course.objects.filter(course_type='bootcamp').count(), 1)
+                        self.assertEqual(list(camp.instructors.order_by('pk').values_list(
+                            'instructor_id', 'role', 'order')), original_roster)
+
     def test_paid_bootcamp_price_validation_and_publication(self):
         response = self.create_bootcamp(is_paid='on', price='')
         self.assertContains(response, 'A paid bootcamp must have a price')

@@ -139,11 +139,11 @@ class BootcampForm(forms.Form):
 		widget=forms.TextInput(attrs={'placeholder': 'The two-line lede under the title.'}),
 	)
 	instructor = forms.ModelChoiceField(
-		queryset=User.objects.filter(role__name='instructor').order_by('name'),
+		queryset=User.objects.filter(role__name='instructor', is_active=True, verification_status='verified').order_by('name'),
 		label='Lead instructor',
 	)
 	coaches = forms.ModelMultipleChoiceField(
-		queryset=User.objects.filter(role__name='instructor').order_by('name'),
+		queryset=User.objects.filter(role__name='instructor', is_active=True, verification_status='verified').order_by('name'),
 		required=False,
 		label='Coaches',
 		help_text='Everyone else on the roster. The lead is added automatically.',
