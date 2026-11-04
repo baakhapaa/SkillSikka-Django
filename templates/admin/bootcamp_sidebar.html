@@ -12,5 +12,5 @@
         <a class="nav-item" href="{% url 'manage_certificate_criteria' %}"><span>⚑</span> Certificate criteria</a>
         <a class="nav-item" href="{% url 'manage_users' %}"><span>◎</span> Users</a>
     </nav>
-    <div class="sidebar-footer"><div class="avatar">{{ request.user.name|slice:':1'|upper }}</div><div><strong>{{ request.user.name }}</strong><small>Administrator</small></div><a class="logout" href="{% url 'logout' %}" aria-label="Log out">↗</a></div>
+    {% include 'admin/sidebar_footer.html' %}
 </aside>

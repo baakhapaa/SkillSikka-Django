@@ -523,6 +523,7 @@ def manage_certificate_criteria(request):
 	return render(request, 'admin/certificate_criteria.html', {'form': form})
 
 
+@require_POST
 def logout_view(request):
 	logout(request)
 	return redirect('login')

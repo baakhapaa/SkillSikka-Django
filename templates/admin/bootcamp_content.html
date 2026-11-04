@@ -19,11 +19,7 @@
             <a class="nav-item" href="{% url 'manage_certificate_criteria' %}"><span>⚑</span> Certificate criteria</a>
             <a class="nav-item" href="{% url 'manage_users' %}"><span>◎</span> Users</a>
         </nav>
-        <div class="sidebar-footer">
-            <div class="avatar">{{ request.user.name|slice:':1'|upper }}</div>
-            <div><strong>{{ request.user.name }}</strong><small>{{ request.user.role.name|default:'Administrator' }}</small></div>
-            <a class="logout" href="{% url 'logout' %}" aria-label="Log out">↗</a>
-        </div>
+        {% include 'admin/sidebar_footer.html' %}
     </aside>
     <main class="dashboard-main">
         <header class="topbar"><div><p class="eyebrow">ICT &amp; AI Bootcamp</p><h1>{{ course.title }}</h1></div><div class="top-actions"><a class="outline-button" href="{% url 'manage_bootcamps' %}">Back to bootcamps</a></div></header>
