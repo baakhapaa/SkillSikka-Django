@@ -16,7 +16,7 @@ from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
 from django.utils import timezone
 from rest_framework.test import APIClient
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
 from .models import District, InstructorSignupOTP, Municipality, PasswordResetOTP, Province, Role, User
 from .signup_otp import OTP_EXPIRY_SECONDS
@@ -457,6 +457,91 @@ class StudentSignupOTPTests(TestCase):
         for otp in ('007','00007','abcd',' 0007','0007 ','0007\n'):
             self.assertEqual(self.verify(otp).status_code,400)
         self.assertEqual(InstructorSignupOTP.objects.get(user=self.user).failed_attempts,0)
+
+
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+class PublicSignupAuthenticationTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+
+    def headers(self):
+        expired = AccessToken()
+        expired.set_exp(lifetime=timedelta(seconds=-60))
+        return (None, 'Bearer invalid-token', 'Bearer ' + str(expired))
+
+    def payload(self, email):
+        return {
+            'email': email, 'name': 'Public Signup', 'gender': 'other',
+            'dob': '2000-01-01', 'password': 'Public-signup-password-123!',
+            'confirm_password': 'Public-signup-password-123!',
+        }
+
+    def test_public_signup_ignores_invalid_and_expired_tokens_and_preserves_otp_gate(self):
+        for role in ('student', 'instructor'):
+            for prefix in ('/api/v1/', '/api/'):
+                for index, header in enumerate(self.headers()):
+                    with self.subTest(role=role, prefix=prefix, header_type=index):
+                        cache.clear()
+                        self.client.credentials(**({'HTTP_AUTHORIZATION': header} if header else {}))
+                        payload = self.payload(f'{role}-{prefix.count("/")}-{index}@example.com')
+                        response = self.client.post(prefix + f'register/{role}/', payload, format='json')
+                        self.assertEqual(response.status_code, 201)
+                        self.assertTrue(response.data['email_verification_required'])
+                        self.assertFalse(response.data['user']['email_verified'])
+                        for key in ('tokens', 'access', 'refresh'):
+                            self.assertNotIn(key, response.data)
+                        user = User.objects.get(email=payload['email'])
+                        self.assertTrue(user.is_active)
+                        self.assertFalse(user.email_verified)
+                        record = InstructorSignupOTP.objects.get(user=user)
+                        code = re.search(r'OTP is ([0-9]{4})\.', mail.outbox[-1].body).group(1)
+                        self.assertNotEqual(record.otp_hash, code)
+                        self.assertTrue(check_password(code, record.otp_hash))
+                        self.assertEqual(mail.outbox[-1].to, [user.email])
+                        self.client.credentials()
+                        login = self.client.post('/api/v1/login/', {
+                            'email': user.email, 'password': payload['password'],
+                        }, format='json')
+                        self.assertEqual(login.status_code, 400)
+                        verified = self.client.post(f'/api/v1/register/{role}/verify-otp/', {
+                            'email': user.email, 'otp': code,
+                        }, format='json')
+                        self.assertEqual(verified.status_code, 200)
+                        self.assertIn('tokens', verified.data)
+
+    def test_invalid_and_expired_headers_do_not_bypass_validation_or_duplicate_checks(self):
+        for role in ('student', 'instructor'):
+            for index, header in enumerate(self.headers()):
+                with self.subTest(role=role, header_type=index):
+                    cache.clear()
+                    self.client.credentials(**({'HTTP_AUTHORIZATION': header} if header else {}))
+                    url = f'/api/v1/register/{role}/'
+                    payload = self.payload(f'validation-{role}-{index}@example.com')
+                    invalid = self.client.post(url, {'email': payload['email']}, format='json')
+                    self.assertEqual(invalid.status_code, 400)
+                    for field in ('password', 'confirm_password', 'name', 'gender', 'dob'):
+                        self.assertIn(field, invalid.data)
+                    self.assertFalse(User.objects.filter(email=payload['email']).exists())
+                    self.assertEqual(self.client.post(url, payload, format='json').status_code, 201)
+                    count = len(mail.outbox)
+                    duplicate = self.client.post(url, payload, format='json')
+                    self.assertEqual(duplicate.status_code, 400)
+                    self.assertEqual(duplicate.data['code'], 'EMAIL_ALREADY_REGISTERED')
+                    self.assertEqual(User.objects.filter(email=payload['email']).count(), 1)
+                    self.assertEqual(InstructorSignupOTP.objects.filter(user__email=payload['email']).count(), 1)
+                    self.assertEqual(len(mail.outbox), count)
+
+    def test_invalid_and_expired_headers_remain_subject_to_anonymous_rate_limit(self):
+        for role in ('student', 'instructor'):
+            for index, header in enumerate(self.headers()):
+                with self.subTest(role=role, header_type=index):
+                    cache.clear()
+                    self.client.credentials(**({'HTTP_AUTHORIZATION': header} if header else {}))
+                    url = f'/api/v1/register/{role}/'
+                    for _ in range(20):
+                        self.assertEqual(self.client.post(url, {}, format='json').status_code, 400)
+                    self.assertEqual(self.client.post(url, {}, format='json').status_code, 429)
 
 
 class InstructorEmailMigrationTests(TransactionTestCase):
