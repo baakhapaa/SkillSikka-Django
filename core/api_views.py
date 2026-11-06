@@ -495,6 +495,9 @@ class LogoutAPIView(APIView):
 # =========================================================
 
 class ForgotPasswordAPIView(APIView):
+	authentication_classes = []
+	permission_classes = [AllowAny]
+
 	def post(self, request):
 		serializer = ForgotPasswordSerializer(data=request.data)
 		serializer.is_valid(raise_exception=True)
@@ -512,6 +515,9 @@ class ForgotPasswordAPIView(APIView):
 
 
 class VerifyPasswordResetOTPAPIView(APIView):
+	authentication_classes = []
+	permission_classes = [AllowAny]
+
 	def post(self, request):
 		serializer = VerifyPasswordResetOTPSerializer(
 			data=request.data
@@ -529,6 +535,9 @@ class VerifyPasswordResetOTPAPIView(APIView):
 
 
 class ResetPasswordAPIView(APIView):
+	authentication_classes = []
+	permission_classes = [AllowAny]
+
 	def post(self, request):
 		serializer = ResetPasswordSerializer(data=request.data)
 

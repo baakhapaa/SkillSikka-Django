@@ -16,6 +16,7 @@ from django.utils import timezone
 from django.utils.crypto import constant_time_compare, salted_hmac
 from django.utils.text import slugify
 from rest_framework import serializers
+from rest_framework.exceptions import APIException
 from drf_spectacular.utils import extend_schema_field
 from .course_access import CourseAPIError, academic_eligible, is_course_manager, require_bootcamp_admin
 from .bootcamp_serializers import BootcampProfileSerializer, CourseInstructorInputSerializer, CourseInstructorDisplaySerializer, CourseListSerializer, load_bootcamp_rosters
@@ -788,17 +789,24 @@ def _password_state(user):
 	).hexdigest()
 
 
+class PasswordResetEmailUnavailable(APIException):
+	status_code = 503
+	default_detail = 'Unable to send a password reset email right now. Please try again later.'
+	default_code = 'password_reset_email_unavailable'
+
+
 class ForgotPasswordSerializer(serializers.Serializer):
 	email = serializers.EmailField()
 
 	def validate_email(self, value):
 		return value.strip().lower()
 
+	@transaction.atomic
 	def save(self):
 		email = self.validated_data['email']
 
 		try:
-			user = User.objects.get(email__iexact=email)
+			user = User.objects.select_for_update().get(email__iexact=email)
 		except User.DoesNotExist:
 			return
 
@@ -815,20 +823,27 @@ class ForgotPasswordSerializer(serializers.Serializer):
 			expires_at=timezone.now() + timedelta(seconds=OTP_EXPIRY_SECONDS),
 		)
 
-		send_mail(
-			subject='SkillSikka Password Reset OTP',
-			message=(
-				f'Your SkillSikka password reset OTP is {otp}. '
-				f'This OTP will expire in {OTP_EXPIRY_TEXT}.'
-			),
-			from_email=getattr(
-				settings,
-				'DEFAULT_FROM_EMAIL',
-				'noreply@skillsikka.com'
-			),
-			recipient_list=[user.email],
-			fail_silently=False,
-		)
+		# Keep issuance and sending in one transaction, as for signup OTPs.
+		# A failed send rolls back both the new code and old-code invalidation.
+		try:
+			sent = send_mail(
+				subject='SkillSikka Password Reset OTP',
+				message=(
+					f'Your SkillSikka password reset OTP is {otp}. '
+					f'This OTP will expire in {OTP_EXPIRY_TEXT}.'
+				),
+				from_email=getattr(
+					settings,
+					'DEFAULT_FROM_EMAIL',
+					'noreply@skillsikka.com'
+				),
+				recipient_list=[user.email],
+				fail_silently=False,
+			)
+		except Exception:
+			raise PasswordResetEmailUnavailable() from None
+		if sent != 1:
+			raise PasswordResetEmailUnavailable()
 
 
 class VerifyPasswordResetOTPSerializer(serializers.Serializer):
