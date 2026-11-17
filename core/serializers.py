@@ -20,7 +20,7 @@ from rest_framework.exceptions import APIException
 from drf_spectacular.utils import extend_schema_field
 from .course_access import CourseAPIError, academic_eligible, is_course_manager, require_bootcamp_admin
 from .bootcamp_serializers import BootcampProfileSerializer, CourseInstructorInputSerializer, CourseInstructorDisplaySerializer, CourseListSerializer, load_bootcamp_rosters
-from .models import BootcampProfile, CourseInstructor
+from .models import BootcampProfile, CourseInstructor, LearningInterest
 from rest_framework_simplejwt.token_blacklist.models import (
 	BlacklistedToken,
 	OutstandingToken,
@@ -2501,6 +2501,16 @@ class ShortSerializer(serializers.ModelSerializer):
 		read_only=True
 	)
 
+	instructor_photo_url = serializers.CharField(source='instructor.profile_photo_url', read_only=True)
+	# The badge under the handle ("Adobe Certified Instructor"). Null for an
+	# instructor without a profile row rather than a 500.
+	instructor_title = serializers.CharField(source='instructor.instructor_profile.qualification', read_only=True, allow_null=True)
+	topic_name = serializers.CharField(source='topic.name', read_only=True, allow_null=True)
+	topic_slug = serializers.CharField(source='topic.slug', read_only=True, allow_null=True)
+	course_title = serializers.CharField(source='course.title', read_only=True, allow_null=True)
+	quiz_title = serializers.CharField(source='quiz.title', read_only=True, allow_null=True)
+	challenge_title = serializers.CharField(source='challenge.title', read_only=True, allow_null=True)
+
 	like_count = serializers.SerializerMethodField()
 	comment_count = serializers.SerializerMethodField()
 	is_liked = serializers.SerializerMethodField()
@@ -2512,10 +2522,22 @@ class ShortSerializer(serializers.ModelSerializer):
 		fields = [
 			'id',
 			'title',
+			'caption',
 			'instructor_id',
 			'instructor_name',
+			'instructor_photo_url',
+			'instructor_title',
 			'video_url',
 			'thumbnail_url',
+			'topic',
+			'topic_name',
+			'topic_slug',
+			'course',
+			'course_title',
+			'quiz',
+			'quiz_title',
+			'challenge',
+			'challenge_title',
 			'is_published',
 			'view_count',
 			'like_count',
@@ -2539,6 +2561,10 @@ class ShortSerializer(serializers.ModelSerializer):
 			'updated_at',
 		]
 
+		extra_kwargs = {
+			'topic': {'queryset': LearningInterest.objects.filter(is_active=True)},
+		}
+
 	def get_is_saved(self, obj):
 		request = self.context.get('request')
 		if not request or not request.user.is_authenticated:
@@ -2547,10 +2573,17 @@ class ShortSerializer(serializers.ModelSerializer):
 			return False
 		return bool(getattr(obj, '_is_saved', False))
 
+	# The feed querysets annotate these three (see `_shorts_with_saved_state`),
+	# so a page of Shorts costs no per-row queries. The fallbacks cover a
+	# freshly created or updated instance, which is not annotated.
 	def get_like_count(self, obj):
+		if hasattr(obj, '_like_count'):
+			return obj._like_count
 		return obj.likes.count()
 
 	def get_comment_count(self, obj):
+		if hasattr(obj, '_comment_count'):
+			return obj._comment_count
 		return obj.comments.count()
 
 	def get_is_liked(self, obj):
@@ -2562,9 +2595,32 @@ class ShortSerializer(serializers.ModelSerializer):
 		if not request.user.is_authenticated:
 			return False
 
+		if hasattr(obj, '_is_liked'):
+			return obj._is_liked
+
 		return obj.likes.filter(
 			student=request.user
 		).exists()
+
+	def to_representation(self, obj):
+		data = super().to_representation(obj)
+		request = self.context.get('request')
+		user = getattr(request, 'user', None)
+		if user is not None and user.is_authenticated and (
+			user.is_superuser
+			or getattr(getattr(user, 'role', None), 'name', '') == 'super_admin'
+			or obj.instructor_id == user.pk
+		):
+			return data
+		# Everyone else sees a link only once its target is live, so a draft
+		# course or quiz never leaks its title through a published Short.
+		if obj.course_id and not obj.course.is_published:
+			data['course'] = data['course_title'] = None
+		if obj.quiz_id and not (obj.quiz.is_published and obj.quiz.course.is_published):
+			data['quiz'] = data['quiz_title'] = None
+		if obj.challenge_id and not obj.challenge.is_published:
+			data['challenge'] = data['challenge_title'] = None
+		return data
 
 	def validate(self, attrs):
 		attrs = super().validate(attrs)
@@ -2602,6 +2658,22 @@ class ShortSerializer(serializers.ModelSerializer):
 					'can publish Shorts.'
 				)
 			})
+
+		errors = {}
+		if attrs.get('course') and not is_course_manager(user, attrs['course']):
+			errors['course'] = 'You can only link a course you teach.'
+		if attrs.get('quiz') and not is_course_manager(user, attrs['quiz'].course):
+			errors['quiz'] = 'You can only link a quiz from a course you teach.'
+		if attrs.get('challenge') and not attrs['challenge'].is_published and not is_admin:
+			errors['challenge'] = 'Only published challenges can be linked.'
+		# Checked on the merged state, so a PATCH that changes only one side
+		# cannot leave the course chip and the Quiz button pointing apart.
+		course = attrs.get('course', getattr(self.instance, 'course', None))
+		quiz = attrs.get('quiz', getattr(self.instance, 'quiz', None))
+		if course and quiz and quiz.course_id != course.pk and 'quiz' not in errors:
+			errors['quiz'] = 'The quiz must belong to the linked course.'
+		if errors:
+			raise serializers.ValidationError(errors)
 
 		return attrs
 

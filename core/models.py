@@ -1250,6 +1250,18 @@ class Short(models.Model):
 		blank=True
 	)
 
+	# The text under the video. Hashtags stay inline here; search covers them,
+	# so there is no separate tag table until a screen needs one.
+	caption = models.TextField(blank=True, default='')
+	# Same taxonomy students pick at onboarding, which is what the "For you"
+	# and STEM feeds filter on.
+	topic = models.ForeignKey(LearningInterest, on_delete=models.SET_NULL, null=True, blank=True, related_name='shorts')
+	# Optional links behind the course chip, the Quiz button and the Challenge
+	# feed. SET_NULL: deleting a course or quiz must not delete the video.
+	course = models.ForeignKey(Course, on_delete=models.SET_NULL, null=True, blank=True, related_name='shorts')
+	quiz = models.ForeignKey(Quiz, on_delete=models.SET_NULL, null=True, blank=True, related_name='shorts')
+	challenge = models.ForeignKey(Challenge, on_delete=models.SET_NULL, null=True, blank=True, related_name='shorts')
+
 	is_published = models.BooleanField(
 		default=False
 	)

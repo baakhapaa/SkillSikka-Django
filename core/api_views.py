@@ -1,7 +1,7 @@
 ﻿from django.db.models import Count, Prefetch, Q, QuerySet
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
-from django.db.models import Exists, OuterRef, Subquery, F, Max
+from django.db.models import Exists, OuterRef, Subquery, F, Max, Case, When, Value, IntegerField
 from django.db.models.functions import Coalesce
 from django.db import transaction, IntegrityError
 from decimal import Decimal
@@ -68,6 +68,7 @@ from .models import (
 	ShortComment,
 	ShortLike,
 	ShortView,
+	StudentProfile,
 	Notification,
 	AIActivity,
 	LocalAuthorityProfile,
@@ -3781,10 +3782,66 @@ class StudentPointsAPIView(APIView):
 # Shorts
 # =========================================================
 
+def _short_count(model):
+	return Coalesce(Subquery(
+		model.objects.filter(short_id=OuterRef('pk')).order_by().values('short_id')
+		.annotate(n=Count('pk')).values('n')[:1]
+	), 0)
+
+
 def _shorts_with_saved_state(user):
-	return Short.objects.select_related('instructor').prefetch_related('likes', 'comments').annotate(
+	# Counts are subqueries, not Count() over joins: likes x comments rows per
+	# Short would multiply as a video gets popular.
+	return Short.objects.select_related(
+		'instructor__instructor_profile', 'topic', 'course', 'quiz__course', 'challenge',
+	).annotate(
 		_is_saved=Exists(ShortBookmark.objects.filter(student=user, short_id=OuterRef('pk'))),
+		_is_liked=Exists(ShortLike.objects.filter(student=user, short_id=OuterRef('pk'))),
+		_like_count=_short_count(ShortLike),
+		_comment_count=_short_count(ShortComment),
 	)
+
+
+# The STEM tab. Web and app dev are in because coding Shorts (CSS, React…)
+# are filed under them; 3D design, drawing, music and speaking are not.
+STEM_TOPIC_SLUGS = (
+	'coding', 'mathematics', 'physics', 'chemistry', 'biology', 'data-science',
+	'ai-ml', 'web-dev', 'app-dev', 'robotics', 'electronics',
+)
+SHORT_FEEDS = ('for_you', 'stem', 'challenge')
+
+
+def _filter_short_feed(queryset, request):
+	"""Apply the Shorts screen's tabs and search: ?feed=, ?topic=, ?search=."""
+	params = request.query_params
+	feed = params.get('feed', '').strip()
+	if feed and feed not in SHORT_FEEDS:
+		raise ValidationError({'feed': f'Must be one of: {", ".join(SHORT_FEEDS)}.'})
+
+	if feed == 'stem':
+		queryset = queryset.filter(topic__slug__in=STEM_TOPIC_SLUGS)
+	elif feed == 'challenge':
+		queryset = queryset.filter(challenge__is_published=True, challenge__end_at__gt=timezone.now())
+	elif feed == 'for_you':
+		# Ranks rather than filters: the student's interests first, then
+		# everything else, so the tab is never empty for a narrow pick.
+		interest_ids = list(StudentProfile.objects.filter(user=request.user).values_list('learning_interests', flat=True))
+		interest_ids = [pk for pk in interest_ids if pk is not None]
+		if interest_ids:
+			queryset = queryset.annotate(_matches_interest=Case(
+				When(topic_id__in=interest_ids, then=Value(1)), default=Value(0), output_field=IntegerField(),
+			)).order_by('-_matches_interest', '-created_at', '-id')
+
+	topic = params.get('topic', '').strip()
+	if topic:
+		queryset = queryset.filter(topic__slug=topic)
+
+	search = params.get('search', '').strip()
+	if search:
+		queryset = queryset.filter(
+			Q(title__icontains=search) | Q(caption__icontains=search) | Q(instructor__name__icontains=search)
+		)
+	return queryset
 
 
 class StudentShortBookmarkAPIView(APIView):
@@ -3844,18 +3901,19 @@ class ShortListCreateAPIView(generics.ListCreateAPIView):
 
 		queryset = _shorts_with_saved_state(user)
 
-		if _is_admin(user):
-			return queryset.order_by('-created_at')
-
-		if _is_instructor(user):
-			return queryset.filter(
+		if _is_instructor(user) and not _is_admin(user):
+			queryset = queryset.filter(
 				Q(is_published=True) |
 				Q(instructor=user)
-			).order_by('-created_at')
+			)
 
-		return queryset.filter(
-			is_published=True
-		).order_by('-created_at')
+		elif not _is_admin(user):
+			queryset = queryset.filter(
+				is_published=True
+			)
+
+		# id breaks created_at ties so a feed never reorders between requests.
+		return _filter_short_feed(queryset.order_by('-created_at', '-id'), self.request)
 
 	def perform_create(self, serializer):
 		user = self.request.user
