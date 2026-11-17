@@ -23,7 +23,7 @@ from rest_framework.test import APIClient
 
 from .models import District, Grade, InstructorProfile, Municipality, Permission, Province, Role, School, StudentProfile, User, VerificationDocument
 from .signup_otp import OTP_EXPIRY_SECONDS
-from .models import Short, ShortBookmark, ShortComment, ShortLike, ShortView
+from .models import Short, ShortBookmark, ShortComment, ShortCommentLike, ShortLike, ShortView
 from .models import Challenge, LearningInterest, Quiz
 from .models import PasswordResetOTP
 from .serializers import ShortSerializer
@@ -2588,6 +2588,130 @@ class ShortFeedTests(TestCase):
             short = self.short(str(i), course=self.course, quiz=self.quiz, challenge=self.challenge, topic=self.web)
             ShortLike.objects.create(student=other, short=short)
             ShortComment.objects.create(student=other, short=short, text='x')
+        self.assertEqual(list_queries(), baseline)
+
+
+class ShortCommentThreadTests(TestCase):
+    """One-level replies and comment likes, by students and the Short's instructor."""
+
+    def setUp(self):
+        cache.clear()
+        student_role = Role.objects.get(name='student')
+        self.student = User.objects.create_user(email='thread-student@example.com', name='Asha', role=student_role)
+        self.other = User.objects.create_user(email='thread-other@example.com', name='Bikash', role=student_role)
+        self.instructor = User.objects.create_user(email='thread-instructor@example.com', name='Sarah',
+            role=Role.objects.get(name='instructor'), verification_status='verified')
+        self.outsider = User.objects.create_user(email='thread-outsider@example.com', name='Other teacher',
+            role=Role.objects.get(name='instructor'), verification_status='verified')
+        self.short = Short.objects.create(title='Flexbox', instructor=self.instructor, video_url='https://example.com/v', is_published=True)
+        self.comments_url = f'/api/v1/student/shorts/{self.short.pk}/comments/'
+        self.client = APIClient()
+        self.client.force_authenticate(self.student)
+        self.top = self.post({'text':'How does flex-grow work?'}).data
+
+    def post(self, payload, user=None, expect=201):
+        if user is not None:
+            self.client.force_authenticate(user)
+        response = self.client.post(self.comments_url, payload, format='json')
+        self.assertEqual(response.status_code, expect, response.data)
+        self.client.force_authenticate(self.student)
+        return response
+
+    def replies(self, comment_id):
+        response = self.client.get(f'/api/v1/shorts/comments/{comment_id}/replies/')
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data
+
+    def like(self, comment_id, user=None):
+        if user is not None:
+            self.client.force_authenticate(user)
+        response = self.client.post(f'/api/v1/shorts/comments/{comment_id}/like/')
+        self.client.force_authenticate(self.student)
+        return response
+
+    def test_reply_is_threaded_and_counted(self):
+        reply = self.post({'text':'It shares spare space', 'parent':self.top['id']}, self.other).data
+        self.assertEqual(reply['parent'], self.top['id'])
+        listed = self.client.get(self.comments_url).data
+        self.assertEqual([c['id'] for c in listed], [self.top['id']])
+        self.assertEqual((listed[0]['reply_count'], listed[0]['parent']), (1, None))
+        self.assertEqual([r['id'] for r in self.replies(self.top['id'])], [reply['id']])
+        self.assertEqual(self.client.get(f'/api/v1/shorts/{self.short.pk}/').data['comment_count'], 2)
+
+    def test_reply_to_a_reply_joins_the_same_thread_oldest_first(self):
+        first = self.post({'text':'First', 'parent':self.top['id']}, self.other).data
+        second = self.post({'text':'@Bikash thanks', 'parent':first['id']}).data
+        self.assertEqual(second['parent'], self.top['id'])
+        self.assertEqual([r['id'] for r in self.replies(self.top['id'])], [first['id'], second['id']])
+        self.assertEqual(self.client.get(f'/api/v1/shorts/comments/{first["id"]}/replies/').status_code, 404)
+
+    def test_parent_must_be_on_the_same_short(self):
+        other_short = Short.objects.create(title='Grid', instructor=self.instructor, video_url='https://example.com/g', is_published=True)
+        foreign = ShortComment.objects.create(student=self.other, short=other_short, text='Elsewhere')
+        response = self.post({'text':'Wrong thread', 'parent':foreign.pk}, expect=400)
+        self.assertIn('parent', response.data)
+        self.assertEqual(self.post({'text':'Missing', 'parent':999999}, expect=400).status_code, 400)
+
+    def test_short_instructor_can_reply_but_not_start_a_thread(self):
+        reply = self.post({'text':'Great question!', 'parent':self.top['id']}, self.instructor).data
+        self.assertTrue(reply['is_creator'])
+        self.assertFalse(self.top['is_creator'])
+        self.assertTrue(self.replies(self.top['id'])[0]['is_creator'])
+        self.post({'text':'New thread'}, self.instructor, expect=403)
+        self.post({'text':'Not my Short', 'parent':self.top['id']}, self.outsider, expect=403)
+        self.assertEqual(ShortComment.objects.count(), 2)
+
+    def test_like_toggles_and_shows_in_lists(self):
+        response = self.like(self.top['id'])
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual((response.data['is_liked'], response.data['like_count']), (True, 1))
+        self.assertEqual(self.like(self.top['id'], self.other).data['like_count'], 2)
+        listed = self.client.get(self.comments_url).data[0]
+        self.assertEqual((listed['like_count'], listed['is_liked']), (2, True))
+        response = self.like(self.top['id'])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual((response.data['is_liked'], response.data['like_count']), (False, 1))
+        self.assertFalse(self.client.get(self.comments_url).data[0]['is_liked'])
+
+    def test_replies_can_be_liked_and_like_permissions(self):
+        reply = self.post({'text':'Reply', 'parent':self.top['id']}, self.other).data
+        self.assertEqual(self.like(reply['id']).status_code, 201)
+        self.assertEqual(self.replies(self.top['id'])[0]['like_count'], 1)
+        self.assertEqual(self.like(self.top['id'], self.instructor).status_code, 201)
+        self.assertEqual(self.like(self.top['id'], self.outsider).status_code, 403)
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.post(f'/api/v1/shorts/comments/{self.top["id"]}/like/').status_code, 401)
+        self.assertEqual(self.like(999999, self.student).status_code, 404)
+        self.short.is_published = False
+        self.short.save(update_fields=['is_published'])
+        self.assertEqual(self.like(self.top['id']).status_code, 404)
+        self.assertEqual(self.client.get(f'/api/v1/shorts/comments/{self.top["id"]}/replies/').status_code, 404)
+
+    def test_one_like_per_user_in_the_database(self):
+        comment = ShortComment.objects.get(pk=self.top['id'])
+        ShortCommentLike.objects.create(student=self.other, comment=comment)
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ShortCommentLike.objects.create(student=self.other, comment=comment)
+
+    def test_deleting_a_comment_removes_its_replies_and_likes(self):
+        reply = self.post({'text':'Reply', 'parent':self.top['id']}, self.other).data
+        self.like(self.top['id'])
+        self.like(reply['id'])
+        self.assertEqual(self.client.delete(f'/api/v1/shorts/comments/{self.top["id"]}/').status_code, 204)
+        self.assertFalse(ShortComment.objects.exists())
+        self.assertFalse(ShortCommentLike.objects.exists())
+
+    def test_comment_list_cost_does_not_grow_with_comments(self):
+        def list_queries():
+            with CaptureQueriesContext(connection) as queries:
+                self.assertEqual(self.client.get(self.comments_url).status_code, 200)
+            return len(queries)
+        baseline = list_queries()
+        for i in range(6):
+            top = ShortComment.objects.create(student=self.other, short=self.short, text=str(i))
+            ShortComment.objects.create(student=self.student, short=self.short, parent=top, text='r')
+            ShortCommentLike.objects.create(student=self.student, comment=top)
         self.assertEqual(list_queries(), baseline)
 
 

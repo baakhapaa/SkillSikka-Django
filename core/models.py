@@ -1371,6 +1371,10 @@ class ShortComment(models.Model):
 		related_name='comments'
 	)
 
+	# Set on a reply. Threads are one level deep: a reply to a reply is stored
+	# under the same top-level comment, so this never points at a reply.
+	parent = models.ForeignKey('self', on_delete=models.CASCADE, null=True, blank=True, related_name='replies')
+
 	text = models.TextField()
 
 	created_at = models.DateTimeField(
@@ -1383,6 +1387,18 @@ class ShortComment(models.Model):
 
 	def __str__(self):
 		return f'{self.student.email} - {self.short.title}'
+
+
+class ShortCommentLike(models.Model):
+	student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='short_comment_likes')
+	comment = models.ForeignKey(ShortComment, on_delete=models.CASCADE, related_name='likes')
+	created_at = models.DateTimeField(auto_now_add=True)
+
+	class Meta:
+		db_table = 'short_comment_likes'
+		constraints = [models.UniqueConstraint(
+			fields=['student', 'comment'], name='unique_short_comment_like_per_user',
+		)]
 
 
 class EBook(models.Model):

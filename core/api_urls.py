@@ -109,6 +109,8 @@ from .api_views import (
 	RecordShortViewAPIView,
 	ShortCommentDetailAPIView,
 	ShortCommentListCreateAPIView,
+	ShortCommentRepliesAPIView,
+	ToggleShortCommentLikeAPIView,
 	ShortDetailAPIView,
 	ShortListCreateAPIView,
 	StudentShortBookmarkAPIView,
@@ -777,6 +779,18 @@ urlpatterns = [
 		'shorts/comments/<int:pk>/',
 		ShortCommentDetailAPIView.as_view(),
 		name='short-comment-detail',
+	),
+
+	path(
+		'shorts/comments/<int:pk>/replies/',
+		ShortCommentRepliesAPIView.as_view(),
+		name='short-comment-replies',
+	),
+
+	path(
+		'shorts/comments/<int:pk>/like/',
+		ToggleShortCommentLikeAPIView.as_view(),
+		name='short-comment-like',
 	),
 
 	# =========================

@@ -51,6 +51,29 @@ returning `400` keyed by the field:
 
 Admins may link any course, quiz or challenge.
 
+## Comments: replies and likes
+
+Threads are one level deep, as on YouTube and TikTok.
+
+| Action | Request |
+|---|---|
+| Top-level comments, newest first | `GET /api/v1/student/shorts/<short_id>/comments/` |
+| Comment | `POST` the same URL with `{"text": "..."}` |
+| Reply | `POST` the same URL with `{"text": "...", "parent": <comment id>}` |
+| Replies of one comment, oldest first | `GET /api/v1/shorts/comments/<comment_id>/replies/` |
+| Like / unlike (toggle) | `POST /api/v1/shorts/comments/<comment_id>/like/` → `{comment_id, is_liked, like_count}`, `201` when liked, `200` when unliked |
+| Delete (author, Short owner, admin) | `DELETE /api/v1/shorts/comments/<comment_id>/`, which also deletes its replies |
+
+Every comment carries `parent` (null on a top-level comment), `like_count`,
+`reply_count`, `is_liked` and `is_creator` (true when the Short's instructor
+wrote it; show a "Creator" badge). Replying to a reply files it under the same
+top-level comment, so the response's `parent` may differ from what was sent;
+prefix the text with `@name` in the app if you want to show who is answered.
+
+Students can comment, reply and like. The Short's own instructor can reply and
+like on that Short, but cannot start a top-level comment. A `parent` from a
+different Short returns `400`. The Short's `comment_count` includes replies.
+
 ## Share
 
 No backend call. Use the platform share sheet with the video link.

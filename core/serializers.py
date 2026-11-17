@@ -2470,14 +2470,25 @@ class ShortCommentSerializer(serializers.ModelSerializer):
 		read_only=True
 	)
 
+	like_count = serializers.SerializerMethodField()
+	reply_count = serializers.SerializerMethodField()
+	is_liked = serializers.SerializerMethodField()
+	# The Short's own instructor wrote it; the app shows a "Creator" badge.
+	is_creator = serializers.SerializerMethodField()
+
 	class Meta:
 		model = ShortComment
 		fields = [
 			'id',
 			'short',
+			'parent',
 			'student_id',
 			'student_name',
 			'text',
+			'like_count',
+			'reply_count',
+			'is_liked',
+			'is_creator',
 			'created_at',
 		]
 
@@ -2488,6 +2499,31 @@ class ShortCommentSerializer(serializers.ModelSerializer):
 			'student_name',
 			'created_at',
 		]
+
+		extra_kwargs = {'parent': {'required': False, 'allow_null': True}}
+
+	# The comment list and replies querysets annotate these (see
+	# `_comments_with_state`); the fallbacks cover a just-created comment.
+	def get_like_count(self, obj):
+		if hasattr(obj, '_like_count'):
+			return obj._like_count
+		return obj.likes.count()
+
+	def get_reply_count(self, obj):
+		if hasattr(obj, '_reply_count'):
+			return obj._reply_count
+		return obj.replies.count()
+
+	def get_is_liked(self, obj):
+		request = self.context.get('request')
+		if not request or not request.user.is_authenticated:
+			return False
+		if hasattr(obj, '_is_liked'):
+			return obj._is_liked
+		return obj.likes.filter(student=request.user).exists()
+
+	def get_is_creator(self, obj):
+		return obj.student_id == obj.short.instructor_id
 
 
 class ShortSerializer(serializers.ModelSerializer):

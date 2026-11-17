@@ -66,6 +66,7 @@ from .models import (
 	Short,
 	ShortBookmark,
 	ShortComment,
+	ShortCommentLike,
 	ShortLike,
 	ShortView,
 	StudentProfile,
@@ -3782,9 +3783,9 @@ class StudentPointsAPIView(APIView):
 # Shorts
 # =========================================================
 
-def _short_count(model):
+def _short_count(model, fk='short_id'):
 	return Coalesce(Subquery(
-		model.objects.filter(short_id=OuterRef('pk')).order_by().values('short_id')
+		model.objects.filter(**{fk: OuterRef('pk')}).order_by().values(fk)
 		.annotate(n=Count('pk')).values('n')[:1]
 	), 0)
 
@@ -4155,23 +4156,18 @@ class ShortCommentListCreateAPIView(
 				'Short not found or not published.'
 			)
 
-		return ShortComment.objects.filter(
-			short=short
-		).select_related(
-			'student',
-			'short'
+		# Top-level only; replies load per thread from the replies endpoint.
+		return _comments_with_state(self.request.user).filter(
+			short=short,
+			parent__isnull=True,
 		).order_by(
-			'-created_at'
+			'-created_at',
+			'-id'
 		)
 
 	def perform_create(self, serializer):
 		user = self.request.user
 		short_id = self.kwargs['short_id']
-
-		if _role_name(user) != 'student':
-			raise PermissionDenied(
-				'Only students can comment on Shorts.'
-			)
 
 		short = Short.objects.filter(
 			id=short_id,
@@ -4182,6 +4178,26 @@ class ShortCommentListCreateAPIView(
 			raise NotFound(
 				'Short not found or not published.'
 			)
+
+		parent = serializer.validated_data.get('parent')
+		if parent is not None:
+			if parent.short_id != short.id:
+				raise serializers.ValidationError({
+					'parent': 'That comment is on a different Short.'
+				})
+			# Keep threads one level deep: answering a reply joins its thread.
+			if parent.parent_id is not None:
+				parent = parent.parent
+
+		if not _is_student(user):
+			if short.instructor_id != user.id:
+				raise PermissionDenied(
+					'Only students can comment on Shorts.'
+				)
+			if parent is None:
+				raise PermissionDenied(
+					"The Short's instructor can reply to comments but not start a new one."
+				)
 
 		text = serializer.validated_data.get(
 			'text',
@@ -4196,7 +4212,57 @@ class ShortCommentListCreateAPIView(
 		serializer.save(
 			student=user,
 			short=short,
+			parent=parent,
 			text=text
+		)
+
+
+def _comments_with_state(user):
+	return ShortComment.objects.select_related('student', 'short').annotate(
+		_like_count=_short_count(ShortCommentLike, 'comment_id'),
+		_reply_count=_short_count(ShortComment, 'parent_id'),
+		_is_liked=Exists(ShortCommentLike.objects.filter(student=user, comment_id=OuterRef('pk'))),
+	)
+
+
+class ShortCommentRepliesAPIView(generics.ListAPIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = ShortCommentSerializer
+
+	def get_queryset(self):
+		comment = ShortComment.objects.filter(
+			pk=self.kwargs['pk'], parent__isnull=True, short__is_published=True,
+		).first()
+		if comment is None:
+			raise NotFound('Comment not found.')
+		# Oldest first, so a thread reads as a conversation.
+		return _comments_with_state(self.request.user).filter(parent=comment).order_by('created_at', 'id')
+
+
+class ToggleShortCommentLikeAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	@transaction.atomic
+	def post(self, request, pk):
+		user = request.user
+		comment = ShortComment.objects.select_related('short').filter(pk=pk, short__is_published=True).first()
+		if comment is None:
+			raise NotFound('Comment not found.')
+		if not (_is_student(user) or comment.short.instructor_id == user.id):
+			raise PermissionDenied("Only students and the Short's instructor can like comments.")
+
+		deleted, _ = ShortCommentLike.objects.filter(student=user, comment=comment).delete()
+		if not deleted:
+			ShortCommentLike.objects.get_or_create(student=user, comment=comment)
+		return Response(
+			{
+				'comment_id': comment.pk,
+				'is_liked': not deleted,
+				'like_count': comment.likes.count(),
+			},
+			status=status.HTTP_200_OK if deleted else status.HTTP_201_CREATED,
 		)
 
 
