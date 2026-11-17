@@ -10,6 +10,7 @@ from .models import (
 	CourseResource,
 	District,
 	Event,
+	EBook,
 	Grade,
 	Lesson,
 	Municipality,
@@ -18,6 +19,22 @@ from .models import (
 	StreakSettings,
 	User,
 )
+
+
+class EBookForm(forms.ModelForm):
+	class Meta:
+		model = EBook
+		fields = ['title', 'author', 'description', 'subject', 'grade', 'category',
+			'difficulty', 'highlights', 'price', 'currency', 'cover_url', 'cover_image',
+			'file_url', 'source_file', 'is_published']
+		# ClearableFileInput tries to render .url, forbidden for private content.
+		widgets = {'source_file': forms.FileInput(), 'cover_image': forms.FileInput()}
+		help_texts = {
+			'price': 'Leave blank for unknown pricing. Zero explicitly means free; Phase 1 does not grant reader access.',
+			'highlights': 'JSON list of up to 30 short strings, for example ["Practical examples"].',
+			'file_url': 'Legacy reference only. Not returned to readers; upload a private source to replace it.',
+			'source_file': 'PDF or EPUB, up to 50 MB. Leave empty to keep the existing file.',
+		}
 
 
 class ProvinceForm(forms.ModelForm):

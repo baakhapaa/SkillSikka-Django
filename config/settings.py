@@ -233,6 +233,11 @@ else:
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# Book content must never be served by the public /media/ location.
+BOOK_PRIVATE_ROOT = config('BOOK_PRIVATE_ROOT', default=str(BASE_DIR / 'private-books'))
+BOOK_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+BOOK_MAX_COVER_BYTES = 8 * 1024 * 1024
+
 
 # Custom User Model
 

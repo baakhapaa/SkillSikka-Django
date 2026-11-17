@@ -54,6 +54,7 @@ from .api_views import (
 	DistrictListAPIView,
 	EBookListCreateAPIView,
 	EBookDetailAPIView,
+	EBookContentAPIView,
 	EnrollCourseAPIView,
 	CourseEnrollmentAPIView,
 	ForgotPasswordAPIView,
@@ -794,6 +795,7 @@ urlpatterns = [
 		EBookDetailAPIView.as_view(),
 		name='api-ebook-detail'
 	),
+	path('ebooks/<int:pk>/content/', EBookContentAPIView.as_view(), name='api-ebook-content'),
 
 	# =========================
 	# Notifications

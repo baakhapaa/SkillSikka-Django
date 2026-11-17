@@ -2,6 +2,10 @@ from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
 from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator
+from .book_files import (
+    PrivateBookStorage, book_cover_path, book_source_path,
+    validate_book_cover, validate_book_source, validate_highlights,
+)
 
 
 class Role(models.Model):
@@ -1374,6 +1378,7 @@ class ShortComment(models.Model):
 
 
 class EBook(models.Model):
+	DIFFICULTY_CHOICES = [('beginner', 'Beginner'), ('intermediate', 'Intermediate'), ('advanced', 'Advanced')]
 	title = models.CharField(max_length=200)
 	description = models.TextField(blank=True)
 	author = models.CharField(max_length=200, blank=True)
@@ -1381,14 +1386,51 @@ class EBook(models.Model):
 	grade = models.ForeignKey(Grade, on_delete=models.SET_NULL, null=True, blank=True, related_name='ebooks')
 	uploaded_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name='ebooks')
 	cover_url = models.URLField(blank=True)
-	file_url = models.URLField()
+	file_url = models.URLField(blank=True)
+	category = models.CharField(max_length=100, blank=True)
+	difficulty = models.CharField(max_length=20, choices=DIFFICULTY_CHOICES, blank=True)
+	highlights = models.JSONField(default=list, blank=True, validators=[validate_highlights])
+	# NULL is unknown/unreviewed legacy pricing, never an implicit free grant.
+	price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, validators=[MinValueValidator(0)])
+	currency = models.CharField(max_length=3, choices=[('NPR', 'NPR')], default='NPR')
+	cover_image = models.ImageField(upload_to=book_cover_path, blank=True, validators=[validate_book_cover])
+	source_file = models.FileField(storage=PrivateBookStorage(), upload_to=book_source_path, blank=True, validators=[validate_book_source])
+	file_format = models.CharField(max_length=4, choices=[('pdf', 'PDF'), ('epub', 'EPUB')], blank=True, editable=False)
 	is_published = models.BooleanField(default=False)
+	published_at = models.DateTimeField(null=True, blank=True, editable=False)
 	created_at = models.DateTimeField(auto_now_add=True)
 	updated_at = models.DateTimeField(auto_now=True)
 
 	class Meta:
 		db_table = 'ebooks'
 		ordering = ['-created_at']
+		constraints = [
+			models.CheckConstraint(condition=models.Q(price__isnull=True) | models.Q(price__gte=0), name='ebook_price_nonnegative'),
+			models.CheckConstraint(condition=models.Q(currency='NPR'), name='ebook_currency_npr'),
+		]
+
+	def clean(self):
+		super().clean()
+		from django.core.exceptions import ValidationError
+		try:
+			validate_highlights(self.highlights)
+		except ValidationError as exc:
+			raise ValidationError({'highlights': exc.messages})
+		if self.is_published and not self.source_file and not self.file_url:
+			raise ValidationError({'source_file': 'Upload a PDF/EPUB or provide a legacy file URL.'})
+
+	def save(self, *args, **kwargs):
+		from django.utils import timezone
+		from pathlib import Path
+		if self.source_file:
+			self.file_format = Path(self.source_file.name).suffix.lower().lstrip('.')
+		if self.is_published and self.published_at is None:
+			self.published_at = timezone.now()
+		elif not self.is_published:
+			self.published_at = None
+		if kwargs.get('update_fields') is not None:
+			kwargs['update_fields'] = set(kwargs['update_fields']) | {'file_format', 'published_at'}
+		super().save(*args, **kwargs)
 
 	def __str__(self):
 		return self.title

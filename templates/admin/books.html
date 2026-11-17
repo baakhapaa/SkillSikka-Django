@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% block title %}Book Management | SkillSikka{% endblock %}
+{% block content %}
+<div class="app-shell">
+    {% include 'admin/bootcamp_sidebar.html' %}
+    <main class="dashboard-main">
+        <header class="topbar"><div><p class="eyebrow">Content management</p><h1>Book Management</h1></div><a class="outline-button" href="{% url 'add_book' %}">Add book</a></header>
+        {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
+        <form method="get" class="form-stack">
+            <label for="book-search">Search title, author or description</label><input id="book-search" name="q" value="{{ q }}">
+            <label for="book-status">Publication</label><select id="book-status" name="status"><option value="">All</option value="published" {% if status == 'published' %}selected{% endif %}>Published</option><option value="draft" {% if status == 'draft' %}selected{% endif %}>Draft</option></select>
+            <label for="book-category">Category</label><select id="book-category" name="category"><option value="">All</option>{% for item in categories %}<option {% if category == item %}selected{% endif %}>{{ item }}</option>{% endfor %}</select>
+            <button class="outline-button" type="submit">Filter books</button>
+        </form>
+        <p>{{ page.paginator.count }} books</p>
+        <div class="table-wrap"><table><thead><tr><th>Title / author</th><th>Category</th><th>Price</th><th>Format</th><th>Status</th><th>Manage</th></tr></thead><tbody>
+        {% for book in page %}<tr><td>{{ book.title }}<br>{{ book.author }}</td><td>{{ book.category|default:'—' }}</td><td>{% if book.price == None %}Unknown{% else %}{{ book.currency }} {{ book.price }}{% endif %}</td><td>{{ book.file_format|default:'Legacy URL' }}</td><td>{% if book.is_published %}Published{% else %}Draft{% endif %}</td><td><a href="{% url 'edit_book' book.pk %}">Edit</a> · <a href="{% url 'delete_book' book.pk %}">Delete</a></td></tr>
+        {% empty %}<tr><td colspan="6" class="empty-state">No books found.</td></tr>{% endfor %}
+        </tbody></table></div>
+        <p>{% if page.has_previous %}<a href="?q={{ q|urlencode }}&amp;status={{ status|urlencode }}&amp;category={{ category|urlencode }}&amp;page={{ page.previous_page_number }}">Previous</a>{% endif %} Page {{ page.number }} of {{ page.paginator.num_pages }} {% if page.has_next %}<a href="?q={{ q|urlencode }}&amp;status={{ status|urlencode }}&amp;category={{ category|urlencode }}&amp;page={{ page.next_page_number }}">Next</a>{% endif %}</p>
+    </main>
+</div>
+{% endblock %}

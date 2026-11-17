@@ -18,6 +18,7 @@ from .forms import (
 	CourseForm,
 	DistrictForm,
 	EventForm,
+	EBookForm,
 	GradeForm,
 	MunicipalityForm,
 	ProvinceForm,
@@ -27,6 +28,7 @@ from .forms import (
 )
 from .models import (
 	Event,
+	EBook,
 	Payment,
 	AdminAuditLog,
 	CertificateCriteria,
@@ -126,6 +128,59 @@ def manage_geography(request):
 
 def is_admin(user):
 	return user.is_superuser or getattr(user.role, 'name', '') == 'super_admin'
+
+
+@login_required
+def manage_books(request):
+	if not is_admin(request.user):
+		from django.http import HttpResponseForbidden
+		return HttpResponseForbidden('Only administrators can manage books.')
+	books = EBook.objects.select_related('uploaded_by', 'subject', 'grade').order_by('-created_at', '-pk')
+	search = request.GET.get('q', '').strip()
+	status = request.GET.get('status', '')
+	category = request.GET.get('category', '').strip()
+	if search:
+		books = books.filter(Q(title__icontains=search) | Q(author__icontains=search) | Q(description__icontains=search))
+	if status in ('published', 'draft'):
+		books = books.filter(is_published=status == 'published')
+	if category:
+		books = books.filter(category=category)
+	return render(request, 'admin/books.html', {
+		'page': Paginator(books, 25).get_page(request.GET.get('page')),
+		'q': search, 'status': status, 'category': category,
+		'categories': EBook.objects.exclude(category='').values_list('category', flat=True).distinct().order_by('category'),
+	})
+
+
+@login_required
+def edit_book(request, book_id=None):
+	if not is_admin(request.user):
+		from django.http import HttpResponseForbidden
+		return HttpResponseForbidden('Only administrators can manage books.')
+	book = get_object_or_404(EBook, pk=book_id) if book_id is not None else None
+	form = EBookForm(request.POST if request.method == 'POST' else None, request.FILES or None, instance=book)
+	if request.method == 'POST' and form.is_valid():
+		book = form.save(commit=False)
+		if not book.pk:
+			book.uploaded_by = request.user
+		book.save()
+		messages.success(request, 'Book saved.' if book.is_published else 'Book saved as draft.')
+		return redirect('edit_book', book_id=book.pk)
+	return render(request, 'admin/book_form.html', {'form': form, 'book': book})
+
+
+@login_required
+def delete_book(request, book_id):
+	if not is_admin(request.user):
+		from django.http import HttpResponseForbidden
+		return HttpResponseForbidden('Only administrators can manage books.')
+	book = get_object_or_404(EBook, pk=book_id)
+	if request.method == 'POST' and request.POST.get('confirm') == str(book.pk):
+		# Retain uploaded objects: no destructive filesystem cleanup in a request.
+		book.delete()
+		messages.success(request, 'Book record deleted. Uploaded files retained for controlled cleanup.')
+		return redirect('manage_books')
+	return render(request, 'admin/book_delete.html', {'book': book})
 
 
 def _log_admin_action(admin, action, target_user, details=''):

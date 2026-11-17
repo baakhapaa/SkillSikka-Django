@@ -6,6 +6,7 @@ services:
     volumes:
       - static_volume:/app/staticfiles
       - media_volume:/app/media
+      - book_private_volume:/app/private-books
     expose:
       - "8000"
 
@@ -27,3 +28,4 @@ services:
 volumes:
   static_volume:
   media_volume:
+  book_private_volume:

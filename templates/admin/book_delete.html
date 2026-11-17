@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block title %}Delete book | SkillSikka{% endblock %}
+{% block content %}
+<div class="app-shell">
+    {% include 'admin/bootcamp_sidebar.html' %}
+    <main class="dashboard-main">
+        <h1>Delete “{{ book.title }}”?</h1>
+        <p>This deletes the book record. Uploaded files are retained for controlled cleanup. To hide the book instead, unpublish it from the edit page.</p>
+        <form method="post">{% csrf_token %}<input type="hidden" name="confirm" value="{{ book.pk }}"><button class="primary-button" type="submit">Delete book</button></form>
+        <p><a href="{% url 'edit_book' book.pk %}">Cancel</a></p>
+    </main>
+</div>
+{% endblock %}

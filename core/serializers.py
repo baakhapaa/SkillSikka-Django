@@ -16,6 +16,7 @@ from django.utils import timezone
 from django.utils.crypto import constant_time_compare, salted_hmac
 from django.utils.text import slugify
 from rest_framework import serializers
+from .book_files import validate_book_source, validate_book_cover, validate_highlights
 from rest_framework.exceptions import APIException
 from drf_spectacular.utils import extend_schema_field
 from .course_access import CourseAPIError, academic_eligible, is_course_manager, require_bootcamp_admin
@@ -2645,6 +2646,10 @@ class ShortLikeSerializer(serializers.ModelSerializer):
 
 
 class EBookSerializer(serializers.ModelSerializer):
+	# Write-only uploads: even managers never receive a storage path or URL.
+	clear_file_url = serializers.BooleanField(write_only=True, required=False)
+	source_file = serializers.FileField(write_only=True, required=False, validators=[validate_book_source])
+	cover_image = serializers.ImageField(write_only=True, required=False, validators=[validate_book_cover])
 	subject_name = serializers.CharField(
 		source='subject.name',
 		read_only=True,
@@ -2675,16 +2680,51 @@ class EBookSerializer(serializers.ModelSerializer):
 			'uploaded_by_name',
 			'cover_url',
 			'file_url',
+			'category', 'difficulty', 'highlights', 'price', 'currency',
+			'cover_image', 'source_file', 'file_format', 'published_at',
+			'clear_file_url',
 			'is_published',
 			'created_at',
 			'updated_at',
 		]
-		read_only_fields = [
-			'id',
-			'uploaded_by',
-			'created_at',
-			'updated_at',
-		]
+		read_only_fields = ['id', 'uploaded_by', 'created_at', 'updated_at', 'file_format', 'published_at']
+
+	def validate(self, attrs):
+		if attrs.get('clear_file_url'):
+			if self.instance is None:
+				raise serializers.ValidationError({'clear_file_url': 'Only existing legacy references can be cleared.'})
+			if attrs.get('file_url'):
+				raise serializers.ValidationError({'file_url': 'Do not supply a replacement URL while clearing it.'})
+			attrs['file_url'] = ''
+		else:
+			attrs.pop('clear_file_url', None)
+			if self.instance is not None and attrs.get('file_url') == '':
+				# GET deliberately masks this value. A normal PUT/PATCH must not
+				# interpret the placeholder as a request to destroy the reference.
+				attrs.pop('file_url')
+		if 'highlights' in attrs:
+			try:
+				validate_highlights(attrs['highlights'])
+			except DjangoValidationError as exc:
+				raise serializers.ValidationError({'highlights': exc.messages})
+		published = attrs.get('is_published', getattr(self.instance, 'is_published', False))
+		if published and not attrs.get('source_file', getattr(self.instance, 'source_file', None)) and not attrs.get('file_url', getattr(self.instance, 'file_url', '')):
+			raise serializers.ValidationError({'source_file': 'Upload a PDF/EPUB or provide a legacy file URL.'})
+		return attrs
+
+	def update(self, instance, validated_data):
+		validated_data.pop('clear_file_url', None)
+		return super().update(instance, validated_data)
+
+	def to_representation(self, instance):
+		data = super().to_representation(instance)
+		# Preserve the legacy key, but never advertise whole-book content URLs.
+		data['file_url'] = ''
+		if instance.cover_image:
+			url = instance.cover_image.url
+			request = self.context.get('request')
+			data['cover_url'] = request.build_absolute_uri(url) if request else url
+		return data
 
 
 class NotificationSerializer(serializers.ModelSerializer):

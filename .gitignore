@@ -9,6 +9,7 @@ env/
 *.egg-info/
 .DS_Store
 media/
+private-books/
 staticfiles/
 .pytest_cache/
 .coverage

@@ -4178,6 +4178,7 @@ class EBookListCreateAPIView(generics.ListCreateAPIView):
 	authentication_classes = [JWTAuthentication]
 	permission_classes = [IsAuthenticated]
 	serializer_class = EBookSerializer
+	parser_classes = [MultiPartParser, FormParser, JSONParser]
 
 	def get_queryset(self):
 		user = self.request.user
@@ -4238,6 +4239,7 @@ class EBookDetailAPIView(
 	authentication_classes = [JWTAuthentication]
 	permission_classes = [IsAuthenticated]
 	serializer_class = EBookSerializer
+	parser_classes = [MultiPartParser, FormParser, JSONParser]
 
 	def get_queryset(self):
 		user = self.request.user
@@ -4276,11 +4278,40 @@ class EBookDetailAPIView(
 	def perform_update(self, serializer):
 		ebook = self.get_object()
 		self._check_owner_or_admin(ebook)
+		if serializer.validated_data.get('clear_file_url') and not (
+			_is_admin(self.request.user)
+			or (_is_instructor(self.request.user) and ebook.uploaded_by_id == self.request.user.pk)
+		):
+			raise PermissionDenied('Only the current instructor owner or administrator can clear a legacy source.')
 		serializer.save()
 
 	def perform_destroy(self, instance):
 		self._check_owner_or_admin(instance)
 		instance.delete()
+
+
+class EBookContentAPIView(APIView):
+	"""Phase 1 management download only; no purchase/free-reader grants yet."""
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def get(self, request, pk):
+		from django.http import FileResponse, Http404
+		book = get_object_or_404(EBook, pk=pk)
+		if not (_is_admin(request.user) or (_is_instructor(request.user) and book.uploaded_by_id == request.user.pk)):
+			raise PermissionDenied('Only the current instructor owner or administrator can download source files.')
+		if not book.source_file:
+			raise Http404('No private source file. Upload the legacy book first.')
+		try:
+			stream = book.source_file.open('rb')
+		except FileNotFoundError:
+			raise Http404('Book source file is unavailable.')
+		response = FileResponse(stream, as_attachment=True, filename=f'book-{book.pk}.{book.file_format}',
+			content_type='application/pdf' if book.file_format == 'pdf' else 'application/epub+zip')
+		response['Cache-Control'] = 'private, no-store'
+		response['X-Content-Type-Options'] = 'nosniff'
+		response['Content-Security-Policy'] = "default-src 'none'; sandbox"
+		return response
 
 
 # =========================================================
