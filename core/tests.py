@@ -1100,6 +1100,8 @@ class HomeFeedTests(TestCase):
     def test_fallback_deterministic_without_profile_and_without_matches(self):
         from .models import LearningInterest
         recent = self.course_for('Recent unrelated')
+        # Two back-to-back creates can share a timestamp; make "recent" newer.
+        Course.objects.filter(pk=recent.pk).update(created_at=self.course.created_at + timedelta(seconds=1))
         expected = [recent.pk, self.course.pk]
         self.assertEqual([r['id'] for r in self.feed()['recommended_courses']], expected)
         self.profile.learning_interests.add(LearningInterest.objects.get(slug='robotics'))
@@ -1694,8 +1696,11 @@ class AuthenticationFlowTests(TestCase):
 		self.assertNotIn('_auth_user_id', self.client.session)
 
 	def test_completed_user_can_open_dashboard(self):
+		# The dashboard is for administrators only (see the school_admin case
+		# in test_admin_logout), so this checks the admin login path.
+		self.user.role = Role.objects.get(name='super_admin')
 		self.user.onboarding_completed = True
-		self.user.save(update_fields=['onboarding_completed'])
+		self.user.save(update_fields=['role', 'onboarding_completed'])
 		response = self.client.post(reverse('login'), {
 			'email': self.user.email,
 			'password': 'A-strong-password-123',
@@ -1728,35 +1733,45 @@ class GeographyManagementTests(TestCase):
 		self.client.force_login(self.super_admin)
 
 	def test_super_admin_can_create_geography_records(self):
-		response = self.client.post(reverse('manage_geography'), {'form_type': 'province', 'province-name': 'Bagmati'})
+		# Names that migration 0009 does not seed; Bagmati, Kathmandu etc.
+		# already exist and would be rejected as duplicates.
+		response = self.client.post(reverse('manage_geography'), {'form_type': 'province', 'province-name': 'Test Province'})
 		self.assertRedirects(response, reverse('manage_geography'))
-		province = Province.objects.get(name='Bagmati')
+		province = Province.objects.get(name='Test Province')
 
 		response = self.client.post(reverse('manage_geography'), {
 			'form_type': 'district',
-			'district-name': 'Kathmandu',
+			'district-name': 'Test District',
 			'district-province': province.pk,
 		})
 		self.assertRedirects(response, reverse('manage_geography'))
-		district = District.objects.get(name='Kathmandu')
+		district = District.objects.get(name='Test District')
 
-		self.client.post(reverse('manage_geography'), {
+		response = self.client.post(reverse('manage_geography'), {
 			'form_type': 'municipality',
-			'municipality-name': 'Kirtipur',
+			'municipality-name': 'Test Municipality',
 			'municipality-district': district.pk,
 		})
-		self.client.post(reverse('manage_geography'), {
+		self.assertRedirects(response, reverse('manage_geography'))
+		response = self.client.post(reverse('manage_geography'), {
 			'form_type': 'school',
-			'school-name': 'SkillSikka Academy',
-			'school-municipality': Municipality.objects.get(name='Kirtipur').pk,
+			'school-name': 'SkillSikka Test Academy',
+			'school-municipality': Municipality.objects.get(name='Test Municipality').pk,
 			'school-sector': 'private',
 			'school-logo_url': '',
 		})
-		self.client.post(reverse('manage_geography'), {'form_type': 'grade', 'grade-name': 'Grade 8'})
+		self.assertRedirects(response, reverse('manage_geography'))
+		response = self.client.post(reverse('manage_geography'), {'form_type': 'grade', 'grade-name': 'Test Grade'})
+		self.assertRedirects(response, reverse('manage_geography'))
 
-		self.assertTrue(Municipality.objects.filter(name='Kirtipur', district=district).exists())
-		self.assertTrue(School.objects.filter(name='SkillSikka Academy', municipality__name='Kirtipur').exists())
-		self.assertTrue(Grade.objects.filter(name='Grade 8').exists())
+		self.assertTrue(Municipality.objects.filter(name='Test Municipality', district=district).exists())
+		self.assertTrue(School.objects.filter(name='SkillSikka Test Academy', municipality__name='Test Municipality').exists())
+		self.assertTrue(Grade.objects.filter(name='Test Grade').exists())
+
+	def test_duplicate_province_is_rejected(self):
+		response = self.client.post(reverse('manage_geography'), {'form_type': 'province', 'province-name': 'Bagmati'})
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(Province.objects.filter(name='Bagmati').count(), 1)
 
 	def test_non_super_admin_cannot_create_geography_records(self):
 		user = User.objects.create_user(
@@ -1768,7 +1783,8 @@ class GeographyManagementTests(TestCase):
 		self.client.force_login(user)
 		response = self.client.post(reverse('manage_geography'), {'form_type': 'province', 'province-name': 'Blocked'})
 
-		self.assertRedirects(response, reverse('dashboard'))
+		# The dashboard then signs a non-admin out, so don't follow the redirect.
+		self.assertRedirects(response, reverse('dashboard'), fetch_redirect_response=False)
 		self.assertFalse(Province.objects.filter(name='Blocked').exists())
 
 
