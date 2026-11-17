@@ -55,6 +55,10 @@ from .api_views import (
 	EBookListCreateAPIView,
 	EBookDetailAPIView,
 	EBookContentAPIView,
+	BookChaptersAPIView, BookChapterAPIView, BookReorderAPIView, BookImportAPIView,
+	BookProgressAPIView, BookBookmarksAPIView, BookBookmarkDetailAPIView,
+	ReaderSettingsAPIView, ContinueReadingAPIView,
+	BookPDFExtractAPIView,
 	EnrollCourseAPIView,
 	CourseEnrollmentAPIView,
 	ForgotPasswordAPIView,
@@ -796,6 +800,16 @@ urlpatterns = [
 		name='api-ebook-detail'
 	),
 	path('ebooks/<int:pk>/content/', EBookContentAPIView.as_view(), name='api-ebook-content'),
+	path('ebooks/<int:book_id>/chapters/', BookChaptersAPIView.as_view(), name='api-book-chapters'),
+	path('ebooks/<int:book_id>/chapters/<int:chapter_id>/', BookChapterAPIView.as_view(), name='api-book-chapter'),
+	path('ebooks/<int:book_id>/chapters/<int:chapter_id>/extract-pdf/', BookPDFExtractAPIView.as_view(), name='api-book-pdf-extract'),
+	path('ebooks/<int:book_id>/chapters/reorder/', BookReorderAPIView.as_view(), name='api-book-reorder'),
+	path('ebooks/<int:book_id>/import-epub/', BookImportAPIView.as_view(), name='api-book-import'),
+	path('ebooks/<int:book_id>/progress/', BookProgressAPIView.as_view(), name='api-book-progress'),
+	path('ebooks/<int:book_id>/bookmarks/', BookBookmarksAPIView.as_view(), name='api-book-bookmarks'),
+	path('ebooks/<int:book_id>/bookmarks/<int:bookmark_id>/', BookBookmarkDetailAPIView.as_view(), name='api-book-bookmark'),
+	path('reader/settings/', ReaderSettingsAPIView.as_view(), name='api-reader-settings'),
+	path('reader/continue/', ContinueReadingAPIView.as_view(), name='api-reader-continue'),
 
 	# =========================
 	# Notifications

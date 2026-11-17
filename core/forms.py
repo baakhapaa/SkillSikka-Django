@@ -11,6 +11,7 @@ from .models import (
 	District,
 	Event,
 	EBook,
+	BookChapter,
 	Grade,
 	Lesson,
 	Municipality,
@@ -35,6 +36,23 @@ class EBookForm(forms.ModelForm):
 			'file_url': 'Legacy reference only. Not returned to readers; upload a private source to replace it.',
 			'source_file': 'PDF or EPUB, up to 50 MB. Leave empty to keep the existing file.',
 		}
+
+
+class BookChapterForm(forms.ModelForm):
+	content = forms.CharField(max_length=200000, required=False, strip=False, widget=forms.Textarea,
+		help_text='Plain text only. Literal tags, code examples and whitespace are preserved; never render as HTML.')
+	class Meta:
+		model = BookChapter
+		fields = ['chapter_number', 'title', 'content', 'pdf_page_start', 'pdf_page_end']
+		help_texts = {'content': 'Plain text only. Code examples and whitespace are preserved; never render this field as HTML.',
+			'pdf_page_start': 'Optional inclusive 1-based PDF range. No automatic chapter boundaries.'}
+
+	def clean_title(self):
+		from .book_reader import plain_book_text
+		title = plain_book_text(self.cleaned_data['title'])
+		if not title.strip():
+			raise forms.ValidationError('A readable title is required.')
+		return title
 
 
 class ProvinceForm(forms.ModelForm):

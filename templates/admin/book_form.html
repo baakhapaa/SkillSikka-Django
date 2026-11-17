@@ -7,6 +7,7 @@
     <main class="dashboard-main">
         <header class="topbar"><h1>{% if book %}Edit book{% else %}Add book{% endif %}</h1><a class="outline-button" href="{% url 'manage_books' %}">All books</a></header>
         {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
+        {% if book.pk %}<p><a class="outline-button" href="{% url 'manage_book_chapters' book.pk %}">Manage chapters and import</a></p>{% endif %}
         {% if book.source_file %}<p>Private {{ book.file_format|upper }} source uploaded. Choose a new file to replace it.</p>{% elif book %}<p>This book uses a legacy URL. Upload a private PDF or EPUB to secure its source.</p>{% endif %}
         <form method="post" enctype="multipart/form-data" class="form-stack book-form">
             {% csrf_token %}{{ form.as_p }}

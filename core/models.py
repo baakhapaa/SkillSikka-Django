@@ -1436,6 +1436,111 @@ class EBook(models.Model):
 		return self.title
 
 
+class BookChapter(models.Model):
+	book = models.ForeignKey(EBook, on_delete=models.CASCADE, related_name='chapters')
+	chapter_number = models.PositiveIntegerField(validators=[MinValueValidator(1), MaxValueValidator(10000)])
+	title = models.CharField(max_length=200)
+	content = models.TextField(blank=True, max_length=200000)
+	# Import identity, never a public asset URL; excluded from reader responses.
+	source_reference = models.CharField(max_length=500, null=True, blank=True, default=None)
+	imported_digest = models.CharField(max_length=64, blank=True, editable=False)
+	estimated_reading_minutes = models.PositiveIntegerField(default=0, editable=False)
+	pdf_page_start = models.PositiveIntegerField(null=True, blank=True, validators=[MinValueValidator(1)])
+	pdf_page_end = models.PositiveIntegerField(null=True, blank=True, validators=[MinValueValidator(1)])
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'book_chapters'
+		ordering = ['chapter_number', 'pk']
+		constraints = [
+			models.UniqueConstraint(fields=['book', 'chapter_number'], name='unique_book_chapter_number'),
+			models.UniqueConstraint(fields=['book', 'source_reference'], name='unique_book_import_reference'),
+			models.CheckConstraint(condition=models.Q(chapter_number__gte=1), name='book_chapter_positive_number'),
+			models.CheckConstraint(condition=(models.Q(pdf_page_start__isnull=True, pdf_page_end__isnull=True) | models.Q(pdf_page_start__isnull=False, pdf_page_end__isnull=False, pdf_page_start__gte=1, pdf_page_end__gte=models.F('pdf_page_start'))), name='book_chapter_valid_pdf_range'),
+		]
+
+	def clean(self):
+		from django.core.exceptions import ValidationError
+		if bool(self.pdf_page_start) != bool(self.pdf_page_end) or (self.pdf_page_start and self.pdf_page_end < self.pdf_page_start):
+			raise ValidationError('Provide a valid inclusive PDF page range.')
+		if self.pdf_page_start and self.book.file_format != 'pdf':
+			raise ValidationError('Page ranges require a PDF book.')
+		if self.pdf_page_start:
+			from .book_reader import validate_pdf_range
+			validate_pdf_range(self.book, self.pdf_page_start, self.pdf_page_end)
+
+	def save(self, *args, **kwargs):
+		from .book_reader import plain_book_text, reading_minutes
+		self.content = plain_book_text(self.content)
+		self.title = plain_book_text(self.title)
+		self.estimated_reading_minutes = reading_minutes(self.content)
+		if kwargs.get('update_fields') is not None:
+			kwargs['update_fields'] = set(kwargs['update_fields']) | {'content', 'title', 'estimated_reading_minutes', 'updated_at'}
+		super().save(*args, **kwargs)
+
+
+	def delete(self, *args, **kwargs):
+		from django.db import transaction
+		with transaction.atomic():
+			EBook.objects.select_for_update().get(pk=self.book_id)
+			BookReadingProgress.objects.filter(last_chapter=self).update(last_chapter=None, position={})
+			return super().delete(*args, **kwargs)
+
+
+class BookReadingProgress(models.Model):
+	user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='book_reading_progress')
+	book = models.ForeignKey(EBook, on_delete=models.CASCADE, related_name='reading_progress')
+	last_chapter = models.ForeignKey(BookChapter, on_delete=models.SET_NULL, null=True, blank=True)
+	position = models.JSONField(default=dict, blank=True)
+	last_read_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'book_reading_progress'
+		constraints = [models.UniqueConstraint(fields=['user', 'book'], name='unique_user_book_progress')]
+
+
+class BookChapterCompletion(models.Model):
+	progress = models.ForeignKey(BookReadingProgress, on_delete=models.CASCADE, related_name='completions')
+	chapter = models.ForeignKey(BookChapter, on_delete=models.CASCADE, related_name='completions')
+	completed_at = models.DateTimeField(auto_now_add=True)
+
+	class Meta:
+		db_table = 'book_chapter_completions'
+		constraints = [models.UniqueConstraint(fields=['progress', 'chapter'], name='unique_book_chapter_completion')]
+
+
+class BookBookmark(models.Model):
+	user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='book_bookmarks')
+	book = models.ForeignKey(EBook, on_delete=models.CASCADE, related_name='bookmarks')
+	chapter = models.ForeignKey(BookChapter, on_delete=models.CASCADE, related_name='bookmarks')
+	position = models.JSONField(default=dict, blank=True)
+	anchor = models.CharField(max_length=120, blank=True)
+	note = models.TextField(blank=True, max_length=2000)
+	locator_key = models.CharField(max_length=64, editable=False)
+	created_at = models.DateTimeField(auto_now_add=True)
+
+	class Meta:
+		db_table = 'book_bookmarks'
+		ordering = ['-created_at', '-pk']
+		constraints = [models.UniqueConstraint(fields=['user', 'chapter', 'locator_key'], name='unique_user_chapter_bookmark')]
+
+
+class ReaderSettings(models.Model):
+	user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='reader_settings')
+	font_family = models.CharField(max_length=20, choices=[('system', 'System'), ('serif', 'Serif'), ('sans-serif', 'Sans serif'), ('monospace', 'Monospace')], default='system')
+	font_size = models.PositiveSmallIntegerField(default=18, validators=[MinValueValidator(12), MaxValueValidator(32)])
+	line_spacing = models.DecimalField(max_digits=2, decimal_places=1, default='1.5', validators=[MinValueValidator(1), MaxValueValidator(2.5)])
+	theme = models.CharField(max_length=5, choices=[('light', 'Light'), ('sepia', 'Sepia'), ('dark', 'Dark')], default='light')
+
+	class Meta:
+		db_table = 'reader_settings'
+		constraints = [
+			models.CheckConstraint(condition=models.Q(font_size__gte=12, font_size__lte=32), name='reader_font_size_range'),
+			models.CheckConstraint(condition=models.Q(line_spacing__gte=1, line_spacing__lte=2.5), name='reader_spacing_range'),
+		]
+
+
 class Notification(models.Model):
 	TYPE_COURSE_UPDATE = 'course_update'
 	TYPE_ASSESSMENT_RESULT = 'assessment_result'

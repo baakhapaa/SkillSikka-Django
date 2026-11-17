@@ -67,6 +67,14 @@ class BookSectionTests(TestCase):
             role=Role.objects.get(name=role), **kwargs)
 
     def setUp(self):
+        # API matrices must not inherit another test's throttle history. Use an
+        # isolated local cache rather than weakening production throttle rates.
+        self.cache_override = override_settings(CACHES={'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': f'book-test-{id(self)}',
+        }})
+        self.cache_override.enable()
+        self.addCleanup(self.cache_override.disable)
         self.tmp = TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)
@@ -652,6 +660,7 @@ class BookMigrationCompatibilityTests(TransactionTestCase):
         previous = [('core', '0052_seed_premium_categories')]
         target = [('core', '0053_ebook_phase1')]
         executor = MigrationExecutor(connection)
+        latest = executor.loader.graph.leaf_nodes()
         executor.migrate(previous)
         try:
             apps = executor.loader.project_state(previous).apps
@@ -682,4 +691,668 @@ class BookMigrationCompatibilityTests(TransactionTestCase):
             self.assertFalse(model.objects.get(pk=draft.pk).is_published)
             self.assertIsNone(model.objects.get(pk=draft.pk).published_at)
         finally:
-            MigrationExecutor(connection).migrate(target)
+            MigrationExecutor(connection).migrate(latest)
+
+
+def reader_epub(order=('b', 'a'), body_a=None):
+    stream = BytesIO()
+    with zipfile.ZipFile(stream, 'w') as archive:
+        archive.writestr('mimetype', b'application/epub+zip')
+        archive.writestr('META-INF/container.xml', '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OPS/book.opf"/></rootfiles></container>')
+        archive.writestr('OPS/book.opf', '<package xmlns="http://www.idpf.org/2007/opf"><manifest><item id="a" href="a.xhtml" media-type="application/xhtml+xml"/><item id="b" href="b.xhtml" media-type="application/xhtml+xml"/></manifest><spine>' + ''.join(f'<itemref idref="{item}"/>' for item in order) + '</spine></package>')
+        archive.writestr('OPS/a.xhtml', body_a or '<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Alpha</h1><p>Readable A.</p></body></html>')
+        archive.writestr('OPS/b.xhtml', '<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Beta</h1><p>Readable B.</p></body></html>')
+    return SimpleUploadedFile('reader.epub', stream.getvalue())
+
+
+def reader_pdf(text=False):
+    from pypdf import PdfWriter
+    from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=200, height=200)
+    if text:
+        font = DictionaryObject({NameObject('/Type'): NameObject('/Font'), NameObject('/Subtype'): NameObject('/Type1'), NameObject('/BaseFont'): NameObject('/Helvetica')})
+        page[NameObject('/Resources')] = DictionaryObject({NameObject('/Font'): DictionaryObject({NameObject('/F1'): writer._add_object(font)})})
+        content = DecodedStreamObject()
+        content.set_data(b'BT /F1 12 Tf 10 100 Td (Reliable chapter text.) Tj ET')
+        page[NameObject('/Contents')] = writer._add_object(content)
+    stream = BytesIO()
+    writer.write(stream)
+    return pdf(body=stream.getvalue())
+
+
+@override_settings(STORAGES=TEST_STORAGES)
+class BookReaderPhase2Tests(TestCase):
+    user = classmethod(BookSectionTests.user.__func__)
+    setUpTestData = classmethod(BookSectionTests.setUpTestData.__func__)
+    setUp = BookSectionTests.setUp
+    book = BookSectionTests.book
+    upload = BookSectionTests.upload
+    detail = BookSectionTests.detail
+    content = BookSectionTests.content
+
+    def chapters(self, book):
+        return reverse('api-book-chapters', args=[book.pk])
+
+    def chapter_url(self, book, chapter):
+        return reverse('api-book-chapter', args=[book.pk, chapter.pk])
+
+    def chapter(self, book, number=1, **kwargs):
+        from .models import BookChapter
+        return BookChapter.objects.create(book=book, chapter_number=number, title=f'Chapter {number}', content='First paragraph.\n\nSecond paragraph.', **kwargs)
+
+    def endpoint(self, name, book):
+        return reverse(name, args=[book.pk])
+
+    def imported_book(self, **kwargs):
+        response = self.upload(source_file=reader_epub(**kwargs))
+        self.assertEqual(response.status_code, 201, response.data)
+        return EBook.objects.get(pk=response.data['id'])
+
+    def import_book(self, book, mode='create'):
+        return self.api.post(self.endpoint('api-book-import', book), {'mode': mode}, format='json')
+
+    def test_order_contents_navigation_and_no_list_content(self):
+        book = self.book()
+        last = self.chapter(book, 3)
+        first = self.chapter(book, 1)
+        middle = self.chapter(book, 2)
+        response = self.api.get(self.chapters(book))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([c['id'] for c in response.data['chapters']], [first.pk, middle.pk, last.pk])
+        self.assertNotIn('content', response.data['chapters'][0])
+        response = self.api.get(self.chapter_url(book, middle))
+        self.assertEqual(response.data['previous_chapter_id'], first.pk)
+        self.assertEqual(response.data['next_chapter_id'], last.pk)
+        self.assertEqual(response.data['chapter']['content_format'], 'text')
+        self.assertIsNone(self.api.get(self.chapter_url(book, first)).data['previous_chapter_id'])
+        self.assertIsNone(self.api.get(self.chapter_url(book, last)).data['next_chapter_id'])
+
+    def test_unique_order_and_reorder_keeps_ids(self):
+        book = self.book()
+        first, second = self.chapter(book), self.chapter(book, 2)
+        response = self.api.post(self.chapters(book), {'chapter_number': 1, 'title': 'Duplicate'}, format='json')
+        self.assertEqual(response.status_code, 400)
+        url = self.endpoint('api-book-reorder', book)
+        for ids in ([first.pk], [first.pk, first.pk], [first.pk, 99999]):
+            self.assertEqual(self.api.post(url, {'chapter_ids': ids}, format='json').status_code, 400)
+        response = self.api.post(url, {'chapter_ids': [second.pk, first.pk]}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(book.chapters.values_list('pk', flat=True)), [second.pk, first.pk])
+
+    def test_chapter_cross_book_ids_rejected(self):
+        book, other = self.book(), self.book(title='Other')
+        chapter = self.chapter(other)
+        self.assertEqual(self.api.get(self.chapter_url(book, chapter)).status_code, 404)
+        self.assertEqual(self.api.patch(self.chapter_url(book, chapter), {'title': 'Wrong'}, format='json').status_code, 404)
+        self.assertEqual(self.api.delete(self.chapter_url(book, chapter)).status_code, 404)
+
+    def test_manual_authoring_is_literal_text_and_admin_preview_is_escaped(self):
+        book = self.book()
+        content = '<script>evil()</script><p onclick="evil()">Hello <a href="javascript:evil()">link</a></p><iframe>bad</iframe>'
+        response = self.api.post(self.chapters(book), {'chapter_number': 1, 'title': '<b>Safe</b>',
+            'content': content}, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['title'], '<b>Safe</b>')
+        self.assertEqual(response.data['content'], content)
+        self.assertEqual(response.data['content_format'], 'text')
+        self.assertGreater(response.data['estimated_reading_minutes'], 0)
+        self.client.force_login(self.admin)
+        preview = self.client.get(reverse('edit_book_chapter', args=[book.pk, response.data['id']]))
+        self.assertNotContains(preview, '<script>evil()</script>')
+        self.assertContains(preview, '&lt;script&gt;evil()&lt;/script&gt;')
+
+    def test_epub_spine_order_and_hidden_internal_references(self):
+        book = self.imported_book()
+        response = self.import_book(book)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['created'], 2)
+        chapters = list(book.chapters.all())
+        self.assertEqual([c.title for c in chapters], ['Beta', 'Alpha'])
+        payload = str(self.api.get(self.chapter_url(book, chapters[0])).data)
+        for secret in ('OPS/', book.source_file.name, 'source_reference', 'imported_digest'):
+            self.assertNotIn(secret, payload)
+
+    def test_epub_scripts_events_links_and_foreign_content_removed(self):
+        body = '<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Safe<script>badtitle()</script></h1><script>badscript()</script><p onload="event()">Read <a href="javascript:danger()">this</a></p><svg><script>svgscript()</script></svg><style>badcss</style><img src="https://remote.invalid/track"/></body></html>'
+        book = self.imported_book(body_a=body)
+        self.assertEqual(self.import_book(book).status_code, 200)
+        chapter = book.chapters.get(source_reference='OPS/a.xhtml')
+        self.assertEqual(chapter.title, 'Safe')
+        for unsafe in ('badtitle', 'badscript', 'event()', 'javascript:', 'svgscript', 'badcss', 'remote.invalid', '<'):
+            self.assertNotIn(unsafe, chapter.content)
+        self.assertIn('Read this', chapter.content)
+
+    def test_malformed_epub_is_atomic(self):
+        book = self.imported_book(body_a='<html>not closed')
+        response = self.import_book(book)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['code'], 'INVALID_EPUB')
+        self.assertFalse(book.chapters.exists())
+
+    def test_epub_missing_or_repeated_spine_is_rejected(self):
+        for order in ((), ('a', 'a'), ('missing',)):
+            book = self.imported_book(order=order)
+            self.assertEqual(self.import_book(book).status_code, 400)
+            self.assertFalse(book.chapters.exists())
+
+    def test_epub_dtd_and_entity_rejected_at_import(self):
+        book = self.imported_book(body_a='<!DOCTYPE html [<!ENTITY x "unsafe">]><html xmlns="http://www.w3.org/1999/xhtml"><body>&x;</body></html>')
+        self.assertEqual(self.import_book(book).status_code, 400)
+        self.assertFalse(book.chapters.exists())
+
+    def test_reimport_requires_confirmation_and_preserves_ids(self):
+        book = self.imported_book()
+        first = self.import_book(book)
+        ids = first.data['chapter_ids']
+        self.assertEqual(self.import_book(book).status_code, 409)
+        response = self.import_book(book, 'refresh')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['chapter_ids'], ids)
+        self.assertEqual(book.chapters.count(), 2)
+
+    def test_reimport_refuses_manual_edits_and_manually_authored_chapters(self):
+        book = self.imported_book()
+        self.import_book(book)
+        chapter = book.chapters.first()
+        self.api.patch(self.chapter_url(book, chapter), {'content': 'My edited text'}, format='json')
+        response = self.import_book(book, 'refresh')
+        self.assertEqual(response.status_code, 409)
+        chapter.refresh_from_db()
+        self.assertEqual(chapter.content, 'My edited text')
+        book = self.imported_book()
+        self.chapter(book)
+        self.assertEqual(self.import_book(book, 'refresh').status_code, 409)
+        self.assertEqual(book.chapters.count(), 1)
+
+    def test_refresh_updates_spine_order_without_resetting_reader_state(self):
+        book = self.imported_book()
+        self.import_book(book)
+        chapter = book.chapters.first()
+        self.api.put(self.endpoint('api-book-progress', book), {'chapter_id': chapter.pk, 'position': {'paragraph': 1}, 'completed': True}, format='json')
+        self.api.post(self.endpoint('api-book-bookmarks', book), {'chapter_id': chapter.pk, 'anchor': 'saved'}, format='json')
+        self.api.patch(self.detail(book), {'source_file': reader_epub(order=('a', 'b'))}, format='multipart')
+        book.refresh_from_db()
+        self.assertEqual(self.import_book(book, 'refresh').status_code, 200)
+        self.assertEqual(book.chapters.last().pk, chapter.pk)
+        progress = self.api.get(self.endpoint('api-book-progress', book)).data
+        self.assertEqual(progress['completed_chapter_ids'], [chapter.pk])
+        self.assertEqual(progress['position'], {'paragraph': 1})
+        self.assertEqual(len(self.api.get(self.endpoint('api-book-bookmarks', book)).data), 1)
+
+    def test_all_book_reader_actions_deny_consumers_and_role_changes(self):
+        book = self.imported_book()
+        self.import_book(book)
+        chapter = book.chapters.first()
+        book.is_published = True
+        book.price = Decimal('100')
+        book.save()
+        actions = [('get', self.chapters(book), {}), ('post', self.chapters(book), {'chapter_number': 4, 'title': 'bad'}),
+            ('get', self.chapter_url(book, chapter), {}), ('patch', self.chapter_url(book, chapter), {'content': 'bad'}),
+            ('delete', self.chapter_url(book, chapter), {}), ('get', self.content(book), {}),
+            ('get', self.endpoint('api-book-progress', book), {}),
+            ('put', self.endpoint('api-book-progress', book), {'chapter_id': chapter.pk}),
+            ('get', self.endpoint('api-book-bookmarks', book), {}),
+            ('post', self.endpoint('api-book-bookmarks', book), {'chapter_id': chapter.pk}),
+            ('post', self.endpoint('api-book-import', book), {}),
+            ('post', self.endpoint('api-book-reorder', book), {'chapter_ids': [chapter.pk]})]
+        for user in (self.student, self.other, None):
+            self.api.force_authenticate(user)
+            for method, url, data in actions:
+                with self.subTest(user=getattr(user, 'pk', None), method=method, url=url):
+                    response = getattr(self.api, method)(url, data, format='json')
+                    self.assertEqual(response.status_code, 401 if user is None else 403)
+        self.owner.role = self.student.role
+        self.owner.save(update_fields=['role'])
+        self.api.force_authenticate(None)
+        self.api.credentials(HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(self.owner).access_token}')
+        for method, url, data in actions:
+            self.assertEqual(getattr(self.api, method)(url, data, format='json').status_code, 403)
+
+    def test_zero_and_unknown_price_do_not_grant_reader_access(self):
+        for price in (None, Decimal('0')):
+            book = self.book(is_published=True, price=price)
+            self.chapter(book)
+            self.api.force_authenticate(self.student)
+            self.assertEqual(self.api.get(self.chapters(book)).status_code, 403)
+
+    def test_progress_create_resume_completion_and_reopen(self):
+        book = self.book()
+        chapter = self.chapter(book)
+        other = self.chapter(book, 2)
+        url = self.endpoint('api-book-progress', book)
+        self.assertIsNone(self.api.get(url).data['last_read_at'])
+        response = self.api.put(url, {'chapter_id': chapter.pk, 'position': {'paragraph': 1, 'offset': 2}, 'completed': True}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['overall_percentage'], 50)
+        self.assertEqual(self.api.get(url).data['position']['offset'], 2)
+        self.api.patch(self.chapter_url(book, chapter), {'title': 'Ordinary edit'}, format='json')
+        self.assertEqual(self.api.get(url).data['completed_chapter_ids'], [chapter.pk])
+        self.api.put(url, {'chapter_id': other.pk, 'completed': True}, format='json')
+        self.assertEqual(self.api.get(url).data['overall_percentage'], 100)
+        self.api.put(url, {'chapter_id': chapter.pk, 'position': {}}, format='json')
+        self.assertEqual(self.api.get(url).data['overall_percentage'], 100)
+        self.api.put(url, {'chapter_id': chapter.pk, 'completed': False}, format='json')
+        self.assertEqual(self.api.get(url).data['overall_percentage'], 50)
+
+    def test_progress_rejects_cross_book_positions_and_forged_totals(self):
+        book = self.book()
+        chapter = self.chapter(book)
+        other = self.chapter(self.book())
+        url = self.endpoint('api-book-progress', book)
+        for payload in ({'chapter_id': other.pk}, {'chapter_id': chapter.pk, 'overall_percentage': 100},
+                        {'chapter_id': chapter.pk, 'position': {'paragraph': -1}},
+                        {'chapter_id': chapter.pk, 'position': {'offset': True}},
+                        {'chapter_id': chapter.pk, 'position': {'paragraph': 999}},
+                        {'chapter_id': chapter.pk, 'position': {'url': 'private'}}, {'chapter_id': None}):
+            self.assertEqual(self.api.put(url, payload, format='json').status_code, 400)
+
+    def test_progress_isolation_and_continue_reading(self):
+        book = self.book()
+        chapter = self.chapter(book)
+        self.api.put(self.endpoint('api-book-progress', book), {'chapter_id': chapter.pk, 'completed': True}, format='json')
+        self.assertEqual(len(self.api.get(reverse('api-reader-continue')).data['books']), 1)
+        self.api.force_authenticate(self.admin)
+        self.assertEqual(self.api.get(self.endpoint('api-book-progress', book)).data['overall_percentage'], 0)
+        self.assertEqual(self.api.get(reverse('api-reader-continue')).data['books'], [])
+        self.api.force_authenticate(self.student)
+        self.assertEqual(self.api.get(reverse('api-reader-continue')).status_code, 403)
+
+    def test_bookmark_idempotence_ownership_and_cross_book_protection(self):
+        book = self.book()
+        chapter = self.chapter(book)
+        url = self.endpoint('api-book-bookmarks', book)
+        payload = {'chapter_id': chapter.pk, 'anchor': 'p-1', 'note': '<script>bad</script>Remember'}
+        first = self.api.post(url, payload, format='json')
+        self.assertEqual(first.status_code, 201, first.data)
+        self.assertEqual(first.data['note'], 'Remember')
+        self.assertEqual(self.api.post(url, {**payload, 'position': {'paragraph': 1}}, format='json').data['id'], first.data['id'])
+        delete = reverse('api-book-bookmark', args=[book.pk, first.data['id']])
+        self.api.force_authenticate(self.admin)
+        self.assertEqual(self.api.get(url).data, [])
+        self.assertEqual(self.api.delete(delete).status_code, 404)
+        self.api.force_authenticate(self.owner)
+        other = self.book()
+        self.assertEqual(self.api.post(self.endpoint('api-book-bookmarks', other), payload, format='json').status_code, 400)
+        self.assertEqual(self.api.delete(reverse('api-book-bookmark', args=[other.pk, first.data['id']])).status_code, 404)
+        self.assertEqual(self.api.delete(delete).status_code, 204)
+        self.assertEqual(self.api.get(url).data, [])
+
+    def test_bookmark_position_normalization_and_invalid_anchors(self):
+        book = self.book()
+        chapter = self.chapter(book)
+        url = self.endpoint('api-book-bookmarks', book)
+        first = self.api.post(url, {'chapter_id': chapter.pk}, format='json')
+        second = self.api.post(url, {'chapter_id': chapter.pk, 'position': {'offset': 0, 'paragraph': 0}}, format='json')
+        self.assertEqual(first.data['id'], second.data['id'])
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(self.api.post(url, {'chapter_id': chapter.pk, 'anchor': '<script>'}, format='json').status_code, 400)
+
+    def test_settings_defaults_validation_and_isolation(self):
+        url = reverse('api-reader-settings')
+        self.assertEqual(self.api.get(url).data['font_size'], 18)
+        response = self.api.patch(url, {'theme': 'sepia', 'font_family': 'serif', 'font_size': 24, 'line_spacing': '2.0'}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.api.get(url).data['theme'], 'sepia')
+        for value in ({'font_size': 11}, {'font_size': 33}, {'font_family': 'javascript'}, {'theme': 'neon'}, {'line_spacing': '2.6'}, {'line_spacing': '0.9'}, {'brightness': 0}, {'user': self.admin.pk}):
+            self.assertEqual(self.api.patch(url, value, format='json').status_code, 400)
+        self.api.force_authenticate(self.admin)
+        self.assertEqual(self.api.get(url).data['theme'], 'light')
+        self.api.force_authenticate(None)
+        self.assertEqual(self.api.get(url).status_code, 401)
+
+    def test_chapter_deletion_clears_orphan_resume_and_related_state(self):
+        book = self.book()
+        chapter = self.chapter(book)
+        self.api.put(self.endpoint('api-book-progress', book), {'chapter_id': chapter.pk, 'position': {'paragraph': 1}, 'completed': True}, format='json')
+        self.api.post(self.endpoint('api-book-bookmarks', book), {'chapter_id': chapter.pk}, format='json')
+        self.assertEqual(self.api.delete(self.chapter_url(book, chapter)).status_code, 204)
+        progress = self.api.get(self.endpoint('api-book-progress', book)).data
+        self.assertIsNone(progress['last_chapter_id'])
+        self.assertEqual(progress['position'], {})
+        self.assertEqual(progress['completed_chapter_ids'], [])
+        self.assertEqual(self.api.get(self.endpoint('api-book-bookmarks', book)).data, [])
+
+    def test_malformed_json_and_offset_requests_rejected(self):
+        book = self.book()
+        chapter = self.chapter(book)
+        self.assertEqual(self.api.post(self.chapters(book), [{}], format='json').status_code, 400)
+        self.assertEqual(self.api.patch(reverse('api-reader-settings'), [], format='json').status_code, 400)
+        self.assertEqual(self.api.put(self.endpoint('api-book-progress', book), {'chapter_id': chapter.pk, 'position': {'paragraph': 0, 'offset': 9999}}, format='json').status_code, 400)
+
+    def test_pdf_fallback_ranges_and_protected_delivery(self):
+        created = self.upload(source_file=reader_pdf())
+        book = EBook.objects.get(pk=created.data['id'])
+        self.assertEqual(self.api.get(self.chapters(book)).data['reader_mode'], 'protected_pdf')
+        self.assertEqual(book.chapters.count(), 0)
+        for fields in ({'pdf_page_start': 2, 'pdf_page_end': 1}, {'pdf_page_start': 1}, {'pdf_page_start': 0, 'pdf_page_end': 2}):
+            response = self.api.post(self.chapters(book), {'chapter_number': 1, 'title': 'Range', **fields}, format='json')
+            self.assertEqual(response.status_code, 400, response.data)
+        response = self.api.post(self.chapters(book), {'chapter_number': 1, 'title': 'Selected pages', 'pdf_page_start': 1, 'pdf_page_end': 1}, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        chapter = book.chapters.get()
+        extract = reverse('api-book-pdf-extract', args=[book.pk, chapter.pk])
+        self.assertEqual(self.api.post(extract, {}, format='json').status_code, 400)
+        chapter.refresh_from_db()
+        self.assertEqual(chapter.content, '')
+        self.api.force_authenticate(self.student)
+        self.assertEqual(self.api.post(extract, {}, format='json').status_code, 403)
+        self.assertEqual(self.api.get(self.content(book)).status_code, 403)
+
+    def test_explicit_pdf_text_extraction_and_no_overwrite(self):
+        created = self.upload(source_file=reader_pdf(text=True))
+        book = EBook.objects.get(pk=created.data['id'])
+        chapter = self.chapter(book, pdf_page_start=1, pdf_page_end=1)
+        chapter.content = ''
+        chapter.save()
+        url = reverse('api-book-pdf-extract', args=[book.pk, chapter.pk])
+        response = self.api.post(url, {}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIn('Reliable chapter text.', response.data['content'])
+        self.assertEqual(self.api.post(url, {}, format='json').status_code, 409)
+
+    def test_pdf_range_invalid_for_epub_and_pdf_positions_validated(self):
+        book = self.imported_book()
+        self.assertEqual(self.api.post(self.chapters(book), {'chapter_number': 1, 'title': 'Bad', 'pdf_page_start': 1, 'pdf_page_end': 2}, format='json').status_code, 400)
+        book = EBook.objects.get(pk=self.upload(source_file=reader_pdf()).data['id'])
+        url = self.endpoint('api-book-progress', book)
+        self.assertEqual(self.api.put(url, {'chapter_id': None, 'position': {'page': 1}}, format='json').status_code, 200)
+        chapter = self.chapter(book, pdf_page_start=1, pdf_page_end=1)
+        self.assertEqual(self.api.put(url, {'chapter_id': chapter.pk, 'position': {'page': 2}}, format='json').status_code, 400)
+
+    def test_admin_chapter_crud_preview_and_confirmation(self):
+        self.client.force_login(self.admin)
+        book = self.book()
+        url = reverse('manage_book_chapters', args=[book.pk])
+        response = self.client.post(url, {'chapter_number': 1, 'title': 'Manual', 'content': '<b>Plain</b><script>bad()</script>'})
+        self.assertEqual(response.status_code, 302)
+        chapter = book.chapters.get()
+        self.assertEqual(chapter.content, '<b>Plain</b><script>bad()</script>')
+        edit = reverse('edit_book_chapter', args=[book.pk, chapter.pk])
+        self.assertContains(self.client.get(edit), 'Plain-text preview')
+        self.assertEqual(self.client.post(edit, {'chapter_number': 1, 'title': 'Edited', 'content': 'Updated'}).status_code, 302)
+        delete = reverse('delete_book_chapter', args=[book.pk, chapter.pk])
+        self.client.get(delete)
+        self.client.post(delete, {})
+        self.assertTrue(book.chapters.exists())
+        self.assertEqual(self.client.post(delete, {'confirm': chapter.pk}).status_code, 302)
+        self.assertFalse(book.chapters.exists())
+
+    def test_admin_import_review_reorder_and_authorization(self):
+        book = self.imported_book()
+        url = reverse('manage_book_chapters', args=[book.pk])
+        self.assertEqual(self.client.get(url).status_code, 302)
+        self.client.force_login(self.owner)
+        self.assertEqual(self.client.post(url, {'action': 'import'}).status_code, 403)
+        self.client.force_login(self.admin)
+        response = self.client.post(url, {'action': 'import', 'mode': 'create'}, follow=True)
+        self.assertContains(response, '2 created')
+        ids = list(book.chapters.values_list('pk', flat=True))
+        self.assertEqual(self.client.post(url, {'action': 'reorder', 'chapter_ids': ','.join(map(str, reversed(ids)))}).status_code, 302)
+        self.assertEqual(list(book.chapters.values_list('pk', flat=True)), list(reversed(ids)))
+        chapter = book.chapters.first()
+        for name in ('edit_book_chapter', 'delete_book_chapter'):
+            self.client.force_login(self.student)
+            self.assertEqual(self.client.get(reverse(name, args=[book.pk, chapter.pk])).status_code, 403)
+
+    def test_admin_chapter_forms_enforce_csrf(self):
+        book = self.book()
+        client = Client(enforce_csrf_checks=True)
+        client.force_login(self.admin)
+        self.assertEqual(client.post(reverse('manage_book_chapters', args=[book.pk]), {'title': 'bad'}).status_code, 403)
+
+    def test_audit_former_student_legacy_book_mutations(self):
+        created = self.upload(source_file=reader_pdf(), is_published='true', price='100')
+        book = EBook.objects.get(pk=created.data['id'])
+        chapter = self.chapter(book)
+        before = EBook.objects.values().get(pk=book.pk)
+        files = sorted(str(path) for path in (Path(self.tmp.name) / 'private').rglob('*') if path.is_file())
+        self.owner.role = self.student.role
+        self.owner.save(update_fields=['role'])
+        self.api.force_authenticate(None)
+        self.api.credentials(HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(self.owner).access_token}')
+        self.assertEqual(self.api.delete(self.chapter_url(book, chapter)).status_code, 403)
+        for method in ('put', 'patch', 'delete'):
+            with self.subTest(method=method):
+                payload = {'title': 'Forbidden', 'is_published': 'false', 'source_file': reader_pdf(text=True)} if method != 'delete' else {}
+                response = getattr(self.api, method)(self.detail(book), payload, format='multipart')
+                self.assertEqual(response.status_code, 403, getattr(response, 'data', None))
+                self.assertEqual(EBook.objects.values().get(pk=book.pk), before)
+                self.assertTrue(book.chapters.filter(pk=chapter.pk).exists())
+                self.assertEqual(sorted(str(path) for path in (Path(self.tmp.name) / 'private').rglob('*') if path.is_file()), files)
+        # Catalogue visibility is preserved for the now-student account.
+        self.assertEqual(self.api.get(self.detail(book)).status_code, 200)
+
+    def test_legacy_book_mutations_allow_current_managers(self):
+        for user in (self.owner, self.admin):
+            with self.subTest(user=user.pk):
+                book = self.book(is_published=True)
+                chapter = self.chapter(book)
+                self.api.force_authenticate(user)
+                payload = dict(self.api.get(self.detail(book)).data)
+                payload['title'] = 'Authorized PUT'
+                self.assertEqual(self.api.put(self.detail(book), payload, format='json').status_code, 200)
+                response = self.api.patch(self.detail(book), {'source_file': reader_pdf(), 'is_published': True}, format='multipart')
+                self.assertEqual(response.status_code, 200, response.data)
+                self.assertTrue(book.chapters.filter(pk=chapter.pk).exists())
+                self.assertEqual(self.api.delete(self.detail(book)).status_code, 204)
+                self.assertFalse(EBook.objects.filter(pk=book.pk).exists())
+
+    def test_nonowner_cannot_mutate_book_or_replace_source(self):
+        book = self.book(is_published=True)
+        chapter = self.chapter(book)
+        before = EBook.objects.values().get(pk=book.pk)
+        self.api.force_authenticate(self.other)
+        for method in ('put', 'patch', 'delete'):
+            response = getattr(self.api, method)(self.detail(book), {'title': 'No', 'source_file': reader_pdf()} if method != 'delete' else {}, format='multipart')
+            self.assertEqual(response.status_code, 403)
+            self.assertEqual(EBook.objects.values().get(pk=book.pk), before)
+            self.assertTrue(book.chapters.filter(pk=chapter.pk).exists())
+        self.assertFalse((Path(self.tmp.name) / 'private').exists())
+
+    def test_audit_plain_text_metadata_edit(self):
+        book = self.book()
+        original = 'Use &lt;code&gt;literal&lt;/code&gt; here.'
+        created = self.api.post(self.chapters(book), {'chapter_number': 1, 'title': 'Examples', 'content': original}, format='json')
+        self.assertEqual(created.status_code, 201, created.data)
+        chapter = book.chapters.get()
+        self.assertEqual(chapter.content, original)
+        before = chapter.content.encode('utf-8')
+        response = self.api.patch(self.chapter_url(book, chapter), {'title': 'Renamed only'}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        chapter.refresh_from_db()
+        self.assertEqual(chapter.content.encode('utf-8'), before)
+        for _ in range(3):
+            chapter.save()
+            chapter.refresh_from_db()
+            self.assertEqual(chapter.content.encode('utf-8'), before)
+
+    def test_plain_text_angles_entities_and_whitespace_are_stable(self):
+        book = self.book()
+        content = '  <code>literal</code> &lt;escaped&gt;\r\n\r\n\tindented  text\r\n'
+        canonical = content.replace('\r\n', '\n')
+        created = self.api.post(self.chapters(book), {'chapter_number': 1, 'title': 'Text', 'content': content}, format='json')
+        self.assertEqual(created.status_code, 201, created.data)
+        chapter = book.chapters.get()
+        self.assertEqual(chapter.content, canonical)
+        self.assertEqual(self.api.get(self.chapter_url(book, chapter)).data['chapter']['content'], canonical)
+        self.client.force_login(self.admin)
+        url = reverse('edit_book_chapter', args=[book.pk, chapter.pk])
+        self.assertEqual(self.client.post(url, {'chapter_number': 1, 'title': 'Admin edit', 'content': canonical}).status_code, 302)
+        chapter.refresh_from_db()
+        self.assertEqual(chapter.content, canonical)
+
+    def test_audit_escaped_epub_refresh(self):
+        from .book_reader import chapter_digest
+        body = '<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Alpha</h1><p>&amp;lt;code&amp;gt;literal&amp;lt;/code&amp;gt;</p><p>&lt;code&gt;literal&lt;/code&gt;</p></body></html>'
+        book = self.imported_book(body_a=body)
+        imported = self.import_book(book)
+        self.assertEqual(imported.status_code, 200, imported.data)
+        chapter = book.chapters.get(source_reference='OPS/a.xhtml')
+        self.assertIn('&lt;code&gt;literal&lt;/code&gt;', chapter.content)
+        self.assertIn('<code>literal</code>', chapter.content)
+        for item in book.chapters.all():
+            self.assertEqual(item.imported_digest, chapter_digest(item))
+        self.assertEqual(self.import_book(book).status_code, 409)
+        refreshed = self.import_book(book, 'refresh')
+        self.assertEqual(refreshed.status_code, 200, refreshed.data)
+        self.assertEqual(refreshed.data['chapter_ids'], imported.data['chapter_ids'])
+        self.assertEqual(book.chapters.count(), 2)
+        self.api.patch(self.chapter_url(book, chapter), {'content': 'Actual manual edit <code>preserved</code>'}, format='json')
+        before = list(book.chapters.values())
+        self.assertEqual(self.import_book(book, 'refresh').status_code, 409)
+        self.assertEqual(list(book.chapters.values()), before)
+
+    def test_refresh_failure_rolls_back_all_chapters(self):
+        from unittest.mock import patch
+        from .models import BookChapter
+        from .book_reader import import_epub
+        book = self.imported_book()
+        self.assertEqual(self.import_book(book).status_code, 200)
+        before = list(book.chapters.values())
+        original_save = BookChapter.save
+        calls = []
+
+        def fail_second(chapter, *args, **kwargs):
+            calls.append(chapter.pk)
+            if len(calls) == 2:
+                raise RuntimeError('Injected failure')
+            return original_save(chapter, *args, **kwargs)
+
+        with patch.object(BookChapter, 'save', fail_second), self.assertRaises(RuntimeError):
+            import_epub(book, 'refresh')
+        self.assertEqual(list(book.chapters.values()), before)
+
+    def test_audit_pdf_actual_page_boundaries(self):
+        from .models import BookReadingProgress
+        book = EBook.objects.get(pk=self.upload(source_file=reader_pdf(text=True)).data['id'])
+        invalid = self.api.post(self.chapters(book), {'chapter_number': 1, 'title': 'Nonexistent', 'pdf_page_start': 3, 'pdf_page_end': 3}, format='json')
+        self.assertEqual(invalid.status_code, 400, invalid.data)
+        self.assertFalse(book.chapters.exists())
+        forged = self.api.post(self.chapters(book), {'chapter_number': 1, 'title': 'Forged count', 'pdf_page_start': 3,
+            'pdf_page_end': 3, 'page_count': 999}, format='json')
+        self.assertEqual(forged.status_code, 400)
+        url = self.endpoint('api-book-progress', book)
+        self.assertEqual(self.api.put(url, {'chapter_id': None, 'position': {'page': 3}}, format='json').status_code, 400)
+        self.assertFalse(BookReadingProgress.objects.filter(book=book).exists())
+        self.assertEqual(self.api.put(url, {'chapter_id': None, 'position': {'page': 1}}, format='json').status_code, 200)
+        valid = self.api.post(self.chapters(book), {'chapter_number': 1, 'title': 'Valid', 'pdf_page_start': 1, 'pdf_page_end': 1}, format='json')
+        self.assertEqual(valid.status_code, 201, valid.data)
+        self.assertEqual(self.api.put(url, {'chapter_id': valid.data['id'], 'position': {'page': 1}}, format='json').status_code, 200)
+
+    def test_legacy_invalid_pdf_range_cannot_validate_resume_page(self):
+        book = EBook.objects.get(pk=self.upload(source_file=reader_pdf()).data['id'])
+        # Simulate an old record accepted before actual page-count validation.
+        chapter = self.chapter(book, pdf_page_start=3, pdf_page_end=3)
+        response = self.api.put(self.endpoint('api-book-progress', book), {'chapter_id': chapter.pk, 'position': {'page': 3}}, format='json')
+        self.assertEqual(response.status_code, 400, response.data)
+
+    def test_pdf_range_validation_is_shared_with_admin(self):
+        book = EBook.objects.get(pk=self.upload(source_file=reader_pdf()).data['id'])
+        self.client.force_login(self.admin)
+        url = reverse('manage_book_chapters', args=[book.pk])
+        data = {'chapter_number': 1, 'title': 'Range', 'pdf_page_start': 3, 'pdf_page_end': 3}
+        response = self.client.post(url, data)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context['form'].errors)
+        self.assertFalse(book.chapters.exists())
+        data.update(pdf_page_start=1, pdf_page_end=1)
+        self.assertEqual(self.client.post(url, data).status_code, 302)
+        self.assertEqual(book.chapters.get().pdf_page_end, 1)
+
+    def test_corrupt_and_encrypted_pdf_page_operations_fail_safely(self):
+        from pypdf import PdfWriter
+        encrypted = BytesIO()
+        writer = PdfWriter()
+        writer.add_blank_page(width=200, height=200)
+        writer.encrypt('not-a-client-provided-parser-password')
+        writer.write(encrypted)
+        for source in (pdf(), pdf(body=encrypted.getvalue())):
+            book = EBook.objects.get(pk=self.upload(source_file=source).data['id'])
+            response = self.api.post(self.chapters(book), {'chapter_number': 1, 'title': 'No', 'pdf_page_start': 1, 'pdf_page_end': 1}, format='json')
+            self.assertEqual(response.status_code, 400, response.data)
+            progress = self.api.put(self.endpoint('api-book-progress', book), {'chapter_id': None, 'position': {'page': 1}}, format='json')
+            self.assertEqual(progress.status_code, 400, progress.data)
+            for payload in (response.data, progress.data):
+                self.assertNotIn(book.source_file.name, str(payload))
+                self.assertNotIn(self.tmp.name, str(payload))
+            fallback = self.api.get(self.content(book))
+            self.assertEqual(fallback.status_code, 200)
+            list(fallback.streaming_content)
+            fallback.close()
+
+    def test_pdf_count_timeout_is_controlled_and_does_not_create_state(self):
+        from unittest.mock import patch
+        from subprocess import TimeoutExpired
+        book = EBook.objects.get(pk=self.upload(source_file=reader_pdf()).data['id'])
+        with patch('subprocess.run', side_effect=TimeoutExpired('private-command', 15)):
+            response = self.api.post(self.chapters(book), {'chapter_number': 1, 'title': 'No', 'pdf_page_start': 1, 'pdf_page_end': 1}, format='json')
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertFalse(book.chapters.exists())
+        self.assertNotIn('private-command', str(response.data))
+        recovered = self.api.post(self.chapters(book), {'chapter_number': 1, 'title': 'Recovered', 'pdf_page_start': 1, 'pdf_page_end': 1}, format='json')
+        self.assertEqual(recovered.status_code, 201, recovered.data)
+
+    def test_pdf_cross_book_references_remain_denied(self):
+        book = EBook.objects.get(pk=self.upload(source_file=reader_pdf()).data['id'])
+        other = EBook.objects.get(pk=self.upload(source_file=reader_pdf()).data['id'])
+        chapter = self.chapter(other, pdf_page_start=1, pdf_page_end=1)
+        self.assertEqual(self.api.put(self.endpoint('api-book-progress', book), {'chapter_id': chapter.pk, 'position': {'page': 1}}, format='json').status_code, 400)
+        self.assertEqual(self.api.post(reverse('api-book-pdf-extract', args=[book.pk, chapter.pk]), {}, format='json').status_code, 404)
+
+    def test_audit_admin_malformed_chapter_id(self):
+        book = self.book()
+        self.client.force_login(self.admin)
+        self.client.raise_request_exception = False
+        url = reverse('manage_book_chapters', args=[book.pk])
+        response = self.client.post(url, {'action': 'extract-pdf', 'chapter_id': 'not-an-integer'})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Choose a valid positive chapter ID.')
+        self.assertNotIn(b'Traceback', response.content)
+
+    def test_admin_extraction_id_validation_and_valid_action(self):
+        book = EBook.objects.get(pk=self.upload(source_file=reader_pdf(text=True)).data['id'])
+        chapter = self.chapter(book, pdf_page_start=1, pdf_page_end=1)
+        chapter.content = ''
+        chapter.save()
+        foreign = self.chapter(self.book())
+        self.client.force_login(self.admin)
+        self.client.raise_request_exception = False
+        url = reverse('manage_book_chapters', args=[book.pk])
+        for value in (None, '', '0', '-1', '1.5', 'not-an-integer', '99999999', str(foreign.pk)):
+            with self.subTest(value=value):
+                payload = {'action': 'extract-pdf'}
+                if value is not None:
+                    payload['chapter_id'] = value
+                response = self.client.post(url, payload)
+                self.assertIn(response.status_code, (200, 400, 404))
+                self.assertNotIn(b'Traceback', response.content)
+                chapter.refresh_from_db()
+                self.assertEqual(chapter.content, '')
+        self.assertEqual(self.client.post(url, {'action': 'extract-pdf', 'chapter_id': chapter.pk}).status_code, 302)
+        chapter.refresh_from_db()
+        self.assertIn('Reliable chapter text.', chapter.content)
+
+
+class BookReaderMigrationTests(TransactionTestCase):
+    def test_phase2_preserves_phase1_book_and_private_reference(self):
+        executor = MigrationExecutor(connection)
+        latest = executor.loader.graph.leaf_nodes()
+        previous = [('core', '0053_ebook_phase1')]
+        executor.migrate(previous)
+        try:
+            apps = executor.loader.project_state(previous).apps
+            role, _ = apps.get_model('core', 'Role').objects.get_or_create(name='super_admin')
+            user = apps.get_model('core', 'User').objects.create(email='phase2-migration@example.com', name='Owner', role_id=role.pk)
+            book = apps.get_model('core', 'EBook').objects.create(title='Preserved private book', uploaded_by_id=user.pk,
+                file_url='https://legacy.example.com/book.pdf', source_file='content/retained.pdf', file_format='pdf', price=None, is_published=True)
+            MigrationExecutor(connection).migrate(latest)
+            saved = EBook.objects.get(pk=book.pk)
+            self.assertEqual(saved.source_file.name, 'content/retained.pdf')
+            self.assertEqual(saved.file_url, book.file_url)
+            self.assertTrue(saved.is_published)
+            self.assertIsNone(saved.price)
+            self.assertEqual(saved.created_at, book.created_at)
+            self.assertEqual(saved.chapters.count(), 0)
+        finally:
+            MigrationExecutor(connection).migrate(latest)

@@ -19,6 +19,7 @@ from .forms import (
 	DistrictForm,
 	EventForm,
 	EBookForm,
+	BookChapterForm,
 	GradeForm,
 	MunicipalityForm,
 	ProvinceForm,
@@ -29,6 +30,7 @@ from .forms import (
 from .models import (
 	Event,
 	EBook,
+	BookChapter,
 	Payment,
 	AdminAuditLog,
 	CertificateCriteria,
@@ -181,6 +183,95 @@ def delete_book(request, book_id):
 		messages.success(request, 'Book record deleted. Uploaded files retained for controlled cleanup.')
 		return redirect('manage_books')
 	return render(request, 'admin/book_delete.html', {'book': book})
+
+
+@login_required
+def manage_book_chapters(request, book_id):
+	from .book_reader import import_epub, reorder_chapters, extract_pdf_chapter, ReaderError
+	from django import forms
+	from django.core.exceptions import ValidationError
+	from django.db import transaction
+	from django.http import HttpResponseForbidden
+	if not is_admin(request.user):
+		return HttpResponseForbidden('Only administrators can manage chapters.')
+	book = get_object_or_404(EBook, pk=book_id)
+	form = BookChapterForm(instance=BookChapter(book=book))
+	if request.method == 'POST':
+		try:
+			action = request.POST.get('action', 'add')
+			if action == 'import':
+				mode = request.POST.get('mode', 'create')
+				if mode not in ('create', 'refresh'):
+					raise ReaderError('INVALID_MODE', 'Choose create or explicit refresh.')
+				result = import_epub(book, mode)
+				messages.success(request, f"Import complete: {result['created']} created, {result['updated']} refreshed. Chapter IDs: {result['chapter_ids']}.")
+			elif action == 'reorder':
+				try:
+					ids = [int(value.strip()) for value in request.POST.get('chapter_ids', '').split(',') if value.strip()]
+				except ValueError:
+					raise ReaderError('INVALID_ORDER', 'Use comma-separated chapter IDs.')
+				reorder_chapters(book, ids)
+				messages.success(request, 'Chapter order saved; reading state retained.')
+			elif action == 'extract-pdf':
+				field = forms.IntegerField(min_value=1, max_value=9223372036854775807)
+				try:
+					chapter_id = field.clean(request.POST.get('chapter_id'))
+				except ValidationError:
+					raise ReaderError('INVALID_CHAPTER_ID', 'Choose a valid positive chapter ID.')
+				chapter = get_object_or_404(book.chapters, pk=chapter_id)
+				extract_pdf_chapter(book, chapter)
+				messages.success(request, 'PDF range text extracted. Review it before publishing.')
+			elif action == 'add':
+				with transaction.atomic():
+					EBook.objects.select_for_update().get(pk=book.pk)
+					form = BookChapterForm(request.POST, instance=BookChapter(book=book))
+					if not form.is_valid():
+						return render(request, 'admin/book_chapters.html', {'book': book, 'chapters': book.chapters.all(), 'form': form})
+					form.save()
+				messages.success(request, 'Chapter added.')
+			else:
+				raise ReaderError('INVALID_ACTION', 'Choose a valid chapter action.')
+			return redirect('manage_book_chapters', book_id=book.pk)
+		except ReaderError as exc:
+			messages.error(request, str(exc.detail['detail']))
+	return render(request, 'admin/book_chapters.html', {'book': book, 'chapters': book.chapters.all(), 'form': form})
+
+
+@login_required
+def edit_book_chapter(request, book_id, chapter_id):
+	from django.http import HttpResponseForbidden
+	from django.db import transaction
+	if not is_admin(request.user):
+		return HttpResponseForbidden('Only administrators can manage chapters.')
+	book = get_object_or_404(EBook, pk=book_id)
+	chapter = get_object_or_404(book.chapters, pk=chapter_id)
+	with transaction.atomic():
+		if request.method == 'POST':
+			EBook.objects.select_for_update().get(pk=book.pk)
+			chapter = get_object_or_404(book.chapters.select_for_update(), pk=chapter_id)
+		form = BookChapterForm(request.POST if request.method == 'POST' else None, instance=chapter)
+		if request.method == 'POST' and form.is_valid():
+			form.save()
+			messages.success(request, 'Chapter saved; progress and bookmarks retained.')
+			return redirect('edit_book_chapter', book_id=book.pk, chapter_id=chapter.pk)
+	return render(request, 'admin/book_chapter_form.html', {'book': book, 'chapter': chapter, 'form': form})
+
+
+@login_required
+def delete_book_chapter(request, book_id, chapter_id):
+	from django.http import HttpResponseForbidden
+	from django.db import transaction
+	if not is_admin(request.user):
+		return HttpResponseForbidden('Only administrators can manage chapters.')
+	book = get_object_or_404(EBook, pk=book_id)
+	chapter = get_object_or_404(book.chapters, pk=chapter_id)
+	if request.method == 'POST' and request.POST.get('confirm') == str(chapter.pk):
+		with transaction.atomic():
+			EBook.objects.select_for_update().get(pk=book.pk)
+			chapter.delete()
+		messages.success(request, 'Chapter deleted. Book files retained; dependent chapter bookmarks/completions removed.')
+		return redirect('manage_book_chapters', book_id=book.pk)
+	return render(request, 'admin/book_chapter_delete.html', {'book': book, 'chapter': chapter})
 
 
 def _log_admin_action(admin, action, target_user, details=''):

@@ -1,4 +1,5 @@
 from datetime import timedelta
+from decimal import Decimal
 from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -2725,6 +2726,102 @@ class EBookSerializer(serializers.ModelSerializer):
 			request = self.context.get('request')
 			data['cover_url'] = request.build_absolute_uri(url) if request else url
 		return data
+
+
+class StrictBookInput:
+	def to_internal_value(self, data):
+		if not isinstance(data, Mapping):
+			return super().to_internal_value(data)
+		unknown = set(data) - set(self.fields)
+		if unknown:
+			raise serializers.ValidationError({key: 'Unknown or server-controlled field.' for key in unknown})
+		return super().to_internal_value(data)
+
+
+class BookChapterSerializer(StrictBookInput, serializers.ModelSerializer):
+	from .models import BookChapter as _BookChapter
+	content_format = serializers.CharField(default='text', read_only=True)
+	content = serializers.CharField(max_length=200000, allow_blank=True, required=False, trim_whitespace=False)
+
+	class Meta:
+		from .models import BookChapter
+		model = BookChapter
+		fields = ['id', 'chapter_number', 'title', 'content', 'content_format', 'estimated_reading_minutes', 'pdf_page_start', 'pdf_page_end', 'created_at', 'updated_at']
+		read_only_fields = ['id', 'estimated_reading_minutes', 'created_at', 'updated_at']
+
+	def validate(self, attrs):
+		from .book_reader import plain_book_text
+		candidate = self.instance or self._BookChapter(book=self.context['book'])
+		for field, value in attrs.items():
+			setattr(candidate, field, plain_book_text(value) if field in ('title', 'content') else value)
+		try:
+			candidate.full_clean()
+		except DjangoValidationError as exc:
+			raise serializers.ValidationError(getattr(exc, 'message_dict', {'detail': exc.messages}))
+		if not candidate.title.strip():
+			raise serializers.ValidationError({'title': 'A readable chapter title is required.'})
+		return attrs
+
+
+class BookProgressInputSerializer(StrictBookInput, serializers.Serializer):
+	chapter_id = serializers.IntegerField(min_value=1, allow_null=True)
+	position = serializers.JSONField(required=False, default=dict)
+	completed = serializers.BooleanField(required=False)
+
+	def validate(self, attrs):
+		from .models import BookChapter
+		from .book_reader import validate_position, validate_chapter_position, validate_pdf_position
+		book = self.context['book']
+		chapter = BookChapter.objects.filter(book=book, pk=attrs['chapter_id']).first() if attrs['chapter_id'] else None
+		if attrs['chapter_id'] and chapter is None:
+			raise serializers.ValidationError({'chapter_id': 'Chapter does not belong to this book.'})
+		if chapter is None and (book.file_format != 'pdf' or book.chapters.exists()):
+			raise serializers.ValidationError({'chapter_id': 'Choose a chapter from this book.'})
+		if chapter is None and 'completed' in attrs:
+			raise serializers.ValidationError({'completed': 'Chapter completion requires a chapter.'})
+		try:
+			validate_chapter_position(chapter, attrs['position']) if chapter else validate_position(attrs['position'])
+			validate_pdf_position(book, attrs['position'])
+		except DjangoValidationError as exc:
+			raise serializers.ValidationError({'position': exc.messages})
+		attrs['chapter'] = chapter
+		return attrs
+
+
+class BookBookmarkInputSerializer(BookProgressInputSerializer):
+	chapter_id = serializers.IntegerField(min_value=1)
+	completed = None
+	anchor = serializers.RegexField(r'^[A-Za-z0-9_.:-]{0,120}$', required=False, allow_blank=True, default='')
+	note = serializers.CharField(max_length=2000, required=False, allow_blank=True, default='')
+
+	def validate(self, attrs):
+		attrs = super().validate(attrs)
+		from .book_reader import html_to_book_text
+		attrs['note'] = html_to_book_text(attrs['note'])
+		return attrs
+
+
+class BookBookmarkSerializer(serializers.ModelSerializer):
+	class Meta:
+		from .models import BookBookmark
+		model = BookBookmark
+		fields = ['id', 'chapter_id', 'position', 'anchor', 'note', 'created_at']
+
+
+class ReaderSettingsSerializer(StrictBookInput, serializers.ModelSerializer):
+	line_spacing = serializers.DecimalField(max_digits=2, decimal_places=1, min_value=Decimal('1.0'), max_value=Decimal('2.5'), required=False)
+	class Meta:
+		from .models import ReaderSettings
+		model = ReaderSettings
+		fields = ['font_family', 'font_size', 'line_spacing', 'theme']
+
+
+class BookImportSerializer(StrictBookInput, serializers.Serializer):
+	mode = serializers.ChoiceField(choices=['create', 'refresh'], default='create')
+
+
+class BookReorderSerializer(StrictBookInput, serializers.Serializer):
+	chapter_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), max_length=10000)
 
 
 class NotificationSerializer(serializers.ModelSerializer):
