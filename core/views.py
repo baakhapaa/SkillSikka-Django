@@ -360,7 +360,7 @@ def manage_courses(request):
 
 	return render(request, 'admin/courses.html', {
 		'form': form,
-		'courses': Course.objects.filter(course_type__in=['academic', 'skill', 'premium']).select_related('instructor', 'subject', 'grade').order_by('-created_at'),
+		'courses': Course.objects.filter(course_type__in=['academic', 'skill', 'premium']).select_related('instructor', 'subject', 'grade').order_by('-created_at', '-pk'),
 	})
 
 
@@ -372,7 +372,7 @@ def manage_bootcamps(request):
 		instructors_count=Count('instructors', distinct=True),
 		lessons_count=Count('lessons', distinct=True),
 		enrolled_count=Count('enrollments', filter=Q(enrollments__status__in=['active', 'completed']), distinct=True),
-	).order_by('-created_at')
+	).order_by('-created_at', '-pk')
 	return render(request, 'admin/bootcamps.html', {'bootcamps': bootcamps})
 
 
