@@ -754,9 +754,19 @@ class Enrollment(models.Model):
 		('cancelled', 'Cancelled'),
 	)
 
+	# Where the student came from, sent by the app on enroll. Rows from before
+	# this field existed are `unknown`; nothing guesses a split for them.
+	SOURCE_CHOICES = (
+		('direct', 'Direct & Newsletter'),
+		('organic', 'Organic Search / SEO'),
+		('social', 'Social & Referrals'),
+		('unknown', 'Unknown'),
+	)
+
 	student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='enrollments')
 	course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='enrollments')
 	status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
+	source = models.CharField(max_length=10, choices=SOURCE_CHOICES, default='unknown')
 	amount_paid = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
 	payment_reference = models.CharField(max_length=200, blank=True)
 	enrolled_at = models.DateTimeField(auto_now_add=True)
@@ -804,6 +814,29 @@ class LessonProgress(models.Model):
 
 	def __str__(self):
 		return f'{self.student.name} - {self.lesson.title}'
+
+
+class LessonWatchTime(models.Model):
+	"""Seconds a student watched a lesson, one row per student, lesson and day.
+
+	The player reports small increments; the server adds them and caps each
+	one by wall-clock time since the student's previous report, so a client
+	cannot claim more time than has passed. Daily rows let the instructor
+	analytics sum any date window.
+	"""
+
+	student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='lesson_watch_time')
+	lesson = models.ForeignKey(Lesson, on_delete=models.CASCADE, related_name='watch_time')
+	date = models.DateField()
+	watched_seconds = models.PositiveIntegerField(default=0)
+	position_seconds = models.PositiveIntegerField(default=0)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'lesson_watch_time'
+		constraints = [
+			models.UniqueConstraint(fields=['student', 'lesson', 'date'], name='unique_watch_time_per_student_lesson_day'),
+		]
 
 
 class Payment(models.Model):

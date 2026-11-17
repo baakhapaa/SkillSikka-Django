@@ -1679,7 +1679,7 @@ class EnrollCourseAPIView(APIView):
 		if course is None:
 			raise CourseAPIError('COURSE_NOT_FOUND', 'Course not found.', 404)
 
-		serializer = EnrollCourseSerializer(data={}, context={'course': course, 'request': request})
+		serializer = EnrollCourseSerializer(data=request.data, context={'course': course, 'request': request})
 		serializer.is_valid(raise_exception=True)
 		with transaction.atomic():
 			enrollment = serializer.save()
@@ -1728,6 +1728,35 @@ class MyEnrollmentsAPIView(generics.ListAPIView):
 		).select_related('course').order_by('-enrolled_at')
 
 
+def _student_lesson_access(student, lesson):
+	"""Return (enrollment, None) when the student may record progress on the
+	lesson, else (None, error Response). Course errors raise CourseAPIError."""
+	if lesson.course is not None:
+		if lesson.course.course_type == 'academic':
+			# Management access does not create student progress for staff.
+			return require_course_access(student, lesson.course, managers=False), None
+		enrollment = Enrollment.objects.filter(student=student, course=lesson.course, status__in=['active', 'completed']).first()
+		if enrollment is None:
+			raise CourseAPIError('NOT_ENROLLED', 'You must be enrolled in this course to access this lesson.', 403)
+		return enrollment, None
+
+	if lesson.topic is not None:
+		student_grade_id = getattr(
+			getattr(student, 'student_profile', None), 'grade_id', None
+		)
+		if student_grade_id != lesson.topic.chapter.grade_id:
+			return None, Response(
+				{'detail': 'This lesson is not part of your grade.'},
+				status=status.HTTP_403_FORBIDDEN,
+			)
+		return None, None
+
+	return None, Response(
+		{'detail': 'This lesson is not attached to any course or topic.'},
+		status=status.HTTP_400_BAD_REQUEST,
+	)
+
+
 class CompleteLessonAPIView(APIView):
 	authentication_classes = [JWTAuthentication]
 	permission_classes = [IsAuthenticated]
@@ -1741,33 +1770,9 @@ class CompleteLessonAPIView(APIView):
 			return Response({'detail': 'Lesson not found.'}, status=status.HTTP_404_NOT_FOUND)
 
 		student = request.user
-		enrollment = None
-
-		if lesson.course is not None:
-			if lesson.course.course_type == 'academic':
-				# Management access does not create student progress for staff.
-				enrollment = require_course_access(student, lesson.course, managers=False)
-			else:
-				enrollment = Enrollment.objects.filter(student=student, course=lesson.course, status__in=['active', 'completed']).first()
-				if enrollment is None:
-					raise CourseAPIError('NOT_ENROLLED', 'You must be enrolled in this course to access this lesson.', 403)
-
-		elif lesson.topic is not None:
-			student_grade_id = getattr(
-				getattr(student, 'student_profile', None), 'grade_id', None
-			)
-
-			if student_grade_id != lesson.topic.chapter.grade_id:
-				return Response(
-					{'detail': 'This lesson is not part of your grade.'},
-					status=status.HTTP_403_FORBIDDEN,
-				)
-
-		else:
-			return Response(
-				{'detail': 'This lesson is not attached to any course or topic.'},
-				status=status.HTTP_400_BAD_REQUEST,
-			)
+		enrollment, denied = _student_lesson_access(student, lesson)
+		if denied is not None:
+			return denied
 
 		progress, _ = LessonProgress.objects.update_or_create(
 			student=student,

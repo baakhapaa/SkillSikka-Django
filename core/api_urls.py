@@ -12,6 +12,7 @@ from .advertisement_views import AdvertisementListAPIView, AdvertisementAdminLis
 from rest_framework_simplejwt.views import TokenRefreshView
 from .signup_views import VerifyInstructorSignupOTPAPIView, ResendInstructorSignupOTPAPIView, VerifyStudentSignupOTPAPIView, ResendStudentSignupOTPAPIView
 from .learning_interest_views import LearningInterestListAPIView, MyLearningInterestsAPIView, PremiumCategoryListAPIView
+from .instructor_analytics import CourseInstructorAnalyticsAPIView, LessonWatchProgressAPIView
 
 from .analytics_views import (
 	TeacherChallengeAnalyticsAPIView,
@@ -437,6 +438,18 @@ urlpatterns = [
 		'courses/<int:course_id>/progress/',
 		CourseProgressAPIView.as_view(),
 		name='api-course-progress'
+	),
+
+	path(
+		'lessons/<int:lesson_id>/progress/',
+		LessonWatchProgressAPIView.as_view(),
+		name='api-lesson-watch-progress'
+	),
+
+	path(
+		'courses/<int:course_id>/instructor-analytics/',
+		CourseInstructorAnalyticsAPIView.as_view(),
+		name='api-course-instructor-analytics'
 	),
 
 	# =========================

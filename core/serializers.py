@@ -1282,13 +1282,17 @@ class CourseSerializer(serializers.ModelSerializer):
 		source='instructor.name',
 		read_only=True
 	)
+	# allow_null keeps the key as null on skill/premium courses; without it DRF
+	# drops the key, and the app groups My Courses by these names.
 	subject_name = serializers.CharField(
 		source='subject.name',
-		read_only=True
+		read_only=True,
+		allow_null=True
 	)
 	grade_name = serializers.CharField(
 		source='grade.name',
-		read_only=True
+		read_only=True,
+		allow_null=True
 	)
 
 	class Meta:
@@ -1679,6 +1683,9 @@ class EnrollmentSerializer(serializers.ModelSerializer):
 
 
 class EnrollCourseSerializer(serializers.Serializer):
+	# Optional; omitted means `unknown`. Feeds the instructor analytics sources.
+	source = serializers.ChoiceField(choices=Enrollment.SOURCE_CHOICES, required=False, default='unknown')
+
 	def validate(self, attrs):
 		course = self.context['course']
 		student = self.context['request'].user
@@ -1705,6 +1712,7 @@ class EnrollCourseSerializer(serializers.Serializer):
 			course=course,
 			status=enrollment_status,
 			amount_paid=course.price if not course.is_paid else None,
+			source=validated_data['source'],
 		)
 
 
