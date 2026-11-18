@@ -2668,14 +2668,18 @@ class ShortCommentThreadTests(TestCase):
         self.assertIn('parent', response.data)
         self.assertEqual(self.post({'text':'Missing', 'parent':999999}, expect=400).status_code, 400)
 
-    def test_short_instructor_can_reply_but_not_start_a_thread(self):
+    def test_short_instructor_can_comment_and_reply_on_own_short_only(self):
         reply = self.post({'text':'Great question!', 'parent':self.top['id']}, self.instructor).data
         self.assertTrue(reply['is_creator'])
         self.assertFalse(self.top['is_creator'])
         self.assertTrue(self.replies(self.top['id'])[0]['is_creator'])
-        self.post({'text':'New thread'}, self.instructor, expect=403)
+        pinned_tip = self.post({'text':'Tip: try flex-wrap next'}, self.instructor).data
+        self.assertTrue(pinned_tip['is_creator'])
+        self.assertIsNone(pinned_tip['parent'])
+        self.assertIn(pinned_tip['id'], [c['id'] for c in self.client.get(self.comments_url).data])
+        self.post({'text':'Not my Short'}, self.outsider, expect=403)
         self.post({'text':'Not my Short', 'parent':self.top['id']}, self.outsider, expect=403)
-        self.assertEqual(ShortComment.objects.count(), 2)
+        self.assertEqual(ShortComment.objects.count(), 3)
 
     def test_like_toggles_and_shows_in_lists(self):
         response = self.like(self.top['id'])

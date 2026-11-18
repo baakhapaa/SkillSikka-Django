@@ -70,8 +70,9 @@ wrote it; show a "Creator" badge). Replying to a reply files it under the same
 top-level comment, so the response's `parent` may differ from what was sent;
 prefix the text with `@name` in the app if you want to show who is answered.
 
-Students can comment, reply and like. The Short's own instructor can reply and
-like on that Short, but cannot start a top-level comment. A `parent` from a
+Students can comment, reply and like. The Short's own instructor can do the
+same on that Short (its comments carry `is_creator: true`); other instructors
+get `403`. A `parent` from a
 different Short returns `400`. The Short's `comment_count` includes replies.
 
 ## Share

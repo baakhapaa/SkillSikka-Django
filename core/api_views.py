@@ -4194,15 +4194,11 @@ class ShortCommentListCreateAPIView(
 			if parent.parent_id is not None:
 				parent = parent.parent
 
-		if not _is_student(user):
-			if short.instructor_id != user.id:
-				raise PermissionDenied(
-					'Only students can comment on Shorts.'
-				)
-			if parent is None:
-				raise PermissionDenied(
-					"The Short's instructor can reply to comments but not start a new one."
-				)
+		# Students, and the Short's own instructor (comments and replies alike).
+		if not _is_student(user) and short.instructor_id != user.id:
+			raise PermissionDenied(
+				"Only students and the Short's instructor can comment on this Short."
+			)
 
 		text = serializer.validated_data.get(
 			'text',
