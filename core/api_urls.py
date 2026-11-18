@@ -13,6 +13,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from .signup_views import VerifyInstructorSignupOTPAPIView, ResendInstructorSignupOTPAPIView, VerifyStudentSignupOTPAPIView, ResendStudentSignupOTPAPIView
 from .learning_interest_views import LearningInterestListAPIView, MyLearningInterestsAPIView, PremiumCategoryListAPIView
 from .instructor_analytics import CourseInstructorAnalyticsAPIView, LessonWatchProgressAPIView
+from .search_views import SearchAPIView, SearchDiscoverAPIView
 
 from .analytics_views import (
 	TeacherChallengeAnalyticsAPIView,
@@ -451,6 +452,13 @@ urlpatterns = [
 		CourseInstructorAnalyticsAPIView.as_view(),
 		name='api-course-instructor-analytics'
 	),
+
+	# =========================
+	# Search
+	# =========================
+
+	path('search/', SearchAPIView.as_view(), name='api-search'),
+	path('search/discover/', SearchDiscoverAPIView.as_view(), name='api-search-discover'),
 
 	# =========================
 	# Payment

@@ -1963,3 +1963,22 @@ class DiscussionLike(models.Model):
     class Meta:
         db_table = 'discussion_likes'
         constraints = [models.UniqueConstraint(fields=['discussion', 'user'], name='unique_discussion_like')]
+
+
+class SearchQuery(models.Model):
+    """One search a user ran, kept to rank Trending Searches.
+
+    `normalized` groups spellings ("CSS grid", " css  Grid "). Only searches
+    that found something count towards trending, so typos and junk never
+    surface on other people's screens.
+    """
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='search_queries')
+    query = models.CharField(max_length=100)
+    normalized = models.CharField(max_length=100, db_index=True)
+    results_count = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = 'search_queries'
+        ordering = ['-created_at', '-pk']
