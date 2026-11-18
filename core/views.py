@@ -139,7 +139,9 @@ def manage_books(request):
 	if not is_admin(request.user):
 		from django.http import HttpResponseForbidden
 		return HttpResponseForbidden('Only administrators can manage books.')
-	books = EBook.objects.select_related('uploaded_by', 'subject', 'grade').order_by('-created_at', '-pk')
+	books = EBook.objects.select_related('uploaded_by', 'subject', 'grade').annotate(
+		purchase_count=Count('orders', filter=Q(orders__status='paid')),
+	).order_by('-created_at', '-pk')
 	search = request.GET.get('q', '').strip()
 	status = request.GET.get('status', '')
 	category = request.GET.get('category', '').strip()
@@ -181,7 +183,12 @@ def delete_book(request, book_id):
 	book = get_object_or_404(EBook, pk=book_id)
 	if request.method == 'POST' and request.POST.get('confirm') == str(book.pk):
 		# Retain uploaded objects: no destructive filesystem cleanup in a request.
-		book.delete()
+		from django.db.models import ProtectedError
+		try:
+			book.delete()
+		except ProtectedError:
+			messages.error(request, 'Unpublish this book to preserve its acquisition records.')
+			return redirect('manage_books')
 		messages.success(request, 'Book record deleted. Uploaded files retained for controlled cleanup.')
 		return redirect('manage_books')
 	return render(request, 'admin/book_delete.html', {'book': book})
@@ -972,3 +979,59 @@ def recheck_payment(request, payment_id):
 	if url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
 		return redirect(next_url)
 	return redirect('manage_payments')
+
+
+@login_required
+def manage_book_commerce(request):
+    from django.db import transaction
+    from django.http import HttpResponseBadRequest, HttpResponseForbidden
+    from .models import BookEntitlement, BookOrder, BookReview
+
+    if not is_admin(request.user):
+        return HttpResponseForbidden('Only administrators can manage book commerce.')
+    if request.method == 'POST':
+        action = request.POST.get('action')
+        review_id = request.POST.get('review_id', '')
+        if action not in ('hide', 'show') or not review_id.isascii() or not review_id.isdigit() or len(review_id) > 18:
+            return HttpResponseBadRequest('Invalid review moderation request.')
+        with transaction.atomic():
+            review = get_object_or_404(BookReview.objects.select_for_update(), pk=int(review_id))
+            review.is_hidden = action == 'hide'
+            review.save(update_fields=['is_hidden', 'updated_at'])
+        return redirect('manage_book_commerce')
+
+    groups = {
+        'orders': BookOrder.objects.all(),
+        'entitlements': BookEntitlement.objects.all(),
+        'reviews': BookReview.objects.all(),
+    }
+    section = request.GET.get('section', 'orders')
+    if section not in groups:
+        return HttpResponseBadRequest('Unknown book commerce section.')
+    rows = groups[section].select_related('book', 'user')
+    if section == 'entitlements':
+        rows = rows.select_related('order')
+    term = request.GET.get('q', '').strip()
+    if term:
+        rows = rows.filter(Q(book__title__icontains=term) | Q(user__name__icontains=term) | Q(user__email__icontains=term))
+    status = request.GET.get('status', '')
+    statuses = {
+        'orders': BookOrder.Status.values,
+        'entitlements': ['active', 'revoked'],
+        'reviews': ['visible', 'hidden'],
+    }[section]
+    if status in statuses:
+        if section == 'orders':
+            rows = rows.filter(status=status)
+        elif section == 'entitlements':
+            active = Q(revoked_at__isnull=True) & (Q(source='free') | Q(order__status='paid', order__paid_at__isnull=False))
+            rows = rows.filter(active if status == 'active' else ~active)
+        else:
+            rows = rows.filter(is_hidden=status == 'hidden')
+    verified = groups['orders'].filter(status='paid', paid_at__isnull=False).exclude(provider_transaction='')
+    totals = verified.aggregate(purchases=Count('pk'), revenue=Sum('amount', default=0))
+    return render(request, 'admin/book_commerce.html', {
+        'section': section, 'q': term, 'status': status, 'statuses': statuses,
+        'totals': totals,
+        'page': Paginator(rows.order_by('-pk'), 25).get_page(request.GET.get('page')),
+    })

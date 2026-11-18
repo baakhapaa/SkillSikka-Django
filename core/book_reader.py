@@ -10,11 +10,41 @@ from html.parser import HTMLParser
 from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree
 
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ImproperlyConfigured, SuspiciousFileOperation, ValidationError
 from django.db import transaction
 from rest_framework.exceptions import APIException
 
 from .book_files import _safe_entry, _validate_epub
+
+
+def book_has_usable_content(book, *, has_usable_chapters=None):
+    """Check for non-empty authored text or an existing safe private source."""
+    # Whitespace-only chapters are not reading content. Catalogue callers pass
+    # a bulk database annotation to avoid querying chapters once per book.
+    if has_usable_chapters is None:
+        has_usable_chapters = any(
+            chapter.content.strip() for chapter in book.chapters.only('content').iterator()
+        )
+    if has_usable_chapters:
+        return True
+    source = book.source_file
+    if not source or not source.name or not _safe_entry(source.name):
+        return False
+    try:
+        storage = source.storage
+        if not storage.exists(source.name) or source.size <= 0:
+            return False
+        if hasattr(storage, 'location'):
+            from pathlib import Path
+            root = Path(storage.location).resolve()
+            path = Path(storage.path(source.name)).resolve(strict=True)
+            if root != path and root not in path.parents:
+                return False
+            if not path.is_file():
+                return False
+    except (OSError, ValueError, RuntimeError, NotImplementedError, ImproperlyConfigured, SuspiciousFileOperation):
+        return False
+    return True
 
 
 class ReaderError(APIException):
@@ -30,10 +60,28 @@ def is_book_manager(user, book):
         or (role == 'instructor' and book.uploaded_by_id == user.pk)))
 
 
-def require_reader(user, book):
+def active_book_entitlements(user):
+    from django.db.models import F, Q
+    from .models import BookEntitlement
+
+    return BookEntitlement.objects.filter(
+        user=user, revoked_at__isnull=True, book__is_published=True,
+    ).filter(Q(source='free') | Q(
+        source='purchase', order__status='paid', order__paid_at__isnull=False,
+        order__user_id=F('user_id'), order__book_id=F('book_id'),
+    ))
+
+
+def require_book_manager(user, book):
     if not is_book_manager(user, book):
-        # Deliberately no price/payment-status based shortcut. Future entitlement
-        # integration belongs here, with publication and revocation checks.
+        raise ReaderError('BOOK_ACCESS_DENIED', 'Book management access is required.', 403)
+
+
+def require_reader(user, book):
+    if not (is_book_manager(user, book) or (
+        user.is_authenticated and user.is_active and book.is_published
+        and active_book_entitlements(user).filter(book=book).exists()
+    )):
         raise ReaderError('BOOK_ACCESS_DENIED', 'A valid reader entitlement is required.', 403)
 
 

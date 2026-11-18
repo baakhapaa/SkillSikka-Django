@@ -2849,10 +2849,20 @@ class EBookSerializer(serializers.ModelSerializer):
 		data = super().to_representation(instance)
 		# Preserve the legacy key, but never advertise whole-book content URLs.
 		data['file_url'] = ''
+		request = self.context.get('request')
 		if instance.cover_image:
 			url = instance.cover_image.url
-			request = self.context.get('request')
 			data['cover_url'] = request.build_absolute_uri(url) if request else url
+		if request and request.user.is_authenticated and hasattr(instance, 'review_count'):
+			from .book_commerce_api import commerce_metadata
+			data.update(commerce_metadata(instance, request.user))
+			if hasattr(instance, 'acquired_at'):
+				progress = data['reading_progress']
+				data['acquired_at'] = instance.acquired_at.isoformat()
+				data['completion_status'] = (
+					'completed' if progress['overall_percentage'] == 100
+					else 'in_progress' if progress['last_read_at'] else 'not_started'
+				)
 		return data
 
 

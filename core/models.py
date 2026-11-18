@@ -1,6 +1,9 @@
+import uuid
+
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
 from django.db import models
+from django.utils import timezone
 from django.core.validators import MinValueValidator, MaxValueValidator
 from .book_files import (
     PrivateBookStorage, book_cover_path, book_source_path,
@@ -2111,7 +2114,6 @@ class DiscussionLike(models.Model):
         db_table = 'discussion_likes'
         constraints = [models.UniqueConstraint(fields=['discussion', 'user'], name='unique_discussion_like')]
 
-
 class SearchQuery(models.Model):
     """One search a user ran, kept to rank Trending Searches.
 
@@ -2129,3 +2131,110 @@ class SearchQuery(models.Model):
     class Meta:
         db_table = 'search_queries'
         ordering = ['-created_at', '-pk']
+
+
+class SavedBook(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    book = models.ForeignKey(EBook, on_delete=models.CASCADE, related_name='saves')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['user', 'book'], name='unique_saved_book')]
+
+
+class BookReview(models.Model):
+    book = models.ForeignKey(EBook, on_delete=models.CASCADE, related_name='reviews')
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    rating = models.PositiveSmallIntegerField()
+    review = models.TextField(max_length=2000, blank=True)
+    is_hidden = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'book'], name='unique_book_review'),
+            models.CheckConstraint(condition=models.Q(rating__range=(1, 5)), name='book_review_rating_range'),
+        ]
+        indexes = [models.Index(fields=['book', 'is_hidden'])]
+
+
+class BookOrder(models.Model):
+    class Status(models.TextChoices):
+        PENDING = 'pending'
+        PROCESSING = 'processing'
+        PAID = 'paid'
+        FAILED = 'failed'
+        CANCELLED = 'cancelled'
+        REFUNDED = 'refunded'
+
+    user = models.ForeignKey(User, on_delete=models.PROTECT)
+    book = models.ForeignKey(EBook, on_delete=models.PROTECT, related_name='orders')
+    reference = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    original_price = models.DecimalField(max_digits=10, decimal_places=2)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    currency = models.CharField(max_length=3, default='NPR')
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    provider = models.CharField(max_length=40, blank=True)
+    provider_reference = models.CharField(max_length=128, null=True, blank=True)
+    provider_transaction = models.CharField(max_length=128, null=True, blank=True)
+    active_slot = models.GeneratedField(
+        expression=models.Case(models.When(status__in=['pending', 'processing', 'paid'], then=models.Value(True))),
+        output_field=models.BooleanField(),
+        db_persist=True,
+        null=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        snapshot_fields = {'user_id', 'book_id', 'reference', 'original_price', 'amount', 'currency'}
+        update_fields = kwargs.get('update_fields')
+        if update_fields is not None:
+            names = {'user': 'user_id', 'book': 'book_id'}
+            snapshot_fields &= {names.get(field, field) for field in update_fields}
+        if self.pk is not None and snapshot_fields:
+            original = type(self).objects.filter(pk=self.pk).values(*snapshot_fields).first()
+            if original and any(getattr(self, field) != value for field, value in original.items()):
+                raise ValidationError('Book order identity and price snapshots are immutable.')
+        super().save(*args, **kwargs)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=models.Q(amount__gt=0, original_price__gt=0, currency='NPR'), name='book_order_valid_amount'),
+            models.UniqueConstraint(fields=['user', 'book', 'active_slot'], name='unique_active_book_order'),
+            models.UniqueConstraint(fields=['provider', 'provider_reference'], name='unique_book_provider_reference'),
+            models.UniqueConstraint(fields=['provider', 'provider_transaction'], name='unique_book_provider_transaction'),
+            models.CheckConstraint(
+                condition=~models.Q(status__in=['paid', 'refunded']) | (
+                    models.Q(paid_at__isnull=False, provider_reference__isnull=False, provider_transaction__isnull=False)
+                    & ~models.Q(provider='') & ~models.Q(provider_reference='') & ~models.Q(provider_transaction='')
+                ),
+                name='book_order_paid_evidence',
+            ),
+        ]
+        indexes = [models.Index(fields=['user', '-created_at'])]
+
+
+class BookEntitlement(models.Model):
+    class Source(models.TextChoices):
+        FREE = 'free'
+        PURCHASE = 'purchase'
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    book = models.ForeignKey(EBook, on_delete=models.PROTECT, related_name='entitlements')
+    order = models.OneToOneField(BookOrder, on_delete=models.PROTECT, null=True, blank=True)
+    source = models.CharField(max_length=8, choices=Source.choices)
+    granted_at = models.DateTimeField(default=timezone.now)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'book', 'source'], condition=models.Q(source='free'), name='unique_free_book_entitlement'),
+            models.UniqueConstraint(fields=['order'], condition=models.Q(order__isnull=False), name='unique_order_book_entitlement'),
+            models.CheckConstraint(condition=models.Q(source='free', order__isnull=True) | models.Q(source='purchase', order__isnull=False), name='book_entitlement_source_order'),
+        ]
+        indexes = [models.Index(fields=['user', 'revoked_at'])]

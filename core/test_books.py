@@ -664,7 +664,7 @@ class BookMigrationCompatibilityTests(TransactionTestCase):
         executor.migrate(previous)
         try:
             apps = executor.loader.project_state(previous).apps
-            role = apps.get_model('core', 'Role').objects.get(name='super_admin')
+            role, _ = apps.get_model('core', 'Role').objects.get_or_create(name='super_admin')
             user = apps.get_model('core', 'User').objects.create(email='migration-book@example.com', name='Legacy owner', role_id=role.pk)
             old = apps.get_model('core', 'EBook').objects.create(title='Keep me', author='Legacy author',
                 uploaded_by_id=user.pk, file_url='https://legacy.example.com/paid.pdf',
@@ -1346,6 +1346,18 @@ class BookReaderMigrationTests(TransactionTestCase):
             user = apps.get_model('core', 'User').objects.create(email='phase2-migration@example.com', name='Owner', role_id=role.pk)
             book = apps.get_model('core', 'EBook').objects.create(title='Preserved private book', uploaded_by_id=user.pk,
                 file_url='https://legacy.example.com/book.pdf', source_file='content/retained.pdf', file_format='pdf', price=None, is_published=True)
+            reader_target = [('core', '0054_book_reader_phase2')]
+            reader_executor = MigrationExecutor(connection)
+            reader_executor.migrate(reader_target)
+            reader_apps = reader_executor.loader.project_state(reader_target).apps
+            reader_book = reader_apps.get_model('core', 'EBook').objects.get(pk=book.pk)
+            self.assertEqual(reader_book.chapters.count(), 0)
+            chapter = reader_apps.get_model('core', 'BookChapter').objects.create(
+                book_id=book.pk, chapter_number=1, title='Preserved chapter', content='Original text.',
+            )
+            reader_apps.get_model('core', 'BookReadingProgress').objects.create(
+                book_id=book.pk, user_id=user.pk, last_chapter_id=chapter.pk, position={'paragraph': 0},
+            )
             MigrationExecutor(connection).migrate(latest)
             saved = EBook.objects.get(pk=book.pk)
             self.assertEqual(saved.source_file.name, 'content/retained.pdf')
@@ -1353,6 +1365,8 @@ class BookReaderMigrationTests(TransactionTestCase):
             self.assertTrue(saved.is_published)
             self.assertIsNone(saved.price)
             self.assertEqual(saved.created_at, book.created_at)
-            self.assertEqual(saved.chapters.count(), 0)
+            self.assertEqual(saved.chapters.get(pk=chapter.pk).content, 'Original text.')
+            self.assertEqual(saved.reading_progress.get(user_id=user.pk).position, {'paragraph': 0})
+            self.assertFalse(saved.entitlements.exists())
         finally:
             MigrationExecutor(connection).migrate(latest)
