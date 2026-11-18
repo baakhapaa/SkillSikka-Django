@@ -56,6 +56,11 @@ from .api_views import (
 	DistrictListAPIView,
 	EBookListCreateAPIView,
 	EBookDetailAPIView,
+	EBookContentAPIView,
+	BookChaptersAPIView, BookChapterAPIView, BookReorderAPIView, BookImportAPIView,
+	BookProgressAPIView, BookBookmarksAPIView, BookBookmarkDetailAPIView,
+	ReaderSettingsAPIView, ContinueReadingAPIView,
+	BookPDFExtractAPIView,
 	EnrollCourseAPIView,
 	CourseEnrollmentAPIView,
 	ForgotPasswordAPIView,
@@ -144,6 +149,11 @@ from .api_views import (
 	SuperAdminAuditLogDetailAPIView,
 )
 
+
+from .book_commerce_api import (
+	BookOrderDetailView, BookOrdersView, BookReviewDetailView, BookReviewsView,
+	BuyBookView, GetFreeBookView, MyBooksView, SaveBookView, SavedBooksView,
+)
 
 urlpatterns = [
     path('courses/<int:course_id>/resources/', CourseResourceListAPIView.as_view(), name='api-course-resources'),
@@ -830,6 +840,26 @@ urlpatterns = [
 		EBookDetailAPIView.as_view(),
 		name='api-ebook-detail'
 	),
+	path('ebooks/saved/', SavedBooksView.as_view(), name='api-book-saved'),
+	path('ebooks/my-books/', MyBooksView.as_view(), name='api-book-library'),
+	path('ebooks/<int:book_id>/save/', SaveBookView.as_view(), name='api-book-save'),
+	path('ebooks/<int:book_id>/reviews/', BookReviewsView.as_view(), name='api-book-reviews'),
+	path('ebooks/<int:book_id>/reviews/<int:review_id>/', BookReviewDetailView.as_view(), name='api-book-review'),
+	path('ebooks/<int:book_id>/buy/', BuyBookView.as_view(), name='api-book-buy'),
+	path('ebooks/<int:book_id>/get-free/', GetFreeBookView.as_view(), name='api-book-get-free'),
+	path('book-orders/', BookOrdersView.as_view(), name='api-book-orders'),
+	path('book-orders/<int:pk>/', BookOrderDetailView.as_view(), name='api-book-order'),
+	path('ebooks/<int:pk>/content/', EBookContentAPIView.as_view(), name='api-ebook-content'),
+	path('ebooks/<int:book_id>/chapters/', BookChaptersAPIView.as_view(), name='api-book-chapters'),
+	path('ebooks/<int:book_id>/chapters/<int:chapter_id>/', BookChapterAPIView.as_view(), name='api-book-chapter'),
+	path('ebooks/<int:book_id>/chapters/<int:chapter_id>/extract-pdf/', BookPDFExtractAPIView.as_view(), name='api-book-pdf-extract'),
+	path('ebooks/<int:book_id>/chapters/reorder/', BookReorderAPIView.as_view(), name='api-book-reorder'),
+	path('ebooks/<int:book_id>/import-epub/', BookImportAPIView.as_view(), name='api-book-import'),
+	path('ebooks/<int:book_id>/progress/', BookProgressAPIView.as_view(), name='api-book-progress'),
+	path('ebooks/<int:book_id>/bookmarks/', BookBookmarksAPIView.as_view(), name='api-book-bookmarks'),
+	path('ebooks/<int:book_id>/bookmarks/<int:bookmark_id>/', BookBookmarkDetailAPIView.as_view(), name='api-book-bookmark'),
+	path('reader/settings/', ReaderSettingsAPIView.as_view(), name='api-reader-settings'),
+	path('reader/continue/', ContinueReadingAPIView.as_view(), name='api-reader-continue'),
 
 	# =========================
 	# Notifications

@@ -1,0 +1,60 @@
+﻿{% extends 'base.html' %}
+{% block title %}Book Commerce | SkillSikka{% endblock %}
+{% block content %}
+<div class="app-shell">
+    {% include 'admin/bootcamp_sidebar.html' %}
+    <main class="dashboard-main">
+        <header class="topbar"><h1>Book Commerce</h1><a href="{% url 'manage_books' %}">Book Management</a></header>
+        <p>{{ totals.purchases }} verified purchases · NPR {{ totals.revenue|floatformat:2 }} verified revenue</p>
+        <nav aria-label="Book commerce">
+            <a href="?section=orders">Orders</a> ·
+            <a href="?section=entitlements">Entitlements</a> ·
+            <a href="?section=reviews">Reviews</a>
+        </nav>
+        <form method="get" class="form-stack">
+            <input type="hidden" name="section" value="{{ section }}">
+            <label for="commerce-search">Book title or account</label>
+            <input id="commerce-search" name="q" value="{{ q }}">
+            <label for="commerce-status">Status</label>
+            <select id="commerce-status" name="status">
+                <option value="">All</option>
+                {% for item in statuses %}<option value="{{ item }}" {% if status == item %}selected{% endif %}>{{ item|title }}</option>{% endfor %}
+            </select>
+            <button class="outline-button">Filter</button>
+        </form>
+        <div class="table-wrap"><table>
+            <thead><tr><th>Book</th><th>Account</th>
+                {% if section == 'orders' %}<th>Order</th><th>Amount</th><th>Status</th><th>Paid at</th>
+                {% elif section == 'entitlements' %}<th>Source</th><th>Status</th><th>Granted at</th>
+                {% else %}<th>Rating</th><th>Review</th><th>Moderation</th>{% endif %}
+            </tr></thead>
+            <tbody>
+            {% for row in page %}
+                <tr><td>{{ row.book.title }}</td><td>{{ row.user.name }}<br>{{ row.user.email }}</td>
+                {% if section == 'orders' %}
+                    <td>{{ row.reference }}</td><td>{{ row.currency }} {{ row.amount }}</td><td>{{ row.get_status_display }}</td><td>{{ row.paid_at|default_if_none:"—" }}</td>
+                {% elif section == 'entitlements' %}
+                    <td>{{ row.get_source_display }}</td>
+                    <td>{% if row.revoked_at or row.source == 'purchase' and row.order.status != 'paid' %}Revoked{% else %}Active{% endif %}{% if not row.book.is_published %} · Draft{% endif %}</td>
+                    <td>{{ row.granted_at }}</td>
+                {% else %}
+                    <td>{{ row.rating }}</td><td>{{ row.review }}</td>
+                    <td><form method="post">
+                        {% csrf_token %}
+                        <input type="hidden" name="review_id" value="{{ row.pk }}">
+                        {% if row.is_hidden %}<button name="action" value="show">Restore review</button>
+                        {% else %}<button name="action" value="hide">Hide review</button>{% endif %}
+                    </form></td>
+                {% endif %}
+                </tr>
+            {% empty %}<tr><td colspan="6">No records found.</td></tr>{% endfor %}
+            </tbody>
+        </table></div>
+        <p>
+            {% if page.has_previous %}<a href="?section={{ section }}&amp;q={{ q|urlencode }}&amp;status={{ status|urlencode }}&amp;page={{ page.previous_page_number }}">Previous</a>{% endif %}
+            Page {{ page.number }} of {{ page.paginator.num_pages }}
+            {% if page.has_next %}<a href="?section={{ section }}&amp;q={{ q|urlencode }}&amp;status={{ status|urlencode }}&amp;page={{ page.next_page_number }}">Next</a>{% endif %}
+        </p>
+    </main>
+</div>
+{% endblock %}

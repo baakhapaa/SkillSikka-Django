@@ -1,4 +1,5 @@
 from datetime import timedelta
+from decimal import Decimal
 from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -16,6 +17,7 @@ from django.utils import timezone
 from django.utils.crypto import constant_time_compare, salted_hmac
 from django.utils.text import slugify
 from rest_framework import serializers
+from .book_files import validate_book_source, validate_book_cover, validate_highlights
 from rest_framework.exceptions import APIException
 from drf_spectacular.utils import extend_schema_field
 from .course_access import CourseAPIError, academic_eligible, is_course_manager, require_bootcamp_admin
@@ -2773,6 +2775,10 @@ class ShortLikeSerializer(serializers.ModelSerializer):
 
 
 class EBookSerializer(serializers.ModelSerializer):
+	# Write-only uploads: even managers never receive a storage path or URL.
+	clear_file_url = serializers.BooleanField(write_only=True, required=False)
+	source_file = serializers.FileField(write_only=True, required=False, validators=[validate_book_source])
+	cover_image = serializers.ImageField(write_only=True, required=False, validators=[validate_book_cover])
 	subject_name = serializers.CharField(
 		source='subject.name',
 		read_only=True,
@@ -2803,16 +2809,157 @@ class EBookSerializer(serializers.ModelSerializer):
 			'uploaded_by_name',
 			'cover_url',
 			'file_url',
+			'category', 'difficulty', 'highlights', 'price', 'currency',
+			'cover_image', 'source_file', 'file_format', 'published_at',
+			'clear_file_url',
 			'is_published',
 			'created_at',
 			'updated_at',
 		]
-		read_only_fields = [
-			'id',
-			'uploaded_by',
-			'created_at',
-			'updated_at',
-		]
+		read_only_fields = ['id', 'uploaded_by', 'created_at', 'updated_at', 'file_format', 'published_at']
+
+	def validate(self, attrs):
+		if attrs.get('clear_file_url'):
+			if self.instance is None:
+				raise serializers.ValidationError({'clear_file_url': 'Only existing legacy references can be cleared.'})
+			if attrs.get('file_url'):
+				raise serializers.ValidationError({'file_url': 'Do not supply a replacement URL while clearing it.'})
+			attrs['file_url'] = ''
+		else:
+			attrs.pop('clear_file_url', None)
+			if self.instance is not None and attrs.get('file_url') == '':
+				# GET deliberately masks this value. A normal PUT/PATCH must not
+				# interpret the placeholder as a request to destroy the reference.
+				attrs.pop('file_url')
+		if 'highlights' in attrs:
+			try:
+				validate_highlights(attrs['highlights'])
+			except DjangoValidationError as exc:
+				raise serializers.ValidationError({'highlights': exc.messages})
+		published = attrs.get('is_published', getattr(self.instance, 'is_published', False))
+		if published and not attrs.get('source_file', getattr(self.instance, 'source_file', None)) and not attrs.get('file_url', getattr(self.instance, 'file_url', '')):
+			raise serializers.ValidationError({'source_file': 'Upload a PDF/EPUB or provide a legacy file URL.'})
+		return attrs
+
+	def update(self, instance, validated_data):
+		validated_data.pop('clear_file_url', None)
+		return super().update(instance, validated_data)
+
+	def to_representation(self, instance):
+		data = super().to_representation(instance)
+		# Preserve the legacy key, but never advertise whole-book content URLs.
+		data['file_url'] = ''
+		request = self.context.get('request')
+		if instance.cover_image:
+			url = instance.cover_image.url
+			data['cover_url'] = request.build_absolute_uri(url) if request else url
+		if request and request.user.is_authenticated and hasattr(instance, 'review_count'):
+			from .book_commerce_api import commerce_metadata
+			data.update(commerce_metadata(instance, request.user))
+			if hasattr(instance, 'acquired_at'):
+				progress = data['reading_progress']
+				data['acquired_at'] = instance.acquired_at.isoformat()
+				data['completion_status'] = (
+					'completed' if progress['overall_percentage'] == 100
+					else 'in_progress' if progress['last_read_at'] else 'not_started'
+				)
+		return data
+
+
+class StrictBookInput:
+	def to_internal_value(self, data):
+		if not isinstance(data, Mapping):
+			return super().to_internal_value(data)
+		unknown = set(data) - set(self.fields)
+		if unknown:
+			raise serializers.ValidationError({key: 'Unknown or server-controlled field.' for key in unknown})
+		return super().to_internal_value(data)
+
+
+class BookChapterSerializer(StrictBookInput, serializers.ModelSerializer):
+	from .models import BookChapter as _BookChapter
+	content_format = serializers.CharField(default='text', read_only=True)
+	content = serializers.CharField(max_length=200000, allow_blank=True, required=False, trim_whitespace=False)
+
+	class Meta:
+		from .models import BookChapter
+		model = BookChapter
+		fields = ['id', 'chapter_number', 'title', 'content', 'content_format', 'estimated_reading_minutes', 'pdf_page_start', 'pdf_page_end', 'created_at', 'updated_at']
+		read_only_fields = ['id', 'estimated_reading_minutes', 'created_at', 'updated_at']
+
+	def validate(self, attrs):
+		from .book_reader import plain_book_text
+		candidate = self.instance or self._BookChapter(book=self.context['book'])
+		for field, value in attrs.items():
+			setattr(candidate, field, plain_book_text(value) if field in ('title', 'content') else value)
+		try:
+			candidate.full_clean()
+		except DjangoValidationError as exc:
+			raise serializers.ValidationError(getattr(exc, 'message_dict', {'detail': exc.messages}))
+		if not candidate.title.strip():
+			raise serializers.ValidationError({'title': 'A readable chapter title is required.'})
+		return attrs
+
+
+class BookProgressInputSerializer(StrictBookInput, serializers.Serializer):
+	chapter_id = serializers.IntegerField(min_value=1, allow_null=True)
+	position = serializers.JSONField(required=False, default=dict)
+	completed = serializers.BooleanField(required=False)
+
+	def validate(self, attrs):
+		from .models import BookChapter
+		from .book_reader import validate_position, validate_chapter_position, validate_pdf_position
+		book = self.context['book']
+		chapter = BookChapter.objects.filter(book=book, pk=attrs['chapter_id']).first() if attrs['chapter_id'] else None
+		if attrs['chapter_id'] and chapter is None:
+			raise serializers.ValidationError({'chapter_id': 'Chapter does not belong to this book.'})
+		if chapter is None and (book.file_format != 'pdf' or book.chapters.exists()):
+			raise serializers.ValidationError({'chapter_id': 'Choose a chapter from this book.'})
+		if chapter is None and 'completed' in attrs:
+			raise serializers.ValidationError({'completed': 'Chapter completion requires a chapter.'})
+		try:
+			validate_chapter_position(chapter, attrs['position']) if chapter else validate_position(attrs['position'])
+			validate_pdf_position(book, attrs['position'])
+		except DjangoValidationError as exc:
+			raise serializers.ValidationError({'position': exc.messages})
+		attrs['chapter'] = chapter
+		return attrs
+
+
+class BookBookmarkInputSerializer(BookProgressInputSerializer):
+	chapter_id = serializers.IntegerField(min_value=1)
+	completed = None
+	anchor = serializers.RegexField(r'^[A-Za-z0-9_.:-]{0,120}$', required=False, allow_blank=True, default='')
+	note = serializers.CharField(max_length=2000, required=False, allow_blank=True, default='')
+
+	def validate(self, attrs):
+		attrs = super().validate(attrs)
+		from .book_reader import html_to_book_text
+		attrs['note'] = html_to_book_text(attrs['note'])
+		return attrs
+
+
+class BookBookmarkSerializer(serializers.ModelSerializer):
+	class Meta:
+		from .models import BookBookmark
+		model = BookBookmark
+		fields = ['id', 'chapter_id', 'position', 'anchor', 'note', 'created_at']
+
+
+class ReaderSettingsSerializer(StrictBookInput, serializers.ModelSerializer):
+	line_spacing = serializers.DecimalField(max_digits=2, decimal_places=1, min_value=Decimal('1.0'), max_value=Decimal('2.5'), required=False)
+	class Meta:
+		from .models import ReaderSettings
+		model = ReaderSettings
+		fields = ['font_family', 'font_size', 'line_spacing', 'theme']
+
+
+class BookImportSerializer(StrictBookInput, serializers.Serializer):
+	mode = serializers.ChoiceField(choices=['create', 'refresh'], default='create')
+
+
+class BookReorderSerializer(StrictBookInput, serializers.Serializer):
+	chapter_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), max_length=10000)
 
 
 class NotificationSerializer(serializers.ModelSerializer):

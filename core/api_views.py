@@ -21,6 +21,7 @@ from rest_framework import serializers
 
 
 from .authentication import EmailVerifiedJWTAuthentication as JWTAuthentication
+from .book_commerce_api import PrivateBookAPI
 from .course_access import CourseAPIError, require_course_access, require_bootcamp_admin
 from .course_filters import positive_id_param
 from .bootcamp_serializers import with_bootcamp_data, load_bootcamp_rosters
@@ -4301,10 +4302,16 @@ class ShortCommentDetailAPIView(
 # eBooks
 # =========================================================
 
-class EBookListCreateAPIView(generics.ListCreateAPIView):
+class EBookListCreateAPIView(PrivateBookAPI, generics.ListCreateAPIView):
 	authentication_classes = [JWTAuthentication]
 	permission_classes = [IsAuthenticated]
 	serializer_class = EBookSerializer
+	parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+	def paginate_queryset(self, queryset):
+		if 'page' in self.request.query_params or 'page_size' in self.request.query_params:
+			return super().paginate_queryset(queryset)
+		return None
 
 	def get_queryset(self):
 		user = self.request.user
@@ -4329,20 +4336,9 @@ class EBookListCreateAPIView(generics.ListCreateAPIView):
 				is_published=True
 			)
 
-		subject_id = self.request.query_params.get('subject')
-		grade_id = self.request.query_params.get('grade')
+		from .book_commerce_api import book_summary, catalogue_filter
 
-		if subject_id:
-			queryset = queryset.filter(
-				subject_id=subject_id
-			)
-
-		if grade_id:
-			queryset = queryset.filter(
-				grade_id=grade_id
-			)
-
-		return queryset.order_by('-created_at')
+		return catalogue_filter(book_summary(queryset, user), self.request.query_params)
 
 	def perform_create(self, serializer):
 		user = self.request.user
@@ -4360,11 +4356,13 @@ class EBookListCreateAPIView(generics.ListCreateAPIView):
 
 
 class EBookDetailAPIView(
+	PrivateBookAPI,
 	generics.RetrieveUpdateDestroyAPIView
 ):
 	authentication_classes = [JWTAuthentication]
 	permission_classes = [IsAuthenticated]
 	serializer_class = EBookSerializer
+	parser_classes = [MultiPartParser, FormParser, JSONParser]
 
 	def get_queryset(self):
 		user = self.request.user
@@ -4374,6 +4372,10 @@ class EBookDetailAPIView(
 			'grade',
 			'uploaded_by',
 		)
+
+		if self.request.method in ('GET', 'HEAD'):
+			from .book_commerce_api import book_summary
+			queryset = book_summary(queryset, user, with_review=True)
 
 		if _is_admin(user):
 			return queryset
@@ -4390,24 +4392,60 @@ class EBookDetailAPIView(
 
 	def _check_owner_or_admin(self, ebook):
 		user = self.request.user
-
-		if not (
-			_is_admin(user)
-			or ebook.uploaded_by_id == user.id
-		):
+		from .book_reader import is_book_manager
+		if not is_book_manager(user, ebook):
 			raise PermissionDenied(
 				'Only the eBook owner or administrator '
 				'can modify this eBook.'
 			)
 
+	def update(self, request, *args, **kwargs):
+		# Check the current role before validation or persistent upload storage.
+		self._check_owner_or_admin(self.get_object())
+		return super().update(request, *args, **kwargs)
+
 	def perform_update(self, serializer):
 		ebook = self.get_object()
 		self._check_owner_or_admin(ebook)
+		if serializer.validated_data.get('clear_file_url') and not (
+			_is_admin(self.request.user)
+			or (_is_instructor(self.request.user) and ebook.uploaded_by_id == self.request.user.pk)
+		):
+			raise PermissionDenied('Only the current instructor owner or administrator can clear a legacy source.')
 		serializer.save()
 
 	def perform_destroy(self, instance):
 		self._check_owner_or_admin(instance)
-		instance.delete()
+		from django.db.models import ProtectedError
+		from .book_reader import ReaderError
+		try:
+			instance.delete()
+		except ProtectedError:
+			raise ReaderError('BOOK_HAS_ACQUISITIONS', 'Unpublish this book to preserve its acquisition records.', 409)
+
+
+class EBookContentAPIView(APIView):
+	"""Protected source delivery for authorized readers."""
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def get(self, request, pk):
+		from django.http import FileResponse, Http404
+		from .book_reader import require_reader
+		book = get_object_or_404(EBook, pk=pk)
+		require_reader(request.user, book)
+		if not book.source_file:
+			raise Http404('No private source file. Upload the legacy book first.')
+		try:
+			stream = book.source_file.open('rb')
+		except FileNotFoundError:
+			raise Http404('Book source file is unavailable.')
+		response = FileResponse(stream, as_attachment=True, filename=f'book-{book.pk}.{book.file_format}',
+			content_type='application/pdf' if book.file_format == 'pdf' else 'application/epub+zip')
+		response['Cache-Control'] = 'private, no-store'
+		response['X-Content-Type-Options'] = 'nosniff'
+		response['Content-Security-Policy'] = "default-src 'none'; sandbox"
+		return response
 
 
 # =========================================================
@@ -4416,6 +4454,240 @@ class EBookDetailAPIView(
 # NOTE: placeholder implementation — Alisa's original notification
 # code was not available to merge (see chat). Replace this block
 # with her actual views if/when you can get them from her.
+
+def _reader_progress(user, book):
+	from .models import BookReadingProgress
+	progress = BookReadingProgress.objects.filter(user=user, book=book).first()
+	completed = list(progress.completions.filter(chapter__book=book).order_by('chapter__chapter_number').values_list('chapter_id', flat=True)) if progress else []
+	total = book.chapters.count()
+	return {'last_chapter_id': progress.last_chapter_id if progress else None,
+		'position': progress.position if progress else {}, 'completed_chapter_ids': completed,
+		'total_chapters': total, 'completed_chapters': len(completed),
+		'overall_percentage': round(100 * len(completed) / total, 2) if total else 0,
+		'last_read_at': progress.last_read_at if progress else None}
+
+
+class BookReaderAccessMixin:
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def reader_book(self, request, book_id, lock=False, manage=False):
+		from .book_reader import require_book_manager, require_reader
+		query = EBook.objects.select_for_update() if lock else EBook.objects.all()
+		book = get_object_or_404(query, pk=book_id)
+		authorize = require_book_manager if manage else require_reader
+		authorize(request.user, book)
+		return book
+
+	def finalize_response(self, request, response, *args, **kwargs):
+		response = super().finalize_response(request, response, *args, **kwargs)
+		response['Cache-Control'] = 'private, no-store'
+		return response
+
+
+class BookChaptersAPIView(BookReaderAccessMixin, APIView):
+	def get(self, request, book_id):
+		book = self.reader_book(request, book_id)
+		progress = _reader_progress(request.user, book)
+		rows = list(book.chapters.values('id', 'chapter_number', 'title', 'estimated_reading_minutes', 'pdf_page_start', 'pdf_page_end'))
+		completed = set(progress['completed_chapter_ids'])
+		for row in rows:
+			row['is_completed'] = row['id'] in completed
+		return Response({'book': EBookSerializer(book, context={'request': request}).data,
+			'chapters': rows, 'progress': progress,
+			'reader_mode': 'chapters' if rows else ('protected_pdf' if book.file_format == 'pdf' else 'import_required')})
+
+	@transaction.atomic
+	def post(self, request, book_id):
+		from .serializers import BookChapterSerializer
+		book = self.reader_book(request, book_id, lock=True, manage=True)
+		serializer = BookChapterSerializer(data=request.data, context={'book': book})
+		serializer.is_valid(raise_exception=True)
+		serializer.save(book=book)
+		return Response(serializer.data, status=201)
+
+
+class BookChapterAPIView(BookReaderAccessMixin, APIView):
+	def get(self, request, book_id, chapter_id):
+		from .serializers import BookChapterSerializer
+		book = self.reader_book(request, book_id)
+		chapter = get_object_or_404(book.chapters, pk=chapter_id)
+		ids = list(book.chapters.values_list('pk', flat=True))
+		index = ids.index(chapter.pk)
+		return Response({'book': EBookSerializer(book, context={'request': request}).data,
+			'chapter': BookChapterSerializer(chapter).data, 'previous_chapter_id': ids[index-1] if index else None,
+			'next_chapter_id': ids[index+1] if index+1 < len(ids) else None,
+			'progress': _reader_progress(request.user, book)})
+
+	@transaction.atomic
+	def patch(self, request, book_id, chapter_id):
+		from .serializers import BookChapterSerializer
+		book = self.reader_book(request, book_id, lock=True, manage=True)
+		chapter = get_object_or_404(book.chapters.select_for_update(), pk=chapter_id)
+		serializer = BookChapterSerializer(chapter, data=request.data, partial=True, context={'book': book})
+		serializer.is_valid(raise_exception=True)
+		serializer.save()
+		return Response(serializer.data)
+
+	@transaction.atomic
+	def delete(self, request, book_id, chapter_id):
+		book = self.reader_book(request, book_id, lock=True, manage=True)
+		get_object_or_404(book.chapters, pk=chapter_id).delete()
+		return Response(status=204)
+
+
+class BookReorderAPIView(BookReaderAccessMixin, APIView):
+	@transaction.atomic
+	def post(self, request, book_id):
+		from .serializers import BookReorderSerializer
+		from .book_reader import reorder_chapters
+		book = self.reader_book(request, book_id, lock=True, manage=True)
+		serializer = BookReorderSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		reorder_chapters(book, serializer.validated_data['chapter_ids'])
+		return Response({'chapter_ids': list(book.chapters.values_list('pk', flat=True))})
+
+
+class BookImportAPIView(BookReaderAccessMixin, APIView):
+	def post(self, request, book_id):
+		from .serializers import BookImportSerializer
+		from .book_reader import import_epub
+		book = self.reader_book(request, book_id, manage=True)
+		serializer = BookImportSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+		return Response(import_epub(book, serializer.validated_data['mode']))
+
+
+class BookPDFExtractAPIView(BookReaderAccessMixin, APIView):
+	def post(self, request, book_id, chapter_id):
+		from .book_reader import extract_pdf_chapter, ReaderError
+		from .serializers import BookChapterSerializer
+		book = self.reader_book(request, book_id, manage=True)
+		if request.data:
+			raise ReaderError('INVALID_REQUEST', 'This action accepts an empty object only.')
+		chapter = get_object_or_404(book.chapters, pk=chapter_id)
+		return Response(BookChapterSerializer(extract_pdf_chapter(book, chapter)).data)
+
+
+class BookProgressAPIView(BookReaderAccessMixin, APIView):
+	def get(self, request, book_id):
+		book = self.reader_book(request, book_id)
+		return Response(_reader_progress(request.user, book))
+
+	@transaction.atomic
+	def put(self, request, book_id):
+		from .models import BookReadingProgress, BookChapterCompletion
+		from .serializers import BookProgressInputSerializer
+		book = self.reader_book(request, book_id, lock=True)
+		serializer = BookProgressInputSerializer(data=request.data, context={'book': book})
+		serializer.is_valid(raise_exception=True)
+		data = serializer.validated_data
+		progress, _ = BookReadingProgress.objects.get_or_create(user=request.user, book=book)
+		progress.last_chapter = data['chapter']
+		progress.position = data['position']
+		progress.save()
+		if data.get('completed') is True:
+			BookChapterCompletion.objects.get_or_create(progress=progress, chapter=data['chapter'])
+		elif data.get('completed') is False:
+			progress.completions.filter(chapter=data['chapter']).delete()
+		return Response(_reader_progress(request.user, book))
+
+
+class BookBookmarksAPIView(BookReaderAccessMixin, APIView):
+	def get(self, request, book_id):
+		from .serializers import BookBookmarkSerializer
+		book = self.reader_book(request, book_id)
+		return Response(BookBookmarkSerializer(book.bookmarks.filter(user=request.user), many=True).data)
+
+	@transaction.atomic
+	def post(self, request, book_id):
+		import hashlib, json
+		from .models import BookBookmark
+		from .serializers import BookBookmarkInputSerializer, BookBookmarkSerializer
+		book = self.reader_book(request, book_id, lock=True)
+		serializer = BookBookmarkInputSerializer(data=request.data, context={'book': book})
+		serializer.is_valid(raise_exception=True)
+		data = serializer.validated_data
+		position = {'paragraph': data['position'].get('paragraph', 0), 'offset': data['position'].get('offset', 0)}
+		if data['chapter'].pdf_page_start:
+			position['page'] = data['position'].get('page', data['chapter'].pdf_page_start)
+		identity = ['anchor', data['anchor']] if data['anchor'] else ['position', position]
+		key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+		bookmark, created = BookBookmark.objects.get_or_create(user=request.user, book=book, chapter=data['chapter'],
+			locator_key=key, defaults={k: data[k] for k in ('position', 'anchor', 'note')})
+		return Response(BookBookmarkSerializer(bookmark).data, status=201 if created else 200)
+
+
+class BookBookmarkDetailAPIView(BookReaderAccessMixin, APIView):
+	@transaction.atomic
+	def delete(self, request, book_id, bookmark_id):
+		book = self.reader_book(request, book_id, lock=True)
+		get_object_or_404(book.bookmarks, pk=bookmark_id, user=request.user).delete()
+		return Response(status=204)
+
+
+class ReaderSettingsAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def get(self, request):
+		from .models import ReaderSettings
+		from .serializers import ReaderSettingsSerializer
+		settings = ReaderSettings.objects.filter(user=request.user).first() or ReaderSettings(user=request.user)
+		return Response(ReaderSettingsSerializer(settings).data, headers={'Cache-Control': 'private, no-store'})
+
+	@transaction.atomic
+	def patch(self, request):
+		from .models import ReaderSettings
+		from .serializers import ReaderSettingsSerializer
+		# Serialise per-user creation/update without a get_or_create race.
+		User.objects.select_for_update().get(pk=request.user.pk)
+		settings = ReaderSettings.objects.filter(user=request.user).first() or ReaderSettings(user=request.user)
+		serializer = ReaderSettingsSerializer(settings, data=request.data, partial=True)
+		serializer.is_valid(raise_exception=True)
+		serializer.save()
+		return Response(serializer.data, headers={'Cache-Control': 'private, no-store'})
+
+
+class ContinueReadingAPIView(BookReaderAccessMixin, APIView):
+	def get(self, request):
+		from collections import defaultdict
+		from .models import BookChapter, BookChapterCompletion, BookReadingProgress
+		from .book_reader import ReaderError, active_book_entitlements
+		user = request.user
+		entitlements = active_book_entitlements(user)
+		query = BookReadingProgress.objects.filter(user=user).select_related('book', 'book__subject', 'book__grade', 'book__uploaded_by')
+		if not _is_admin(user):
+			access = Q(book_id__in=entitlements.values('book_id'))
+			if _is_instructor(user):
+				access |= Q(book__uploaded_by=user)
+			elif not entitlements.exists():
+				raise ReaderError('BOOK_ACCESS_DENIED', 'A valid reader entitlement is required.', 403)
+			query = query.filter(access)
+		rows = list(query.order_by('-last_read_at', '-pk')[:20])
+		if not rows:
+			return Response({'books': []})
+		book_ids = [row.book_id for row in rows]
+		counts = dict(BookChapter.objects.filter(book_id__in=book_ids).values_list('book_id').annotate(total=Count('pk')))
+		completed = defaultdict(list)
+		completion_rows = BookChapterCompletion.objects.filter(
+			progress__user=user, progress__book_id__in=book_ids, chapter__book_id=F('progress__book_id'),
+		).order_by('chapter__chapter_number').values_list('progress__book_id', 'chapter_id')
+		for book_id, chapter_id in completion_rows:
+			completed[book_id].append(chapter_id)
+		books = []
+		for row in rows:
+			book = row.book
+			chapter_ids = completed[book.pk]
+			total = counts.get(book.pk, 0)
+			progress = {'last_chapter_id': row.last_chapter_id, 'position': row.position,
+				'completed_chapter_ids': chapter_ids, 'total_chapters': total,
+				'completed_chapters': len(chapter_ids),
+				'overall_percentage': round(100 * len(chapter_ids) / total, 2) if total else 0,
+				'last_read_at': row.last_read_at}
+			books.append({'book': EBookSerializer(book, context={'request': request}).data, 'progress': progress})
+		return Response({'books': books})
+
 
 class NotificationListAPIView(generics.ListAPIView):
 	authentication_classes = [JWTAuthentication]

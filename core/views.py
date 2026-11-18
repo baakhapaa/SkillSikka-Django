@@ -19,6 +19,8 @@ from .forms import (
 	CourseForm,
 	DistrictForm,
 	EventForm,
+	EBookForm,
+	BookChapterForm,
 	GradeForm,
 	MunicipalityForm,
 	ProvinceForm,
@@ -29,6 +31,8 @@ from .forms import (
 from .models import (
 	Advertisement,
 	Event,
+	EBook,
+	BookChapter,
 	Payment,
 	AdminAuditLog,
 	CertificateCriteria,
@@ -128,6 +132,155 @@ def manage_geography(request):
 
 def is_admin(user):
 	return user.is_superuser or getattr(user.role, 'name', '') == 'super_admin'
+
+
+@login_required
+def manage_books(request):
+	if not is_admin(request.user):
+		from django.http import HttpResponseForbidden
+		return HttpResponseForbidden('Only administrators can manage books.')
+	books = EBook.objects.select_related('uploaded_by', 'subject', 'grade').annotate(
+		purchase_count=Count('orders', filter=Q(orders__status='paid')),
+	).order_by('-created_at', '-pk')
+	search = request.GET.get('q', '').strip()
+	status = request.GET.get('status', '')
+	category = request.GET.get('category', '').strip()
+	if search:
+		books = books.filter(Q(title__icontains=search) | Q(author__icontains=search) | Q(description__icontains=search))
+	if status in ('published', 'draft'):
+		books = books.filter(is_published=status == 'published')
+	if category:
+		books = books.filter(category=category)
+	return render(request, 'admin/books.html', {
+		'page': Paginator(books, 25).get_page(request.GET.get('page')),
+		'q': search, 'status': status, 'category': category,
+		'categories': EBook.objects.exclude(category='').values_list('category', flat=True).distinct().order_by('category'),
+	})
+
+
+@login_required
+def edit_book(request, book_id=None):
+	if not is_admin(request.user):
+		from django.http import HttpResponseForbidden
+		return HttpResponseForbidden('Only administrators can manage books.')
+	book = get_object_or_404(EBook, pk=book_id) if book_id is not None else None
+	form = EBookForm(request.POST if request.method == 'POST' else None, request.FILES or None, instance=book)
+	if request.method == 'POST' and form.is_valid():
+		book = form.save(commit=False)
+		if not book.pk:
+			book.uploaded_by = request.user
+		book.save()
+		messages.success(request, 'Book saved.' if book.is_published else 'Book saved as draft.')
+		return redirect('edit_book', book_id=book.pk)
+	return render(request, 'admin/book_form.html', {'form': form, 'book': book})
+
+
+@login_required
+def delete_book(request, book_id):
+	if not is_admin(request.user):
+		from django.http import HttpResponseForbidden
+		return HttpResponseForbidden('Only administrators can manage books.')
+	book = get_object_or_404(EBook, pk=book_id)
+	if request.method == 'POST' and request.POST.get('confirm') == str(book.pk):
+		# Retain uploaded objects: no destructive filesystem cleanup in a request.
+		from django.db.models import ProtectedError
+		try:
+			book.delete()
+		except ProtectedError:
+			messages.error(request, 'Unpublish this book to preserve its acquisition records.')
+			return redirect('manage_books')
+		messages.success(request, 'Book record deleted. Uploaded files retained for controlled cleanup.')
+		return redirect('manage_books')
+	return render(request, 'admin/book_delete.html', {'book': book})
+
+
+@login_required
+def manage_book_chapters(request, book_id):
+	from .book_reader import import_epub, reorder_chapters, extract_pdf_chapter, ReaderError
+	from django import forms
+	from django.core.exceptions import ValidationError
+	from django.db import transaction
+	from django.http import HttpResponseForbidden
+	if not is_admin(request.user):
+		return HttpResponseForbidden('Only administrators can manage chapters.')
+	book = get_object_or_404(EBook, pk=book_id)
+	form = BookChapterForm(instance=BookChapter(book=book))
+	if request.method == 'POST':
+		try:
+			action = request.POST.get('action', 'add')
+			if action == 'import':
+				mode = request.POST.get('mode', 'create')
+				if mode not in ('create', 'refresh'):
+					raise ReaderError('INVALID_MODE', 'Choose create or explicit refresh.')
+				result = import_epub(book, mode)
+				messages.success(request, f"Import complete: {result['created']} created, {result['updated']} refreshed. Chapter IDs: {result['chapter_ids']}.")
+			elif action == 'reorder':
+				try:
+					ids = [int(value.strip()) for value in request.POST.get('chapter_ids', '').split(',') if value.strip()]
+				except ValueError:
+					raise ReaderError('INVALID_ORDER', 'Use comma-separated chapter IDs.')
+				reorder_chapters(book, ids)
+				messages.success(request, 'Chapter order saved; reading state retained.')
+			elif action == 'extract-pdf':
+				field = forms.IntegerField(min_value=1, max_value=9223372036854775807)
+				try:
+					chapter_id = field.clean(request.POST.get('chapter_id'))
+				except ValidationError:
+					raise ReaderError('INVALID_CHAPTER_ID', 'Choose a valid positive chapter ID.')
+				chapter = get_object_or_404(book.chapters, pk=chapter_id)
+				extract_pdf_chapter(book, chapter)
+				messages.success(request, 'PDF range text extracted. Review it before publishing.')
+			elif action == 'add':
+				with transaction.atomic():
+					EBook.objects.select_for_update().get(pk=book.pk)
+					form = BookChapterForm(request.POST, instance=BookChapter(book=book))
+					if not form.is_valid():
+						return render(request, 'admin/book_chapters.html', {'book': book, 'chapters': book.chapters.all(), 'form': form})
+					form.save()
+				messages.success(request, 'Chapter added.')
+			else:
+				raise ReaderError('INVALID_ACTION', 'Choose a valid chapter action.')
+			return redirect('manage_book_chapters', book_id=book.pk)
+		except ReaderError as exc:
+			messages.error(request, str(exc.detail['detail']))
+	return render(request, 'admin/book_chapters.html', {'book': book, 'chapters': book.chapters.all(), 'form': form})
+
+
+@login_required
+def edit_book_chapter(request, book_id, chapter_id):
+	from django.http import HttpResponseForbidden
+	from django.db import transaction
+	if not is_admin(request.user):
+		return HttpResponseForbidden('Only administrators can manage chapters.')
+	book = get_object_or_404(EBook, pk=book_id)
+	chapter = get_object_or_404(book.chapters, pk=chapter_id)
+	with transaction.atomic():
+		if request.method == 'POST':
+			EBook.objects.select_for_update().get(pk=book.pk)
+			chapter = get_object_or_404(book.chapters.select_for_update(), pk=chapter_id)
+		form = BookChapterForm(request.POST if request.method == 'POST' else None, instance=chapter)
+		if request.method == 'POST' and form.is_valid():
+			form.save()
+			messages.success(request, 'Chapter saved; progress and bookmarks retained.')
+			return redirect('edit_book_chapter', book_id=book.pk, chapter_id=chapter.pk)
+	return render(request, 'admin/book_chapter_form.html', {'book': book, 'chapter': chapter, 'form': form})
+
+
+@login_required
+def delete_book_chapter(request, book_id, chapter_id):
+	from django.http import HttpResponseForbidden
+	from django.db import transaction
+	if not is_admin(request.user):
+		return HttpResponseForbidden('Only administrators can manage chapters.')
+	book = get_object_or_404(EBook, pk=book_id)
+	chapter = get_object_or_404(book.chapters, pk=chapter_id)
+	if request.method == 'POST' and request.POST.get('confirm') == str(chapter.pk):
+		with transaction.atomic():
+			EBook.objects.select_for_update().get(pk=book.pk)
+			chapter.delete()
+		messages.success(request, 'Chapter deleted. Book files retained; dependent chapter bookmarks/completions removed.')
+		return redirect('manage_book_chapters', book_id=book.pk)
+	return render(request, 'admin/book_chapter_delete.html', {'book': book, 'chapter': chapter})
 
 
 def _log_admin_action(admin, action, target_user, details=''):
@@ -826,3 +979,59 @@ def recheck_payment(request, payment_id):
 	if url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}):
 		return redirect(next_url)
 	return redirect('manage_payments')
+
+
+@login_required
+def manage_book_commerce(request):
+    from django.db import transaction
+    from django.http import HttpResponseBadRequest, HttpResponseForbidden
+    from .models import BookEntitlement, BookOrder, BookReview
+
+    if not is_admin(request.user):
+        return HttpResponseForbidden('Only administrators can manage book commerce.')
+    if request.method == 'POST':
+        action = request.POST.get('action')
+        review_id = request.POST.get('review_id', '')
+        if action not in ('hide', 'show') or not review_id.isascii() or not review_id.isdigit() or len(review_id) > 18:
+            return HttpResponseBadRequest('Invalid review moderation request.')
+        with transaction.atomic():
+            review = get_object_or_404(BookReview.objects.select_for_update(), pk=int(review_id))
+            review.is_hidden = action == 'hide'
+            review.save(update_fields=['is_hidden', 'updated_at'])
+        return redirect('manage_book_commerce')
+
+    groups = {
+        'orders': BookOrder.objects.all(),
+        'entitlements': BookEntitlement.objects.all(),
+        'reviews': BookReview.objects.all(),
+    }
+    section = request.GET.get('section', 'orders')
+    if section not in groups:
+        return HttpResponseBadRequest('Unknown book commerce section.')
+    rows = groups[section].select_related('book', 'user')
+    if section == 'entitlements':
+        rows = rows.select_related('order')
+    term = request.GET.get('q', '').strip()
+    if term:
+        rows = rows.filter(Q(book__title__icontains=term) | Q(user__name__icontains=term) | Q(user__email__icontains=term))
+    status = request.GET.get('status', '')
+    statuses = {
+        'orders': BookOrder.Status.values,
+        'entitlements': ['active', 'revoked'],
+        'reviews': ['visible', 'hidden'],
+    }[section]
+    if status in statuses:
+        if section == 'orders':
+            rows = rows.filter(status=status)
+        elif section == 'entitlements':
+            active = Q(revoked_at__isnull=True) & (Q(source='free') | Q(order__status='paid', order__paid_at__isnull=False))
+            rows = rows.filter(active if status == 'active' else ~active)
+        else:
+            rows = rows.filter(is_hidden=status == 'hidden')
+    verified = groups['orders'].filter(status='paid', paid_at__isnull=False).exclude(provider_transaction='')
+    totals = verified.aggregate(purchases=Count('pk'), revenue=Sum('amount', default=0))
+    return render(request, 'admin/book_commerce.html', {
+        'section': section, 'q': term, 'status': status, 'statuses': statuses,
+        'totals': totals,
+        'page': Paginator(rows.order_by('-pk'), 25).get_page(request.GET.get('page')),
+    })

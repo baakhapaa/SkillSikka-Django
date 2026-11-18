@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block title %}Book chapters | SkillSikka{% endblock %}
+{% block content %}
+<div class="app-shell">{% include 'admin/bootcamp_sidebar.html' %}<main class="dashboard-main">
+<h1>Chapters: {{ book.title }}</h1><p><a href="{% url 'edit_book' book.pk %}">Book metadata</a></p>
+{% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
+<div class="table-wrap"><table><thead><tr><th>Number / ID</th><th>Title</th><th>PDF pages</th><th>Manage</th></tr></thead><tbody>
+{% for chapter in chapters %}<tr><td>{{ chapter.chapter_number }} / {{ chapter.pk }}</td><td>{{ chapter.title }}</td><td>{{ chapter.pdf_page_start|default:'—' }}–{{ chapter.pdf_page_end|default:'—' }}</td><td><a href="{% url 'edit_book_chapter' book.pk chapter.pk %}">Edit / preview</a> · <a href="{% url 'delete_book_chapter' book.pk chapter.pk %}">Delete</a>{% if book.file_format == 'pdf' %}<form method="post">{% csrf_token %}<input type="hidden" name="action" value="extract-pdf"><input type="hidden" name="chapter_id" value="{{ chapter.pk }}"><button type="submit">Extract empty range text</button></form>{% endif %}</td></tr>{% empty %}<tr><td colspan="4">No chapters. PDF books can use protected whole-file reading; scanned PDFs require a viewer or manually authored text.</td></tr>{% endfor %}
+</tbody></table></div>
+<h2>Add chapter</h2><form method="post" class="form-stack">{% csrf_token %}<input type="hidden" name="action" value="add">{{ form.as_p }}<button class="primary-button" type="submit">Add chapter</button></form>
+<h2>Reorder</h2><form method="post" class="form-stack">{% csrf_token %}<input type="hidden" name="action" value="reorder"><label for="chapter-ids">All chapter IDs, comma separated, in reading order</label><input id="chapter-ids" name="chapter_ids" required><button class="outline-button" type="submit">Save order</button></form>
+{% if book.file_format == 'epub' %}<h2>Import private EPUB</h2><p>Follows spine order. Refresh preserves chapter IDs and refuses manual edits or removed chapters. No assets or scripts are rendered.</p><form method="post">{% csrf_token %}<input type="hidden" name="action" value="import"><label for="import-mode">Import mode</label><select id="import-mode" name="mode"><option value="create">Initial import</option><option value="refresh">Explicit refresh of unmodified imported chapters</option></select><button class="outline-button" type="submit">Import and review results</button></form>{% endif %}
+</main></div>{% endblock %}

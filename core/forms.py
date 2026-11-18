@@ -11,6 +11,8 @@ from .models import (
 	CourseResource,
 	District,
 	Event,
+	EBook,
+	BookChapter,
 	Grade,
 	Lesson,
 	Municipality,
@@ -19,6 +21,39 @@ from .models import (
 	StreakSettings,
 	User,
 )
+
+
+class EBookForm(forms.ModelForm):
+	class Meta:
+		model = EBook
+		fields = ['title', 'author', 'description', 'subject', 'grade', 'category',
+			'difficulty', 'highlights', 'price', 'currency', 'cover_url', 'cover_image',
+			'file_url', 'source_file', 'is_published']
+		# ClearableFileInput tries to render .url, forbidden for private content.
+		widgets = {'source_file': forms.FileInput(), 'cover_image': forms.FileInput()}
+		help_texts = {
+			'price': 'Leave blank for unknown pricing. Zero explicitly means free; Phase 1 does not grant reader access.',
+			'highlights': 'JSON list of up to 30 short strings, for example ["Practical examples"].',
+			'file_url': 'Legacy reference only. Not returned to readers; upload a private source to replace it.',
+			'source_file': 'PDF or EPUB, up to 50 MB. Leave empty to keep the existing file.',
+		}
+
+
+class BookChapterForm(forms.ModelForm):
+	content = forms.CharField(max_length=200000, required=False, strip=False, widget=forms.Textarea,
+		help_text='Plain text only. Literal tags, code examples and whitespace are preserved; never render as HTML.')
+	class Meta:
+		model = BookChapter
+		fields = ['chapter_number', 'title', 'content', 'pdf_page_start', 'pdf_page_end']
+		help_texts = {'content': 'Plain text only. Code examples and whitespace are preserved; never render this field as HTML.',
+			'pdf_page_start': 'Optional inclusive 1-based PDF range. No automatic chapter boundaries.'}
+
+	def clean_title(self):
+		from .book_reader import plain_book_text
+		title = plain_book_text(self.cleaned_data['title'])
+		if not title.strip():
+			raise forms.ValidationError('A readable title is required.')
+		return title
 
 
 class ProvinceForm(forms.ModelForm):

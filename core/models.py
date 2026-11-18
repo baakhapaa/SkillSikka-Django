@@ -1,7 +1,14 @@
+import uuid
+
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
 from django.db import models
+from django.utils import timezone
 from django.core.validators import MinValueValidator, MaxValueValidator
+from .book_files import (
+    PrivateBookStorage, book_cover_path, book_source_path,
+    validate_book_cover, validate_book_source, validate_highlights,
+)
 
 
 class Role(models.Model):
@@ -1435,6 +1442,7 @@ class ShortCommentLike(models.Model):
 
 
 class EBook(models.Model):
+	DIFFICULTY_CHOICES = [('beginner', 'Beginner'), ('intermediate', 'Intermediate'), ('advanced', 'Advanced')]
 	title = models.CharField(max_length=200)
 	description = models.TextField(blank=True)
 	author = models.CharField(max_length=200, blank=True)
@@ -1442,17 +1450,159 @@ class EBook(models.Model):
 	grade = models.ForeignKey(Grade, on_delete=models.SET_NULL, null=True, blank=True, related_name='ebooks')
 	uploaded_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name='ebooks')
 	cover_url = models.URLField(blank=True)
-	file_url = models.URLField()
+	file_url = models.URLField(blank=True)
+	category = models.CharField(max_length=100, blank=True)
+	difficulty = models.CharField(max_length=20, choices=DIFFICULTY_CHOICES, blank=True)
+	highlights = models.JSONField(default=list, blank=True, validators=[validate_highlights])
+	# NULL is unknown/unreviewed legacy pricing, never an implicit free grant.
+	price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, validators=[MinValueValidator(0)])
+	currency = models.CharField(max_length=3, choices=[('NPR', 'NPR')], default='NPR')
+	cover_image = models.ImageField(upload_to=book_cover_path, blank=True, validators=[validate_book_cover])
+	source_file = models.FileField(storage=PrivateBookStorage(), upload_to=book_source_path, blank=True, validators=[validate_book_source])
+	file_format = models.CharField(max_length=4, choices=[('pdf', 'PDF'), ('epub', 'EPUB')], blank=True, editable=False)
 	is_published = models.BooleanField(default=False)
+	published_at = models.DateTimeField(null=True, blank=True, editable=False)
 	created_at = models.DateTimeField(auto_now_add=True)
 	updated_at = models.DateTimeField(auto_now=True)
 
 	class Meta:
 		db_table = 'ebooks'
 		ordering = ['-created_at']
+		constraints = [
+			models.CheckConstraint(condition=models.Q(price__isnull=True) | models.Q(price__gte=0), name='ebook_price_nonnegative'),
+			models.CheckConstraint(condition=models.Q(currency='NPR'), name='ebook_currency_npr'),
+		]
+
+	def clean(self):
+		super().clean()
+		from django.core.exceptions import ValidationError
+		try:
+			validate_highlights(self.highlights)
+		except ValidationError as exc:
+			raise ValidationError({'highlights': exc.messages})
+		if self.is_published and not self.source_file and not self.file_url:
+			raise ValidationError({'source_file': 'Upload a PDF/EPUB or provide a legacy file URL.'})
+
+	def save(self, *args, **kwargs):
+		from django.utils import timezone
+		from pathlib import Path
+		if self.source_file:
+			self.file_format = Path(self.source_file.name).suffix.lower().lstrip('.')
+		if self.is_published and self.published_at is None:
+			self.published_at = timezone.now()
+		elif not self.is_published:
+			self.published_at = None
+		if kwargs.get('update_fields') is not None:
+			kwargs['update_fields'] = set(kwargs['update_fields']) | {'file_format', 'published_at'}
+		super().save(*args, **kwargs)
 
 	def __str__(self):
 		return self.title
+
+
+class BookChapter(models.Model):
+	book = models.ForeignKey(EBook, on_delete=models.CASCADE, related_name='chapters')
+	chapter_number = models.PositiveIntegerField(validators=[MinValueValidator(1), MaxValueValidator(10000)])
+	title = models.CharField(max_length=200)
+	content = models.TextField(blank=True, max_length=200000)
+	# Import identity, never a public asset URL; excluded from reader responses.
+	source_reference = models.CharField(max_length=500, null=True, blank=True, default=None)
+	imported_digest = models.CharField(max_length=64, blank=True, editable=False)
+	estimated_reading_minutes = models.PositiveIntegerField(default=0, editable=False)
+	pdf_page_start = models.PositiveIntegerField(null=True, blank=True, validators=[MinValueValidator(1)])
+	pdf_page_end = models.PositiveIntegerField(null=True, blank=True, validators=[MinValueValidator(1)])
+	created_at = models.DateTimeField(auto_now_add=True)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'book_chapters'
+		ordering = ['chapter_number', 'pk']
+		constraints = [
+			models.UniqueConstraint(fields=['book', 'chapter_number'], name='unique_book_chapter_number'),
+			models.UniqueConstraint(fields=['book', 'source_reference'], name='unique_book_import_reference'),
+			models.CheckConstraint(condition=models.Q(chapter_number__gte=1), name='book_chapter_positive_number'),
+			models.CheckConstraint(condition=(models.Q(pdf_page_start__isnull=True, pdf_page_end__isnull=True) | models.Q(pdf_page_start__isnull=False, pdf_page_end__isnull=False, pdf_page_start__gte=1, pdf_page_end__gte=models.F('pdf_page_start'))), name='book_chapter_valid_pdf_range'),
+		]
+
+	def clean(self):
+		from django.core.exceptions import ValidationError
+		if bool(self.pdf_page_start) != bool(self.pdf_page_end) or (self.pdf_page_start and self.pdf_page_end < self.pdf_page_start):
+			raise ValidationError('Provide a valid inclusive PDF page range.')
+		if self.pdf_page_start and self.book.file_format != 'pdf':
+			raise ValidationError('Page ranges require a PDF book.')
+		if self.pdf_page_start:
+			from .book_reader import validate_pdf_range
+			validate_pdf_range(self.book, self.pdf_page_start, self.pdf_page_end)
+
+	def save(self, *args, **kwargs):
+		from .book_reader import plain_book_text, reading_minutes
+		self.content = plain_book_text(self.content)
+		self.title = plain_book_text(self.title)
+		self.estimated_reading_minutes = reading_minutes(self.content)
+		if kwargs.get('update_fields') is not None:
+			kwargs['update_fields'] = set(kwargs['update_fields']) | {'content', 'title', 'estimated_reading_minutes', 'updated_at'}
+		super().save(*args, **kwargs)
+
+
+	def delete(self, *args, **kwargs):
+		from django.db import transaction
+		with transaction.atomic():
+			EBook.objects.select_for_update().get(pk=self.book_id)
+			BookReadingProgress.objects.filter(last_chapter=self).update(last_chapter=None, position={})
+			return super().delete(*args, **kwargs)
+
+
+class BookReadingProgress(models.Model):
+	user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='book_reading_progress')
+	book = models.ForeignKey(EBook, on_delete=models.CASCADE, related_name='reading_progress')
+	last_chapter = models.ForeignKey(BookChapter, on_delete=models.SET_NULL, null=True, blank=True)
+	position = models.JSONField(default=dict, blank=True)
+	last_read_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'book_reading_progress'
+		constraints = [models.UniqueConstraint(fields=['user', 'book'], name='unique_user_book_progress')]
+
+
+class BookChapterCompletion(models.Model):
+	progress = models.ForeignKey(BookReadingProgress, on_delete=models.CASCADE, related_name='completions')
+	chapter = models.ForeignKey(BookChapter, on_delete=models.CASCADE, related_name='completions')
+	completed_at = models.DateTimeField(auto_now_add=True)
+
+	class Meta:
+		db_table = 'book_chapter_completions'
+		constraints = [models.UniqueConstraint(fields=['progress', 'chapter'], name='unique_book_chapter_completion')]
+
+
+class BookBookmark(models.Model):
+	user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='book_bookmarks')
+	book = models.ForeignKey(EBook, on_delete=models.CASCADE, related_name='bookmarks')
+	chapter = models.ForeignKey(BookChapter, on_delete=models.CASCADE, related_name='bookmarks')
+	position = models.JSONField(default=dict, blank=True)
+	anchor = models.CharField(max_length=120, blank=True)
+	note = models.TextField(blank=True, max_length=2000)
+	locator_key = models.CharField(max_length=64, editable=False)
+	created_at = models.DateTimeField(auto_now_add=True)
+
+	class Meta:
+		db_table = 'book_bookmarks'
+		ordering = ['-created_at', '-pk']
+		constraints = [models.UniqueConstraint(fields=['user', 'chapter', 'locator_key'], name='unique_user_chapter_bookmark')]
+
+
+class ReaderSettings(models.Model):
+	user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='reader_settings')
+	font_family = models.CharField(max_length=20, choices=[('system', 'System'), ('serif', 'Serif'), ('sans-serif', 'Sans serif'), ('monospace', 'Monospace')], default='system')
+	font_size = models.PositiveSmallIntegerField(default=18, validators=[MinValueValidator(12), MaxValueValidator(32)])
+	line_spacing = models.DecimalField(max_digits=2, decimal_places=1, default='1.5', validators=[MinValueValidator(1), MaxValueValidator(2.5)])
+	theme = models.CharField(max_length=5, choices=[('light', 'Light'), ('sepia', 'Sepia'), ('dark', 'Dark')], default='light')
+
+	class Meta:
+		db_table = 'reader_settings'
+		constraints = [
+			models.CheckConstraint(condition=models.Q(font_size__gte=12, font_size__lte=32), name='reader_font_size_range'),
+			models.CheckConstraint(condition=models.Q(line_spacing__gte=1, line_spacing__lte=2.5), name='reader_spacing_range'),
+		]
 
 
 class Notification(models.Model):
@@ -1964,7 +2114,6 @@ class DiscussionLike(models.Model):
         db_table = 'discussion_likes'
         constraints = [models.UniqueConstraint(fields=['discussion', 'user'], name='unique_discussion_like')]
 
-
 class SearchQuery(models.Model):
     """One search a user ran, kept to rank Trending Searches.
 
@@ -1982,3 +2131,110 @@ class SearchQuery(models.Model):
     class Meta:
         db_table = 'search_queries'
         ordering = ['-created_at', '-pk']
+
+
+class SavedBook(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    book = models.ForeignKey(EBook, on_delete=models.CASCADE, related_name='saves')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['user', 'book'], name='unique_saved_book')]
+
+
+class BookReview(models.Model):
+    book = models.ForeignKey(EBook, on_delete=models.CASCADE, related_name='reviews')
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    rating = models.PositiveSmallIntegerField()
+    review = models.TextField(max_length=2000, blank=True)
+    is_hidden = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'book'], name='unique_book_review'),
+            models.CheckConstraint(condition=models.Q(rating__range=(1, 5)), name='book_review_rating_range'),
+        ]
+        indexes = [models.Index(fields=['book', 'is_hidden'])]
+
+
+class BookOrder(models.Model):
+    class Status(models.TextChoices):
+        PENDING = 'pending'
+        PROCESSING = 'processing'
+        PAID = 'paid'
+        FAILED = 'failed'
+        CANCELLED = 'cancelled'
+        REFUNDED = 'refunded'
+
+    user = models.ForeignKey(User, on_delete=models.PROTECT)
+    book = models.ForeignKey(EBook, on_delete=models.PROTECT, related_name='orders')
+    reference = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    original_price = models.DecimalField(max_digits=10, decimal_places=2)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    currency = models.CharField(max_length=3, default='NPR')
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    provider = models.CharField(max_length=40, blank=True)
+    provider_reference = models.CharField(max_length=128, null=True, blank=True)
+    provider_transaction = models.CharField(max_length=128, null=True, blank=True)
+    active_slot = models.GeneratedField(
+        expression=models.Case(models.When(status__in=['pending', 'processing', 'paid'], then=models.Value(True))),
+        output_field=models.BooleanField(),
+        db_persist=True,
+        null=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        snapshot_fields = {'user_id', 'book_id', 'reference', 'original_price', 'amount', 'currency'}
+        update_fields = kwargs.get('update_fields')
+        if update_fields is not None:
+            names = {'user': 'user_id', 'book': 'book_id'}
+            snapshot_fields &= {names.get(field, field) for field in update_fields}
+        if self.pk is not None and snapshot_fields:
+            original = type(self).objects.filter(pk=self.pk).values(*snapshot_fields).first()
+            if original and any(getattr(self, field) != value for field, value in original.items()):
+                raise ValidationError('Book order identity and price snapshots are immutable.')
+        super().save(*args, **kwargs)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=models.Q(amount__gt=0, original_price__gt=0, currency='NPR'), name='book_order_valid_amount'),
+            models.UniqueConstraint(fields=['user', 'book', 'active_slot'], name='unique_active_book_order'),
+            models.UniqueConstraint(fields=['provider', 'provider_reference'], name='unique_book_provider_reference'),
+            models.UniqueConstraint(fields=['provider', 'provider_transaction'], name='unique_book_provider_transaction'),
+            models.CheckConstraint(
+                condition=~models.Q(status__in=['paid', 'refunded']) | (
+                    models.Q(paid_at__isnull=False, provider_reference__isnull=False, provider_transaction__isnull=False)
+                    & ~models.Q(provider='') & ~models.Q(provider_reference='') & ~models.Q(provider_transaction='')
+                ),
+                name='book_order_paid_evidence',
+            ),
+        ]
+        indexes = [models.Index(fields=['user', '-created_at'])]
+
+
+class BookEntitlement(models.Model):
+    class Source(models.TextChoices):
+        FREE = 'free'
+        PURCHASE = 'purchase'
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    book = models.ForeignKey(EBook, on_delete=models.PROTECT, related_name='entitlements')
+    order = models.OneToOneField(BookOrder, on_delete=models.PROTECT, null=True, blank=True)
+    source = models.CharField(max_length=8, choices=Source.choices)
+    granted_at = models.DateTimeField(default=timezone.now)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'book', 'source'], condition=models.Q(source='free'), name='unique_free_book_entitlement'),
+            models.UniqueConstraint(fields=['order'], condition=models.Q(order__isnull=False), name='unique_order_book_entitlement'),
+            models.CheckConstraint(condition=models.Q(source='free', order__isnull=True) | models.Q(source='purchase', order__isnull=False), name='book_entitlement_source_order'),
+        ]
+        indexes = [models.Index(fields=['user', 'revoked_at'])]
