@@ -99,6 +99,8 @@ from .serializers import (
 	HomeCourseSerializer,
 	CourseReviewSerializer,
 	PublicInstructorSerializer,
+	PublicInstructorDetailSerializer,
+	InstructorReviewSerializer,
 	DistrictSerializer,
 	EBookSerializer,
 	EnrollCourseSerializer,
@@ -345,6 +347,10 @@ def _current_user_payload(request, user):
 			if instructor_profile else None
 		),
 		'experience_years': experience_years,
+		'bio': (
+			instructor_profile.bio or None
+			if instructor_profile else None
+		),
 
 		'profile_photo_url': (
 			request.build_absolute_uri(user.profile_photo_src)
@@ -1071,19 +1077,41 @@ class TopicDetailAPIView(
 # Course Management
 # =========================================================
 
-def _public_instructors():
+def _with_instructor_stats(users):
 	public_courses = Course.objects.filter(instructor_id=OuterRef('pk'), is_published=True)
 	students = Enrollment.objects.filter(
 		course__instructor_id=OuterRef('pk'), course__is_published=True,
 		status__in=['active', 'completed'],
 	).order_by().values('course__instructor_id').annotate(value=Count('student_id', distinct=True))
-	return with_instructor_review_stats(User.objects.filter(
-		role__name='instructor', verification_status='verified', is_active=True,
-	)).select_related('instructor_profile').filter(Exists(public_courses)).annotate(
-		total_courses=Subquery(public_courses.order_by().values('instructor_id')
-			.annotate(value=Count('pk')).values('value')),
+	return with_instructor_review_stats(users).select_related('instructor_profile').annotate(
+		total_courses=Coalesce(Subquery(public_courses.order_by().values('instructor_id')
+			.annotate(value=Count('pk')).values('value')), 0),
 		total_students=Coalesce(Subquery(students.values('value')), 0),
 	)
+
+
+def _public_instructors():
+	return _with_instructor_stats(User.objects.filter(
+		role__name='instructor', verification_status='verified', is_active=True,
+	)).filter(Exists(Course.objects.filter(instructor_id=OuterRef('pk'), is_published=True)))
+
+
+def _profile_instructors(viewer, instructor_id):
+	"""Public instructors, plus the viewer's own profile while it is not public yet."""
+	if viewer.pk == instructor_id and _is_instructor(viewer):
+		return _with_instructor_stats(User.objects.filter(pk=viewer.pk))
+	return _public_instructors()
+
+
+def _instructor_reviews(instructor, viewer):
+	# Rating-only reviews have nothing to show on a review card. Other viewers
+	# only see reviews of courses they can open.
+	reviews = CourseReview.objects.filter(course__instructor=instructor).exclude(
+		review='',
+	).select_related('student', 'course')
+	if instructor.pk != viewer.pk:
+		reviews = reviews.filter(course__is_published=True)
+	return reviews
 
 
 def _ranked_public_instructors():
@@ -1151,24 +1179,60 @@ class TopInstructorsAPIView(generics.ListAPIView):
 class PublicInstructorDetailAPIView(generics.RetrieveAPIView):
 	authentication_classes = [JWTAuthentication, SessionAuthentication]
 	permission_classes = [IsAuthenticated]
-	serializer_class = PublicInstructorSerializer
+	serializer_class = PublicInstructorDetailSerializer
 	lookup_url_kwarg = 'instructor_id'
+	POPULAR_LIMIT = 5
+	REVIEW_LIMIT = 5
 
 	def get_queryset(self):
-		return _public_instructors().prefetch_related(Prefetch(
-			'courses', to_attr='public_courses',
-			queryset=with_bootcamp_data(Course.objects.filter(is_published=True).with_review_stats().with_access(self.request.user))
+		user = self.request.user
+		instructor_id = self.kwargs['instructor_id']
+		# The owner also sees their drafts, so the Edit buttons cover every course.
+		courses = Course.objects.all() if user.pk == instructor_id else Course.objects.filter(is_published=True)
+		return _profile_instructors(user, instructor_id).prefetch_related(Prefetch(
+			'courses', to_attr='profile_courses',
+			queryset=with_bootcamp_data(courses.with_review_stats().with_access(user))
 			.select_related('instructor', 'subject', 'grade').order_by('-created_at', 'pk'),
 		))
 
 	def retrieve(self, request, *args, **kwargs):
 		instructor = self.get_object()
+		context = self.get_serializer_context()
+		courses = instructor.profile_courses
 		data = self.get_serializer(instructor).data
-		data['courses'] = CourseSerializer(instructor.public_courses, many=True, context=self.get_serializer_context()).data
+		data['courses'] = CourseSerializer(courses, many=True, context=context).data
+		cards = {card['id']: card for card in data['courses']}
+		published = [course for course in courses if course.is_published]
+		data['premium_courses'] = [cards[course.pk] for course in published if course.is_paid]
+		# Most students first; ties fall back to rating, then the newest course.
+		popular = sorted(published, key=lambda course: (
+			-course.students_enrolled,
+			course.average_rating is None, -(course.average_rating or 0),
+			-course.review_count,
+		))
+		data['popular_courses'] = [cards[course.pk] for course in popular[:self.POPULAR_LIMIT]]
+		data['recent_reviews'] = InstructorReviewSerializer(
+			_instructor_reviews(instructor, request.user)[:self.REVIEW_LIMIT], many=True, context=context,
+		).data
 		return Response(data)
 
 
 from .course_pagination import CoursePagination
+
+
+class InstructorReviewListAPIView(generics.ListAPIView):
+	"""Every written review across an instructor's courses, newest first."""
+	authentication_classes = [JWTAuthentication, SessionAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = InstructorReviewSerializer
+	pagination_class = CoursePagination
+
+	def get_queryset(self):
+		instructor_id = self.kwargs['instructor_id']
+		instructor = _profile_instructors(self.request.user, instructor_id).filter(pk=instructor_id).first()
+		if instructor is None:
+			raise NotFound('Instructor not found.')
+		return _instructor_reviews(instructor, self.request.user)
 
 
 class CourseListCreateAPIView(generics.ListCreateAPIView):

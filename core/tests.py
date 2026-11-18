@@ -1390,7 +1390,8 @@ class PublicInstructorTests(TestCase):
 
     def test_privacy_and_reuse_course_serializer(self):
         data = self.detail().data
-        self.assertEqual(set(data), self.fields | {'courses'})
+        self.assertEqual(set(data), self.fields | {'bio', 'is_me', 'courses', 'premium_courses',
+                                                   'popular_courses', 'recent_reviews'})
         self.assertEqual(set(self.client.get(self.url).data[0]), self.fields)
         self.assertEqual(data['qualification'], 'MSc')
         self.assertEqual(data['subject_expertise'], 'Python')
@@ -1403,7 +1404,7 @@ class PublicInstructorTests(TestCase):
     def test_query_counts_do_not_grow_with_instructors_or_courses(self):
         with self.assertNumQueries(1):
             self.assertEqual(self.client.get(self.url).status_code, 200)
-        with self.assertNumQueries(2):
+        with self.assertNumQueries(3):  # Instructor, courses, recent reviews.
             self.assertEqual(self.detail().status_code, 200)
         for index in range(5):
             teacher = self.user(f'Extra{index}')
@@ -1411,7 +1412,7 @@ class PublicInstructorTests(TestCase):
             self.course_for(self.teacher)
         with self.assertNumQueries(1):
             self.assertEqual(len(self.client.get(self.url).data), 6)
-        with self.assertNumQueries(2):
+        with self.assertNumQueries(3):
             self.assertEqual(len(self.detail().data['courses']), 6)
 
     def test_public_photos_use_canonical_storage_resolution(self):

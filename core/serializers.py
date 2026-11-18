@@ -634,6 +634,9 @@ class CurrentUserUpdateSerializer(serializers.Serializer):
 	location = serializers.CharField(
 		max_length=255, required=False, allow_blank=True
 	)
+	bio = serializers.CharField(
+		max_length=1000, required=False, allow_blank=True
+	)
 
 	profile_photo = serializers.FileField(required=False, write_only=True)
 	student_id_card = serializers.FileField(required=False, write_only=True)
@@ -645,7 +648,7 @@ class CurrentUserUpdateSerializer(serializers.Serializer):
 	)
 
 	STUDENT_ONLY_FIELDS = ('student_id_card',)
-	INSTRUCTOR_ONLY_FIELDS = ('cv_resume', 'certificates_and_recommendations')
+	INSTRUCTOR_ONLY_FIELDS = ('bio', 'cv_resume', 'certificates_and_recommendations')
 
 	def validate_profile_photo(self, uploaded_file):
 		return validate_profile_photo_file(uploaded_file)
@@ -725,6 +728,14 @@ class CurrentUserUpdateSerializer(serializers.Serializer):
 				user, 'student_id_card', data['student_id_card']
 			)
 			profile.save(update_fields=['student_id_card_document'])
+
+		if 'bio' in data:
+			try:
+				profile = user.instructor_profile
+			except InstructorProfile.DoesNotExist:
+				profile = InstructorProfile.objects.create(user=user)
+			profile.bio = data['bio']
+			profile.save(update_fields=['bio'])
 
 		if 'cv_resume' in data:
 			profile = user.instructor_profile
@@ -1126,6 +1137,38 @@ class PublicInstructorSerializer(serializers.ModelSerializer):
 		fields = ['id', 'name', 'profile_photo_url', 'qualification', 'subject_expertise',
 			'average_rating', 'review_count', 'total_students', 'total_courses']
 		read_only_fields = fields
+
+
+class PublicInstructorDetailSerializer(PublicInstructorSerializer):
+	"""The Instructor Profile screen header; the course and review lists are added by the view."""
+	bio = serializers.SerializerMethodField()
+	is_me = serializers.SerializerMethodField()
+
+	@extend_schema_field(serializers.CharField())
+	def get_bio(self, obj):
+		return getattr(getattr(obj, 'instructor_profile', None), 'bio', '')
+
+	@extend_schema_field(serializers.BooleanField())
+	def get_is_me(self, obj):
+		request = self.context.get('request')
+		return bool(request and obj.pk == request.user.pk)
+
+	class Meta(PublicInstructorSerializer.Meta):
+		fields = PublicInstructorSerializer.Meta.fields + ['bio', 'is_me']
+		read_only_fields = fields
+
+
+class InstructorReviewSerializer(CourseReviewSerializer):
+	"""A review on any of an instructor's courses, naming the course it is about."""
+	course = serializers.SerializerMethodField()
+
+	class Meta(CourseReviewSerializer.Meta):
+		fields = CourseReviewSerializer.Meta.fields + ['course']
+		read_only_fields = fields
+
+	@extend_schema_field({'type': 'object', 'properties': {'id': {'type': 'integer'}, 'title': {'type': 'string'}}, 'required': ['id', 'title']})
+	def get_course(self, obj):
+		return {'id': obj.course_id, 'title': obj.course.title}
 
 
 def accessible_course_ids(context):
