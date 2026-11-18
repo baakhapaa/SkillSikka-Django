@@ -30,6 +30,7 @@ MAX_LIMIT = 50
 POPULAR_LIMIT = 10
 CREATOR_LIMIT = 10
 TRENDING_LIMIT = 6
+RECENT_LIMIT = 10
 TRENDING_DAYS = 7
 POPULAR_DAYS = 30
 # A term only trends once this many different people searched it, so one
@@ -108,6 +109,43 @@ def trending_searches(now):
 	return labels
 
 
+def recent_searches(user):
+	"""This user's last distinct searches, newest first, in their own spelling."""
+	recent, seen = [], set()
+	# Repeats are spaced at least RECORD_DEDUPE_MINUTES apart, so a bounded
+	# scan of the newest rows is enough to find RECENT_LIMIT distinct ones.
+	for query, normalized in SearchQuery.objects.filter(user=user).order_by('-created_at', '-pk').values_list(
+		'query', 'normalized',
+	)[:RECENT_LIMIT * 20]:
+		if normalized not in seen:
+			seen.add(normalized)
+			recent.append(query)
+			if len(recent) == RECENT_LIMIT:
+				break
+	return recent
+
+
+class RecentSearchesAPIView(APIView):
+	"""The signed-in user's own search history: list, remove one, or clear."""
+
+	authentication_classes = [JWTAuthentication, SessionAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	def get(self, request):
+		return Response({'recent_searches': recent_searches(request.user)})
+
+	def delete(self, request):
+		# ?q= removes every spelling of that one search; no q clears them all.
+		query = request.query_params.get('q')
+		rows = SearchQuery.objects.filter(user=request.user)
+		if query is not None:
+			if not query.strip():
+				raise ValidationError({'q': 'Give the search to remove, or leave q out to clear all.'})
+			rows = rows.filter(normalized=normalize_query(query))
+		rows.delete()
+		return Response({'recent_searches': recent_searches(request.user)})
+
+
 class SearchDiscoverAPIView(APIView):
 	"""What the Search screen shows before anything is typed."""
 
@@ -128,6 +166,7 @@ class SearchDiscoverAPIView(APIView):
 			'-recent_students', F('average_rating').desc(nulls_last=True), '-review_count', '-total_students', 'pk',
 		)[:CREATOR_LIMIT]
 		return Response({
+			'recent_searches': recent_searches(request.user),
 			'trending_searches': trending_searches(now),
 			'popular_courses': _course_cards(request, popular),
 			'trending_creators': PublicInstructorSerializer(creators, many=True, context={'request': request}).data,

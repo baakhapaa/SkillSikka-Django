@@ -98,6 +98,45 @@ class SearchDiscoverTests(SearchSetup):
         self.assertNotIn('Coding', trending)
 
 
+class RecentSearchTests(SearchSetup):
+    url = '/api/v1/search/recent/'
+
+    def searched(self, user, query, minutes_ago):
+        row = SearchQuery.objects.create(user=user, query=query, normalized=' '.join(query.lower().split()), results_count=0)
+        SearchQuery.objects.filter(pk=row.pk).update(created_at=timezone.now() - timedelta(minutes=minutes_ago))
+
+    def test_newest_first_distinct_own_and_in_discover(self):
+        self.searched(self.student, 'react', 30)
+        self.searched(self.student, 'Python', 20)
+        self.searched(self.student, 'React', 10)          # same search again, new spelling
+        self.searched(self.make_student(), 'secret', 5)   # someone else's
+        expected = ['React', 'Python']
+        self.assertEqual(self.client.get(self.url).data['recent_searches'], expected)
+        self.assertEqual(self.discover()['recent_searches'], expected)
+
+    def test_a_search_shows_up_even_without_results_and_list_is_capped(self):
+        self.search(q='zzqx nothing')
+        self.assertEqual(self.client.get(self.url).data['recent_searches'], ['zzqx nothing'])
+        for i in range(12):
+            self.searched(self.student, f'term {i}', 100 - i)
+        self.assertEqual(len(self.client.get(self.url).data['recent_searches']), 10)
+
+    def test_remove_one_or_clear_all_only_touches_own_history(self):
+        other = self.make_student()
+        self.searched(self.student, 'React', 10)
+        self.searched(self.student, 'react ', 30)
+        self.searched(self.student, 'Python', 20)
+        self.searched(other, 'React', 5)
+        response = self.client.delete(self.url + '?q=REACT')
+        self.assertEqual((response.status_code, response.data['recent_searches']), (200, ['Python']))
+        self.assertEqual(self.client.delete(self.url + '?q=%20').status_code, 400)
+        self.assertEqual(self.client.delete(self.url).data['recent_searches'], [])
+        self.assertFalse(SearchQuery.objects.filter(user=self.student).exists())
+        self.assertEqual(SearchQuery.objects.filter(user=other).count(), 1)
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.get(self.url).status_code, 401)
+
+
 class SearchResultTests(SearchSetup):
     def test_courses_creators_and_shorts(self):
         Short.objects.create(title='Flexbox in 60s', caption='Layouts #css', instructor=self.alex,

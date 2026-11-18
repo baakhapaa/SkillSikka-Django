@@ -6,6 +6,7 @@ Two calls power the Search screen. Both need a signed-in user (any role).
 
 ```json
 {
+  "recent_searches": ["React", "Python"],
   "trending_searches": ["Python", "CSS Grid", "React Hooks"],
   "popular_courses": [ /* course cards */ ],
   "trending_creators": [ /* instructor cards */ ]
@@ -14,6 +15,7 @@ Two calls power the Search screen. Both need a signed-in user (any role).
 
 | Section | What it is |
 |---|---|
+| `recent_searches` | This user's own last 10 different searches, newest first, as they typed them. Empty for a new user, so hide the section. |
 | `trending_searches` | Up to 6 strings for the chips. Tap a chip to search that text. |
 | `popular_courses` | Up to 10 published courses: most new students in the last 30 days first, then by rating. The same card as Home (`title`, `thumbnail_url`, `average_rating`, `level`, `is_enrolled`, …). |
 | `trending_creators` | Up to 10 verified instructors: most new students in the last 30 days first, then by rating. The same shape as `GET /instructors/top/` (`id`, `name`, `profile_photo_url`, `qualification`, `total_students`, …). Open a profile with `GET /instructors/{id}/`. |
@@ -28,6 +30,20 @@ How Trending Searches are chosen:
   empty.
 
 There is no `@handle` on users. Show `name` under the avatar.
+
+## Recent searches: `/api/v1/search/recent/`
+
+| Request | Effect |
+|---|---|
+| `GET` | `{"recent_searches": [...]}`, the same list as in discover |
+| `DELETE ?q=React` | Removes that search (any capitalization) for this user; the ✕ on a row |
+| `DELETE` (no `q`) | Clears this user's whole history; "Clear all" |
+
+Both `DELETE` calls return the updated `{"recent_searches": [...]}`. An empty
+`q` returns `400`. Only the signed-in user's own history is ever read or
+removed. A search lands in the list as soon as its first page loads, even if
+it found nothing. Clearing history also removes those searches from the
+Trending counts.
 
 ## After typing: `GET /api/v1/search/?q=<text>`
 
