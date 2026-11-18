@@ -2625,7 +2625,7 @@ class ShortSerializer(serializers.ModelSerializer):
 		request = self.context.get('request')
 		if not request or not request.user.is_authenticated:
 			return False
-		if getattr(getattr(request.user, 'role', None), 'name', '') != 'student':
+		if getattr(getattr(request.user, 'role', None), 'name', '') not in ('student', 'instructor'):
 			return False
 		return bool(getattr(obj, '_is_saved', False))
 

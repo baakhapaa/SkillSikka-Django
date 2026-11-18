@@ -3856,8 +3856,9 @@ class StudentShortBookmarkAPIView(APIView):
 
 	def initial(self, request, *args, **kwargs):
 		super().initial(request, *args, **kwargs)
-		if not _is_student(request.user):
-			raise PermissionDenied('Only students can save Shorts.')
+		# Saves are a private bookmark, so instructors may keep any Short too.
+		if not (_is_student(request.user) or _is_instructor(request.user)):
+			raise PermissionDenied('Only students and instructors can save Shorts.')
 
 	@transaction.atomic
 	def post(self, request, short_id):
@@ -3888,8 +3889,8 @@ class SavedShortsListAPIView(generics.ListAPIView):
 
 	def initial(self, request, *args, **kwargs):
 		super().initial(request, *args, **kwargs)
-		if not _is_student(request.user):
-			raise PermissionDenied('Only students can retrieve saved Shorts.')
+		if not (_is_student(request.user) or _is_instructor(request.user)):
+			raise PermissionDenied('Only students and instructors can retrieve saved Shorts.')
 
 	def get_queryset(self):
 		return _shorts_with_saved_state(self.request.user).filter(

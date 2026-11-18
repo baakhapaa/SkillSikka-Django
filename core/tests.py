@@ -2322,7 +2322,7 @@ class ShortBookmarkTests(TestCase):
         self.assertEqual(self.client.post(self.save_url).status_code, 401)
         self.assertEqual(self.client.delete(self.save_url).status_code, 401)
         self.assertEqual(self.client.get(self.saved_url).status_code, 401)
-        for role in ('instructor','super_admin','local_authority','ministry'):
+        for role in ('super_admin','local_authority','ministry'):
             user = User.objects.create_user(email=role+'-bookmark-denied@example.com', name='Denied', role=Role.objects.get(name=role))
             self.client.force_authenticate(user)
             with self.subTest(role=role):
@@ -2369,9 +2369,31 @@ class ShortBookmarkTests(TestCase):
         self.short._is_saved = True
         self.assertFalse(ShortSerializer(self.short).data['is_saved'])
         from django.contrib.auth.models import AnonymousUser
-        for user in (AnonymousUser(), self.instructor):
+        admin = User.objects.create_user(email='saved-admin@example.com', name='Admin', role=Role.objects.get(name='super_admin'))
+        for user in (AnonymousUser(), admin):
             serializer = ShortSerializer(self.short, context={'request':SimpleNamespace(user=user)})
             self.assertFalse(serializer.data['is_saved'])
+        serializer = ShortSerializer(self.short, context={'request':SimpleNamespace(user=self.instructor)})
+        self.assertTrue(serializer.data['is_saved'])
+
+    def test_instructors_save_own_and_other_shorts_privately(self):
+        other_instructor = User.objects.create_user(email='saver-instructor@example.com', name='Saver',
+            role=Role.objects.get(name='instructor'), verification_status='verified')
+        own = Short.objects.create(title='Mine', instructor=other_instructor, video_url='https://example.com/m', is_published=True)
+        self.client.force_authenticate(other_instructor)
+        self.assertEqual(self.client.post(self.save_url).status_code, 201)
+        self.assertEqual(self.client.post(f'/api/v1/student/shorts/{own.pk}/save/').status_code, 201)
+        saved = self.client.get(self.saved_url).data
+        self.assertEqual({row['id'] for row in saved}, {self.short.pk, own.pk})
+        self.assertTrue(all(row['is_saved'] for row in saved))
+        self.assertTrue(self.client.get(self.detail_url).data['is_saved'])
+        # Private: the student who has not saved it still sees is_saved false.
+        self.client.force_authenticate(self.student)
+        self.assertFalse(self.client.get(self.detail_url).data['is_saved'])
+        self.assertEqual(self.client.get(self.saved_url).data, [])
+        self.client.force_authenticate(other_instructor)
+        self.assertEqual(self.client.delete(self.save_url).status_code, 200)
+        self.assertEqual([row['id'] for row in self.client.get(self.saved_url).data], [own.pk])
 
     def test_existing_views_likes_comments_and_is_liked_unchanged(self):
         self.client.post(self.save_url)

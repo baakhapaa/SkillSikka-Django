@@ -77,6 +77,21 @@ get `403`. The same rule applies to liking the Short itself
 instructor. A `parent` from a
 different Short returns `400`. The Short's `comment_count` includes replies.
 
+## Save (bookmark)
+
+A private bookmark, not a download. **Students and instructors** can save any
+published Short, the instructor's own included.
+
+| Action | Request |
+|---|---|
+| Save | `POST /api/v1/student/shorts/<id>/save/` → `201` (`200` if it was already saved) |
+| Unsave | `DELETE /api/v1/student/shorts/<id>/save/` → `200` |
+| My saved Shorts, newest saved first | `GET /api/v1/student/shorts/saved/` |
+
+`is_saved` on every Short reflects the signed-in student's or instructor's own
+saves. Nobody else can see them, and there is no public save count. Admins and
+other roles get `403`.
+
 ## Share
 
 No backend call. Use the platform share sheet with the video link.
