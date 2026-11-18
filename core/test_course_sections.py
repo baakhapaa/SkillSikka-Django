@@ -1,3 +1,4 @@
+from datetime import timedelta
 from importlib import import_module
 from io import StringIO
 
@@ -69,6 +70,8 @@ class CourseSectionTests(TestCase):
 
     def test_ordering(self):
         second = self.course_for('Z course', is_paid=True, price='99.00')
+        # Back-to-back creates can share a timestamp; make "second" the newer one.
+        Course.objects.filter(pk=second.pk).update(created_at=self.course.created_at + timedelta(seconds=1))
         CourseReview.objects.create(course=self.course, student=self.student, rating=1)
         CourseReview.objects.create(course=second, student=self.student, rating=5)
         for field in ['created_at', 'title', 'average_rating', 'price']:

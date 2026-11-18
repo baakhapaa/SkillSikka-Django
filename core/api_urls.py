@@ -12,6 +12,8 @@ from .advertisement_views import AdvertisementListAPIView, AdvertisementAdminLis
 from rest_framework_simplejwt.views import TokenRefreshView
 from .signup_views import VerifyInstructorSignupOTPAPIView, ResendInstructorSignupOTPAPIView, VerifyStudentSignupOTPAPIView, ResendStudentSignupOTPAPIView
 from .learning_interest_views import LearningInterestListAPIView, MyLearningInterestsAPIView, PremiumCategoryListAPIView
+from .instructor_analytics import CourseInstructorAnalyticsAPIView, LessonWatchProgressAPIView
+from .search_views import RecentSearchesAPIView, SearchAPIView, SearchDiscoverAPIView
 
 from .analytics_views import (
 	TeacherChallengeAnalyticsAPIView,
@@ -114,6 +116,8 @@ from .api_views import (
 	RecordShortViewAPIView,
 	ShortCommentDetailAPIView,
 	ShortCommentListCreateAPIView,
+	ShortCommentRepliesAPIView,
+	ToggleShortCommentLikeAPIView,
 	ShortDetailAPIView,
 	ShortListCreateAPIView,
 	StudentShortBookmarkAPIView,
@@ -441,6 +445,26 @@ urlpatterns = [
 		CourseProgressAPIView.as_view(),
 		name='api-course-progress'
 	),
+
+	path(
+		'lessons/<int:lesson_id>/progress/',
+		LessonWatchProgressAPIView.as_view(),
+		name='api-lesson-watch-progress'
+	),
+
+	path(
+		'courses/<int:course_id>/instructor-analytics/',
+		CourseInstructorAnalyticsAPIView.as_view(),
+		name='api-course-instructor-analytics'
+	),
+
+	# =========================
+	# Search
+	# =========================
+
+	path('search/', SearchAPIView.as_view(), name='api-search'),
+	path('search/discover/', SearchDiscoverAPIView.as_view(), name='api-search-discover'),
+	path('search/recent/', RecentSearchesAPIView.as_view(), name='api-search-recent'),
 
 	# =========================
 	# Payment
@@ -782,6 +806,18 @@ urlpatterns = [
 		'shorts/comments/<int:pk>/',
 		ShortCommentDetailAPIView.as_view(),
 		name='short-comment-detail',
+	),
+
+	path(
+		'shorts/comments/<int:pk>/replies/',
+		ShortCommentRepliesAPIView.as_view(),
+		name='short-comment-replies',
+	),
+
+	path(
+		'shorts/comments/<int:pk>/like/',
+		ToggleShortCommentLikeAPIView.as_view(),
+		name='short-comment-like',
 	),
 
 	# =========================

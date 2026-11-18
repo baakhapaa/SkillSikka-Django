@@ -279,7 +279,10 @@ class CourseDiscussionListAPIView(CourseEndpointMixin, generics.ListCreateAPIVie
         ordering = self.request.query_params.get('ordering', '-created_at')
         if ordering not in ['-created_at', 'created_at', '-likes_count']:
             ordering = '-created_at'
-        return discussion_with_replies(self.request, course).filter(parent=None).order_by(ordering, 'pk')
+        # The tiebreak follows the direction, so newest-first stays newest-first
+        # for threads posted in the same instant.
+        tiebreak = 'pk' if ordering == 'created_at' else '-pk'
+        return discussion_with_replies(self.request, course).filter(parent=None).order_by(ordering, tiebreak)
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):

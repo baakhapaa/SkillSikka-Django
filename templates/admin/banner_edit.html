@@ -1,0 +1,37 @@
+{% extends 'base.html' %}
+{% block title %}Edit banner | SkillSikka{% endblock %}
+{% block content %}
+{% include 'admin/_banner_styles.html' %}
+<div class="app-shell">
+    <aside class="sidebar">
+        <div class="brand"><span class="brand-mark small">SS</span><strong>SkillSikka</strong></div>
+        <p class="sidebar-label">Workspace</p>
+        <nav>
+            <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
+            <a class="nav-item" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
+            <a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
+            {% include 'admin/course_navigation.html' %}
+            <a class="nav-item" href="{% url 'manage_events' %}"><span>◷</span> Events</a>
+            <a class="nav-item active" href="{% url 'manage_banners' %}"><span>▭</span> Banners</a>
+            <a class="nav-item" href="{% url 'manage_payments' %}"><span>₨</span> Payments</a>
+            <a class="nav-item" href="{% url 'manage_streak_settings' %}"><span>◈</span> Streak settings</a>
+            <a class="nav-item" href="{% url 'manage_certificate_criteria' %}"><span>⚑</span> Certificate criteria</a>
+            <a class="nav-item" href="{% url 'manage_users' %}"><span>◎</span> Users</a>
+        </nav>
+        {% include 'admin/sidebar_footer.html' %}
+    </aside>
+    <main class="dashboard-main">
+        <header class="topbar"><div><p class="eyebrow">Banners</p><h1>Edit banner</h1></div><div class="top-actions"><a class="outline-button" href="{% url 'manage_banners' %}">Back to banners</a></div></header>
+        {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
+
+        <article class="management-card">
+            <div class="section-heading"><div><p class="eyebrow">{{ status|capfirst }}</p><h2>{{ banner.title }}</h2></div></div>
+            <img class="ev-cover" src="{{ banner.banner_image.url }}" alt="Current banner image">
+            <form method="post" enctype="multipart/form-data" class="form-stack">
+                {% include 'admin/_banner_form_fields.html' %}
+                <button class="primary-button" type="submit">Save changes</button>
+            </form>
+        </article>
+    </main>
+</div>
+{% endblock %}

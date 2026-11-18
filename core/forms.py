@@ -3,6 +3,7 @@ from decimal import Decimal
 from django.db import transaction
 
 from .models import (
+	Advertisement,
 	BootcampProfile,
 	CertificateCriteria,
 	Course,
@@ -772,4 +773,84 @@ class EventForm(forms.ModelForm):
 			self.add_error('district', 'In-person and hybrid events need a district.')
 
 		self.instance.province = district.province if district else None
+		return cleaned
+
+
+BANNER_IMAGE_HELP = (
+	'Wide landscape image, recommended 1280 × 720 (16:9). JPG or PNG, up to 5 MB. '
+	'The app may trim the edges, so keep text away from them.'
+)
+
+
+class BannerForm(forms.ModelForm):
+	"""The admin Banners page. Times are entered in the active timezone (NPT)."""
+
+	starts_at = forms.DateTimeField(
+		required=False,
+		input_formats=['%Y-%m-%dT%H:%M'],
+		widget=forms.DateTimeInput(attrs={'type': 'datetime-local'}, format='%Y-%m-%dT%H:%M'),
+		label='Show from (Nepal time)',
+		help_text='Optional. Leave empty to show as soon as it is on.',
+	)
+	ends_at = forms.DateTimeField(
+		required=False,
+		input_formats=['%Y-%m-%dT%H:%M'],
+		widget=forms.DateTimeInput(attrs={'type': 'datetime-local'}, format='%Y-%m-%dT%H:%M'),
+		label='Show until (Nepal time)',
+		help_text='Optional. The banner hides itself after this, e.g. when a sale ends.',
+	)
+
+	class Meta:
+		model = Advertisement
+		fields = ['title', 'banner_image', 'description', 'cta_text', 'cta_url', 'starts_at', 'ends_at', 'is_active']
+		labels = {
+			'banner_image': 'Banner image',
+			'description': 'Description',
+			'cta_text': 'Button text',
+			'cta_url': 'Link when tapped',
+			'is_active': 'On (show in the app)',
+		}
+		help_texts = {
+			'title': 'For admins and screen readers; the image itself carries the design.',
+			'cta_url': 'Optional. Must start with https:// or http://.',
+			'cta_text': 'Optional, e.g. "Shop now".',
+		}
+		widgets = {
+			# Plain FileInput: no "clear" checkbox, a banner always has an image.
+			'banner_image': forms.FileInput(attrs={'accept': 'image/jpeg,image/png'}),
+			'title': forms.TextInput(attrs={'placeholder': 'e.g. New style bags, 40% off'}),
+			'description': forms.Textarea(attrs={'rows': 2}),
+		}
+
+	def __init__(self, *args, **kwargs):
+		super().__init__(*args, **kwargs)
+		self.fields['banner_image'].help_text = BANNER_IMAGE_HELP
+		if self.instance.pk:
+			self.fields['banner_image'].required = False
+			self.fields['banner_image'].help_text = 'Leave empty to keep the current image. ' + BANNER_IMAGE_HELP
+
+	def clean_banner_image(self):
+		from rest_framework import serializers
+		from .advertisement_serializers import validate_banner_image
+		upload = self.cleaned_data.get('banner_image')
+		# Only a new upload has content_type; an unchanged image is the stored file.
+		if upload and hasattr(upload, 'content_type'):
+			try:
+				validate_banner_image(upload)
+			except serializers.ValidationError as error:
+				raise forms.ValidationError(error.detail)
+		return upload
+
+	def clean_cta_url(self):
+		from urllib.parse import urlsplit
+		value = self.cleaned_data.get('cta_url', '')
+		if value and urlsplit(value).scheme.lower() not in {'http', 'https'}:
+			raise forms.ValidationError('The link must start with https:// or http://.')
+		return value
+
+	def clean(self):
+		cleaned = super().clean()
+		starts, ends = cleaned.get('starts_at'), cleaned.get('ends_at')
+		if starts and ends and ends < starts:
+			self.add_error('ends_at', '"Show until" must be after "Show from".')
 		return cleaned

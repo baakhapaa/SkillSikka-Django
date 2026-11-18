@@ -65,6 +65,7 @@ class AdminLogoutTests(TestCase):
             ('manage_bootcamps', []), ('add_bootcamp', []),
             ('manage_bootcamp_instructors', [1]), ('manage_bootcamp_content', [1]),
             ('manage_events', []), ('edit_event', [1]), ('delete_event', [1]),
+            ('manage_banners', []), ('edit_banner', [1]), ('banner_action', [1]),
             ('manage_payments', []), ('recheck_payment', [1]),
             ('manage_streak_settings', []), ('manage_certificate_criteria', []),
         ]

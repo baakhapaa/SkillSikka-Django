@@ -1,7 +1,7 @@
 ﻿from django.db.models import Count, Prefetch, Q, QuerySet
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
-from django.db.models import Exists, OuterRef, Subquery, F, Max
+from django.db.models import Exists, OuterRef, Subquery, F, Max, Case, When, Value, IntegerField
 from django.db.models.functions import Coalesce
 from django.db import transaction, IntegrityError
 from decimal import Decimal
@@ -66,8 +66,10 @@ from .models import (
 	Short,
 	ShortBookmark,
 	ShortComment,
+	ShortCommentLike,
 	ShortLike,
 	ShortView,
+	StudentProfile,
 	Notification,
 	AIActivity,
 	LocalAuthorityProfile,
@@ -1095,7 +1097,7 @@ class HomeFeedAPIView(APIView):
 	permission_classes = [IsAuthenticated]
 	COURSE_LIMIT = 6
 	EVENT_LIMIT = 3
-	ADVERTISEMENT_LIMIT = 3
+	ADVERTISEMENT_LIMIT = 5
 	INSTRUCTOR_LIMIT = 6
 
 	def get(self, request):
@@ -1677,7 +1679,7 @@ class EnrollCourseAPIView(APIView):
 		if course is None:
 			raise CourseAPIError('COURSE_NOT_FOUND', 'Course not found.', 404)
 
-		serializer = EnrollCourseSerializer(data={}, context={'course': course, 'request': request})
+		serializer = EnrollCourseSerializer(data=request.data, context={'course': course, 'request': request})
 		serializer.is_valid(raise_exception=True)
 		with transaction.atomic():
 			enrollment = serializer.save()
@@ -1726,6 +1728,35 @@ class MyEnrollmentsAPIView(generics.ListAPIView):
 		).select_related('course').order_by('-enrolled_at')
 
 
+def _student_lesson_access(student, lesson):
+	"""Return (enrollment, None) when the student may record progress on the
+	lesson, else (None, error Response). Course errors raise CourseAPIError."""
+	if lesson.course is not None:
+		if lesson.course.course_type == 'academic':
+			# Management access does not create student progress for staff.
+			return require_course_access(student, lesson.course, managers=False), None
+		enrollment = Enrollment.objects.filter(student=student, course=lesson.course, status__in=['active', 'completed']).first()
+		if enrollment is None:
+			raise CourseAPIError('NOT_ENROLLED', 'You must be enrolled in this course to access this lesson.', 403)
+		return enrollment, None
+
+	if lesson.topic is not None:
+		student_grade_id = getattr(
+			getattr(student, 'student_profile', None), 'grade_id', None
+		)
+		if student_grade_id != lesson.topic.chapter.grade_id:
+			return None, Response(
+				{'detail': 'This lesson is not part of your grade.'},
+				status=status.HTTP_403_FORBIDDEN,
+			)
+		return None, None
+
+	return None, Response(
+		{'detail': 'This lesson is not attached to any course or topic.'},
+		status=status.HTTP_400_BAD_REQUEST,
+	)
+
+
 class CompleteLessonAPIView(APIView):
 	authentication_classes = [JWTAuthentication]
 	permission_classes = [IsAuthenticated]
@@ -1739,33 +1770,9 @@ class CompleteLessonAPIView(APIView):
 			return Response({'detail': 'Lesson not found.'}, status=status.HTTP_404_NOT_FOUND)
 
 		student = request.user
-		enrollment = None
-
-		if lesson.course is not None:
-			if lesson.course.course_type == 'academic':
-				# Management access does not create student progress for staff.
-				enrollment = require_course_access(student, lesson.course, managers=False)
-			else:
-				enrollment = Enrollment.objects.filter(student=student, course=lesson.course, status__in=['active', 'completed']).first()
-				if enrollment is None:
-					raise CourseAPIError('NOT_ENROLLED', 'You must be enrolled in this course to access this lesson.', 403)
-
-		elif lesson.topic is not None:
-			student_grade_id = getattr(
-				getattr(student, 'student_profile', None), 'grade_id', None
-			)
-
-			if student_grade_id != lesson.topic.chapter.grade_id:
-				return Response(
-					{'detail': 'This lesson is not part of your grade.'},
-					status=status.HTTP_403_FORBIDDEN,
-				)
-
-		else:
-			return Response(
-				{'detail': 'This lesson is not attached to any course or topic.'},
-				status=status.HTTP_400_BAD_REQUEST,
-			)
+		enrollment, denied = _student_lesson_access(student, lesson)
+		if denied is not None:
+			return denied
 
 		progress, _ = LessonProgress.objects.update_or_create(
 			student=student,
@@ -3781,10 +3788,66 @@ class StudentPointsAPIView(APIView):
 # Shorts
 # =========================================================
 
+def _short_count(model, fk='short_id'):
+	return Coalesce(Subquery(
+		model.objects.filter(**{fk: OuterRef('pk')}).order_by().values(fk)
+		.annotate(n=Count('pk')).values('n')[:1]
+	), 0)
+
+
 def _shorts_with_saved_state(user):
-	return Short.objects.select_related('instructor').prefetch_related('likes', 'comments').annotate(
+	# Counts are subqueries, not Count() over joins: likes x comments rows per
+	# Short would multiply as a video gets popular.
+	return Short.objects.select_related(
+		'instructor__instructor_profile', 'topic', 'course', 'quiz__course', 'challenge',
+	).annotate(
 		_is_saved=Exists(ShortBookmark.objects.filter(student=user, short_id=OuterRef('pk'))),
+		_is_liked=Exists(ShortLike.objects.filter(student=user, short_id=OuterRef('pk'))),
+		_like_count=_short_count(ShortLike),
+		_comment_count=_short_count(ShortComment),
 	)
+
+
+# The STEM tab. Web and app dev are in because coding Shorts (CSS, React…)
+# are filed under them; 3D design, drawing, music and speaking are not.
+STEM_TOPIC_SLUGS = (
+	'coding', 'mathematics', 'physics', 'chemistry', 'biology', 'data-science',
+	'ai-ml', 'web-dev', 'app-dev', 'robotics', 'electronics',
+)
+SHORT_FEEDS = ('for_you', 'stem', 'challenge')
+
+
+def _filter_short_feed(queryset, request):
+	"""Apply the Shorts screen's tabs and search: ?feed=, ?topic=, ?search=."""
+	params = request.query_params
+	feed = params.get('feed', '').strip()
+	if feed and feed not in SHORT_FEEDS:
+		raise ValidationError({'feed': f'Must be one of: {", ".join(SHORT_FEEDS)}.'})
+
+	if feed == 'stem':
+		queryset = queryset.filter(topic__slug__in=STEM_TOPIC_SLUGS)
+	elif feed == 'challenge':
+		queryset = queryset.filter(challenge__is_published=True, challenge__end_at__gt=timezone.now())
+	elif feed == 'for_you':
+		# Ranks rather than filters: the student's interests first, then
+		# everything else, so the tab is never empty for a narrow pick.
+		interest_ids = list(StudentProfile.objects.filter(user=request.user).values_list('learning_interests', flat=True))
+		interest_ids = [pk for pk in interest_ids if pk is not None]
+		if interest_ids:
+			queryset = queryset.annotate(_matches_interest=Case(
+				When(topic_id__in=interest_ids, then=Value(1)), default=Value(0), output_field=IntegerField(),
+			)).order_by('-_matches_interest', '-created_at', '-id')
+
+	topic = params.get('topic', '').strip()
+	if topic:
+		queryset = queryset.filter(topic__slug=topic)
+
+	search = params.get('search', '').strip()
+	if search:
+		queryset = queryset.filter(
+			Q(title__icontains=search) | Q(caption__icontains=search) | Q(instructor__name__icontains=search)
+		)
+	return queryset
 
 
 class StudentShortBookmarkAPIView(APIView):
@@ -3793,8 +3856,9 @@ class StudentShortBookmarkAPIView(APIView):
 
 	def initial(self, request, *args, **kwargs):
 		super().initial(request, *args, **kwargs)
-		if not _is_student(request.user):
-			raise PermissionDenied('Only students can save Shorts.')
+		# Saves are a private bookmark, so instructors may keep any Short too.
+		if not (_is_student(request.user) or _is_instructor(request.user)):
+			raise PermissionDenied('Only students and instructors can save Shorts.')
 
 	@transaction.atomic
 	def post(self, request, short_id):
@@ -3825,8 +3889,8 @@ class SavedShortsListAPIView(generics.ListAPIView):
 
 	def initial(self, request, *args, **kwargs):
 		super().initial(request, *args, **kwargs)
-		if not _is_student(request.user):
-			raise PermissionDenied('Only students can retrieve saved Shorts.')
+		if not (_is_student(request.user) or _is_instructor(request.user)):
+			raise PermissionDenied('Only students and instructors can retrieve saved Shorts.')
 
 	def get_queryset(self):
 		return _shorts_with_saved_state(self.request.user).filter(
@@ -3844,18 +3908,19 @@ class ShortListCreateAPIView(generics.ListCreateAPIView):
 
 		queryset = _shorts_with_saved_state(user)
 
-		if _is_admin(user):
-			return queryset.order_by('-created_at')
-
-		if _is_instructor(user):
-			return queryset.filter(
+		if _is_instructor(user) and not _is_admin(user):
+			queryset = queryset.filter(
 				Q(is_published=True) |
 				Q(instructor=user)
-			).order_by('-created_at')
+			)
 
-		return queryset.filter(
-			is_published=True
-		).order_by('-created_at')
+		elif not _is_admin(user):
+			queryset = queryset.filter(
+				is_published=True
+			)
+
+		# id breaks created_at ties so a feed never reorders between requests.
+		return _filter_short_feed(queryset.order_by('-created_at', '-id'), self.request)
 
 	def perform_create(self, serializer):
 		user = self.request.user
@@ -4015,15 +4080,6 @@ class ToggleShortLikeAPIView(APIView):
 	def post(self, request, short_id):
 		user = request.user
 
-		if _role_name(user) != 'student':
-			return Response(
-				{
-					'detail':
-						'Only students can like Shorts.'
-				},
-				status=status.HTTP_403_FORBIDDEN
-			)
-
 		short = Short.objects.filter(
 			id=short_id,
 			is_published=True
@@ -4036,6 +4092,16 @@ class ToggleShortLikeAPIView(APIView):
 						'Short not found or not published.'
 				},
 				status=status.HTTP_404_NOT_FOUND
+			)
+
+		# Students, and the instructor who posted this Short.
+		if _role_name(user) != 'student' and short.instructor_id != user.id:
+			return Response(
+				{
+					'detail':
+						"Only students and the Short's instructor can like this Short."
+				},
+				status=status.HTTP_403_FORBIDDEN
 			)
 
 		existing_like = ShortLike.objects.filter(
@@ -4097,23 +4163,18 @@ class ShortCommentListCreateAPIView(
 				'Short not found or not published.'
 			)
 
-		return ShortComment.objects.filter(
-			short=short
-		).select_related(
-			'student',
-			'short'
+		# Top-level only; replies load per thread from the replies endpoint.
+		return _comments_with_state(self.request.user).filter(
+			short=short,
+			parent__isnull=True,
 		).order_by(
-			'-created_at'
+			'-created_at',
+			'-id'
 		)
 
 	def perform_create(self, serializer):
 		user = self.request.user
 		short_id = self.kwargs['short_id']
-
-		if _role_name(user) != 'student':
-			raise PermissionDenied(
-				'Only students can comment on Shorts.'
-			)
 
 		short = Short.objects.filter(
 			id=short_id,
@@ -4123,6 +4184,22 @@ class ShortCommentListCreateAPIView(
 		if short is None:
 			raise NotFound(
 				'Short not found or not published.'
+			)
+
+		parent = serializer.validated_data.get('parent')
+		if parent is not None:
+			if parent.short_id != short.id:
+				raise serializers.ValidationError({
+					'parent': 'That comment is on a different Short.'
+				})
+			# Keep threads one level deep: answering a reply joins its thread.
+			if parent.parent_id is not None:
+				parent = parent.parent
+
+		# Students, and the Short's own instructor (comments and replies alike).
+		if not _is_student(user) and short.instructor_id != user.id:
+			raise PermissionDenied(
+				"Only students and the Short's instructor can comment on this Short."
 			)
 
 		text = serializer.validated_data.get(
@@ -4138,7 +4215,57 @@ class ShortCommentListCreateAPIView(
 		serializer.save(
 			student=user,
 			short=short,
+			parent=parent,
 			text=text
+		)
+
+
+def _comments_with_state(user):
+	return ShortComment.objects.select_related('student', 'short').annotate(
+		_like_count=_short_count(ShortCommentLike, 'comment_id'),
+		_reply_count=_short_count(ShortComment, 'parent_id'),
+		_is_liked=Exists(ShortCommentLike.objects.filter(student=user, comment_id=OuterRef('pk'))),
+	)
+
+
+class ShortCommentRepliesAPIView(generics.ListAPIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+	serializer_class = ShortCommentSerializer
+
+	def get_queryset(self):
+		comment = ShortComment.objects.filter(
+			pk=self.kwargs['pk'], parent__isnull=True, short__is_published=True,
+		).first()
+		if comment is None:
+			raise NotFound('Comment not found.')
+		# Oldest first, so a thread reads as a conversation.
+		return _comments_with_state(self.request.user).filter(parent=comment).order_by('created_at', 'id')
+
+
+class ToggleShortCommentLikeAPIView(APIView):
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	@transaction.atomic
+	def post(self, request, pk):
+		user = request.user
+		comment = ShortComment.objects.select_related('short').filter(pk=pk, short__is_published=True).first()
+		if comment is None:
+			raise NotFound('Comment not found.')
+		if not (_is_student(user) or comment.short.instructor_id == user.id):
+			raise PermissionDenied("Only students and the Short's instructor can like comments.")
+
+		deleted, _ = ShortCommentLike.objects.filter(student=user, comment=comment).delete()
+		if not deleted:
+			ShortCommentLike.objects.get_or_create(student=user, comment=comment)
+		return Response(
+			{
+				'comment_id': comment.pk,
+				'is_liked': not deleted,
+				'like_count': comment.likes.count(),
+			},
+			status=status.HTTP_200_OK if deleted else status.HTTP_201_CREATED,
 		)
 
 

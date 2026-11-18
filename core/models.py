@@ -758,9 +758,19 @@ class Enrollment(models.Model):
 		('cancelled', 'Cancelled'),
 	)
 
+	# Where the student came from, sent by the app on enroll. Rows from before
+	# this field existed are `unknown`; nothing guesses a split for them.
+	SOURCE_CHOICES = (
+		('direct', 'Direct & Newsletter'),
+		('organic', 'Organic Search / SEO'),
+		('social', 'Social & Referrals'),
+		('unknown', 'Unknown'),
+	)
+
 	student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='enrollments')
 	course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name='enrollments')
 	status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
+	source = models.CharField(max_length=10, choices=SOURCE_CHOICES, default='unknown')
 	amount_paid = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
 	payment_reference = models.CharField(max_length=200, blank=True)
 	enrolled_at = models.DateTimeField(auto_now_add=True)
@@ -808,6 +818,29 @@ class LessonProgress(models.Model):
 
 	def __str__(self):
 		return f'{self.student.name} - {self.lesson.title}'
+
+
+class LessonWatchTime(models.Model):
+	"""Seconds a student watched a lesson, one row per student, lesson and day.
+
+	The player reports small increments; the server adds them and caps each
+	one by wall-clock time since the student's previous report, so a client
+	cannot claim more time than has passed. Daily rows let the instructor
+	analytics sum any date window.
+	"""
+
+	student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='lesson_watch_time')
+	lesson = models.ForeignKey(Lesson, on_delete=models.CASCADE, related_name='watch_time')
+	date = models.DateField()
+	watched_seconds = models.PositiveIntegerField(default=0)
+	position_seconds = models.PositiveIntegerField(default=0)
+	updated_at = models.DateTimeField(auto_now=True)
+
+	class Meta:
+		db_table = 'lesson_watch_time'
+		constraints = [
+			models.UniqueConstraint(fields=['student', 'lesson', 'date'], name='unique_watch_time_per_student_lesson_day'),
+		]
 
 
 class Payment(models.Model):
@@ -1254,6 +1287,18 @@ class Short(models.Model):
 		blank=True
 	)
 
+	# The text under the video. Hashtags stay inline here; search covers them,
+	# so there is no separate tag table until a screen needs one.
+	caption = models.TextField(blank=True, default='')
+	# Same taxonomy students pick at onboarding, which is what the "For you"
+	# and STEM feeds filter on.
+	topic = models.ForeignKey(LearningInterest, on_delete=models.SET_NULL, null=True, blank=True, related_name='shorts')
+	# Optional links behind the course chip, the Quiz button and the Challenge
+	# feed. SET_NULL: deleting a course or quiz must not delete the video.
+	course = models.ForeignKey(Course, on_delete=models.SET_NULL, null=True, blank=True, related_name='shorts')
+	quiz = models.ForeignKey(Quiz, on_delete=models.SET_NULL, null=True, blank=True, related_name='shorts')
+	challenge = models.ForeignKey(Challenge, on_delete=models.SET_NULL, null=True, blank=True, related_name='shorts')
+
 	is_published = models.BooleanField(
 		default=False
 	)
@@ -1363,6 +1408,10 @@ class ShortComment(models.Model):
 		related_name='comments'
 	)
 
+	# Set on a reply. Threads are one level deep: a reply to a reply is stored
+	# under the same top-level comment, so this never points at a reply.
+	parent = models.ForeignKey('self', on_delete=models.CASCADE, null=True, blank=True, related_name='replies')
+
 	text = models.TextField()
 
 	created_at = models.DateTimeField(
@@ -1375,6 +1424,18 @@ class ShortComment(models.Model):
 
 	def __str__(self):
 		return f'{self.student.email} - {self.short.title}'
+
+
+class ShortCommentLike(models.Model):
+	student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='short_comment_likes')
+	comment = models.ForeignKey(ShortComment, on_delete=models.CASCADE, related_name='likes')
+	created_at = models.DateTimeField(auto_now_add=True)
+
+	class Meta:
+		db_table = 'short_comment_likes'
+		constraints = [models.UniqueConstraint(
+			fields=['student', 'comment'], name='unique_short_comment_like_per_user',
+		)]
 
 
 class EBook(models.Model):
@@ -2049,3 +2110,22 @@ class DiscussionLike(models.Model):
     class Meta:
         db_table = 'discussion_likes'
         constraints = [models.UniqueConstraint(fields=['discussion', 'user'], name='unique_discussion_like')]
+
+
+class SearchQuery(models.Model):
+    """One search a user ran, kept to rank Trending Searches.
+
+    `normalized` groups spellings ("CSS grid", " css  Grid "). Only searches
+    that found something count towards trending, so typos and junk never
+    surface on other people's screens.
+    """
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='search_queries')
+    query = models.CharField(max_length=100)
+    normalized = models.CharField(max_length=100, db_index=True)
+    results_count = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = 'search_queries'
+        ordering = ['-created_at', '-pk']

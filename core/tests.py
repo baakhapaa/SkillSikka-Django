@@ -23,7 +23,8 @@ from rest_framework.test import APIClient
 
 from .models import District, Grade, InstructorProfile, Municipality, Permission, Province, Role, School, StudentProfile, User, VerificationDocument
 from .signup_otp import OTP_EXPIRY_SECONDS
-from .models import Short, ShortBookmark, ShortComment, ShortLike, ShortView
+from .models import Short, ShortBookmark, ShortComment, ShortCommentLike, ShortLike, ShortView
+from .models import Challenge, LearningInterest, Quiz
 from .models import PasswordResetOTP
 from .serializers import ShortSerializer
 from .models import Course, CourseReview, Enrollment, Lesson, LessonProgress, Payment, with_instructor_review_stats
@@ -1099,6 +1100,8 @@ class HomeFeedTests(TestCase):
     def test_fallback_deterministic_without_profile_and_without_matches(self):
         from .models import LearningInterest
         recent = self.course_for('Recent unrelated')
+        # Two back-to-back creates can share a timestamp; make "recent" newer.
+        Course.objects.filter(pk=recent.pk).update(created_at=self.course.created_at + timedelta(seconds=1))
         expected = [recent.pk, self.course.pk]
         self.assertEqual([r['id'] for r in self.feed()['recommended_courses']], expected)
         self.profile.learning_interests.add(LearningInterest.objects.get(slug='robotics'))
@@ -1200,7 +1203,7 @@ class HomeFeedTests(TestCase):
         self.assertEqual(len(expanded), len(initial))
         for section, limit in [('featured_courses', 6), ('recommended_courses', 6),
                                ('skill_courses', 6), ('events', 3),
-                               ('advertisements', 3), ('top_instructors', 6)]:
+                               ('advertisements', 5), ('top_instructors', 6)]:
             self.assertEqual(len(data[section]), limit)
         self.assertEqual(data['top_instructors'], self.client.get(reverse('api-top-instructors')).data[:6])
 
@@ -1693,8 +1696,11 @@ class AuthenticationFlowTests(TestCase):
 		self.assertNotIn('_auth_user_id', self.client.session)
 
 	def test_completed_user_can_open_dashboard(self):
+		# The dashboard is for administrators only (see the school_admin case
+		# in test_admin_logout), so this checks the admin login path.
+		self.user.role = Role.objects.get(name='super_admin')
 		self.user.onboarding_completed = True
-		self.user.save(update_fields=['onboarding_completed'])
+		self.user.save(update_fields=['role', 'onboarding_completed'])
 		response = self.client.post(reverse('login'), {
 			'email': self.user.email,
 			'password': 'A-strong-password-123',
@@ -1727,35 +1733,45 @@ class GeographyManagementTests(TestCase):
 		self.client.force_login(self.super_admin)
 
 	def test_super_admin_can_create_geography_records(self):
-		response = self.client.post(reverse('manage_geography'), {'form_type': 'province', 'province-name': 'Bagmati'})
+		# Names that migration 0009 does not seed; Bagmati, Kathmandu etc.
+		# already exist and would be rejected as duplicates.
+		response = self.client.post(reverse('manage_geography'), {'form_type': 'province', 'province-name': 'Test Province'})
 		self.assertRedirects(response, reverse('manage_geography'))
-		province = Province.objects.get(name='Bagmati')
+		province = Province.objects.get(name='Test Province')
 
 		response = self.client.post(reverse('manage_geography'), {
 			'form_type': 'district',
-			'district-name': 'Kathmandu',
+			'district-name': 'Test District',
 			'district-province': province.pk,
 		})
 		self.assertRedirects(response, reverse('manage_geography'))
-		district = District.objects.get(name='Kathmandu')
+		district = District.objects.get(name='Test District')
 
-		self.client.post(reverse('manage_geography'), {
+		response = self.client.post(reverse('manage_geography'), {
 			'form_type': 'municipality',
-			'municipality-name': 'Kirtipur',
+			'municipality-name': 'Test Municipality',
 			'municipality-district': district.pk,
 		})
-		self.client.post(reverse('manage_geography'), {
+		self.assertRedirects(response, reverse('manage_geography'))
+		response = self.client.post(reverse('manage_geography'), {
 			'form_type': 'school',
-			'school-name': 'SkillSikka Academy',
-			'school-municipality': Municipality.objects.get(name='Kirtipur').pk,
+			'school-name': 'SkillSikka Test Academy',
+			'school-municipality': Municipality.objects.get(name='Test Municipality').pk,
 			'school-sector': 'private',
 			'school-logo_url': '',
 		})
-		self.client.post(reverse('manage_geography'), {'form_type': 'grade', 'grade-name': 'Grade 8'})
+		self.assertRedirects(response, reverse('manage_geography'))
+		response = self.client.post(reverse('manage_geography'), {'form_type': 'grade', 'grade-name': 'Test Grade'})
+		self.assertRedirects(response, reverse('manage_geography'))
 
-		self.assertTrue(Municipality.objects.filter(name='Kirtipur', district=district).exists())
-		self.assertTrue(School.objects.filter(name='SkillSikka Academy', municipality__name='Kirtipur').exists())
-		self.assertTrue(Grade.objects.filter(name='Grade 8').exists())
+		self.assertTrue(Municipality.objects.filter(name='Test Municipality', district=district).exists())
+		self.assertTrue(School.objects.filter(name='SkillSikka Test Academy', municipality__name='Test Municipality').exists())
+		self.assertTrue(Grade.objects.filter(name='Test Grade').exists())
+
+	def test_duplicate_province_is_rejected(self):
+		response = self.client.post(reverse('manage_geography'), {'form_type': 'province', 'province-name': 'Bagmati'})
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(Province.objects.filter(name='Bagmati').count(), 1)
 
 	def test_non_super_admin_cannot_create_geography_records(self):
 		user = User.objects.create_user(
@@ -1767,7 +1783,8 @@ class GeographyManagementTests(TestCase):
 		self.client.force_login(user)
 		response = self.client.post(reverse('manage_geography'), {'form_type': 'province', 'province-name': 'Blocked'})
 
-		self.assertRedirects(response, reverse('dashboard'))
+		# The dashboard then signs a non-admin out, so don't follow the redirect.
+		self.assertRedirects(response, reverse('dashboard'), fetch_redirect_response=False)
 		self.assertFalse(Province.objects.filter(name='Blocked').exists())
 
 
@@ -2250,7 +2267,9 @@ class ShortBookmarkTests(TestCase):
 
     def test_is_saved_in_list_detail_and_saved_list_preserves_fields(self):
         expected = {'id','title','instructor_id','instructor_name','video_url','thumbnail_url','is_published',
-                    'view_count','like_count','comment_count','is_liked','is_saved','created_at','updated_at'}
+                    'view_count','like_count','comment_count','is_liked','is_saved','created_at','updated_at',
+                    'caption','instructor_photo_url','instructor_title','topic','topic_name','topic_slug',
+                    'course','course_title','quiz','quiz_title','challenge','challenge_title'}
         self.assertFalse(self.client.get(self.detail_url).data['is_saved'])
         self.assertFalse(self.client.get(self.list_url).data[0]['is_saved'])
         self.client.post(self.save_url)
@@ -2303,7 +2322,7 @@ class ShortBookmarkTests(TestCase):
         self.assertEqual(self.client.post(self.save_url).status_code, 401)
         self.assertEqual(self.client.delete(self.save_url).status_code, 401)
         self.assertEqual(self.client.get(self.saved_url).status_code, 401)
-        for role in ('instructor','super_admin','local_authority','ministry'):
+        for role in ('super_admin','local_authority','ministry'):
             user = User.objects.create_user(email=role+'-bookmark-denied@example.com', name='Denied', role=Role.objects.get(name=role))
             self.client.force_authenticate(user)
             with self.subTest(role=role):
@@ -2350,9 +2369,31 @@ class ShortBookmarkTests(TestCase):
         self.short._is_saved = True
         self.assertFalse(ShortSerializer(self.short).data['is_saved'])
         from django.contrib.auth.models import AnonymousUser
-        for user in (AnonymousUser(), self.instructor):
+        admin = User.objects.create_user(email='saved-admin@example.com', name='Admin', role=Role.objects.get(name='super_admin'))
+        for user in (AnonymousUser(), admin):
             serializer = ShortSerializer(self.short, context={'request':SimpleNamespace(user=user)})
             self.assertFalse(serializer.data['is_saved'])
+        serializer = ShortSerializer(self.short, context={'request':SimpleNamespace(user=self.instructor)})
+        self.assertTrue(serializer.data['is_saved'])
+
+    def test_instructors_save_own_and_other_shorts_privately(self):
+        other_instructor = User.objects.create_user(email='saver-instructor@example.com', name='Saver',
+            role=Role.objects.get(name='instructor'), verification_status='verified')
+        own = Short.objects.create(title='Mine', instructor=other_instructor, video_url='https://example.com/m', is_published=True)
+        self.client.force_authenticate(other_instructor)
+        self.assertEqual(self.client.post(self.save_url).status_code, 201)
+        self.assertEqual(self.client.post(f'/api/v1/student/shorts/{own.pk}/save/').status_code, 201)
+        saved = self.client.get(self.saved_url).data
+        self.assertEqual({row['id'] for row in saved}, {self.short.pk, own.pk})
+        self.assertTrue(all(row['is_saved'] for row in saved))
+        self.assertTrue(self.client.get(self.detail_url).data['is_saved'])
+        # Private: the student who has not saved it still sees is_saved false.
+        self.client.force_authenticate(self.student)
+        self.assertFalse(self.client.get(self.detail_url).data['is_saved'])
+        self.assertEqual(self.client.get(self.saved_url).data, [])
+        self.client.force_authenticate(other_instructor)
+        self.assertEqual(self.client.delete(self.save_url).status_code, 200)
+        self.assertEqual([row['id'] for row in self.client.get(self.saved_url).data], [own.pk])
 
     def test_existing_views_likes_comments_and_is_liked_unchanged(self):
         self.client.post(self.save_url)
@@ -2395,6 +2436,339 @@ class ShortBookmarkTests(TestCase):
         self.assertEqual(self.client.get(draft_url).status_code, 200)
         self.assertFalse(self.client.get(draft_url).data['is_saved'])
         self.assertEqual(self.client.delete(draft_url).status_code, 204)
+
+
+class ShortFeedTests(TestCase):
+    """Caption, topic and course/quiz/challenge links, plus the feed tabs and search."""
+
+    def setUp(self):
+        cache.clear()
+        self.student = User.objects.create_user(email='feed-student@example.com', name='Student', role=Role.objects.get(name='student'))
+        StudentProfile.objects.create(user=self.student)
+        self.instructor = User.objects.create_user(email='feed-instructor@example.com', name='Sarah Codes',
+            role=Role.objects.get(name='instructor'), verification_status='verified', profile_photo_url='https://example.com/sarah.png')
+        InstructorProfile.objects.create(user=self.instructor, qualification='Adobe Certified Instructor')
+        self.other_instructor = User.objects.create_user(email='feed-other@example.com', name='Other',
+            role=Role.objects.get(name='instructor'), verification_status='verified')
+        self.web = LearningInterest.objects.get(slug='web-dev')
+        self.drawing = LearningInterest.objects.get(slug='drawing')
+        self.course = Course.objects.create(title='CSS Masterclass Course', instructor=self.instructor, course_type='skill', is_published=True)
+        self.quiz = Quiz.objects.create(course=self.course, title='Flexbox quiz', is_published=True)
+        self.challenge = Challenge.objects.create(title='Build a layout', description='', created_by=self.instructor,
+            end_at=timezone.now()+timedelta(days=3), is_published=True)
+        self.client = APIClient()
+        self.client.force_authenticate(self.student)
+
+    def short(self, title='Short', **fields):
+        fields.setdefault('instructor', self.instructor)
+        fields.setdefault('is_published', True)
+        return Short.objects.create(title=title, video_url='https://example.com/v', **fields)
+
+    def ids(self, query=''):
+        response = self.client.get('/api/v1/shorts/'+query)
+        self.assertEqual(response.status_code, 200, response.data)
+        return [row['id'] for row in response.data]
+
+    def test_response_carries_everything_the_screen_draws(self):
+        short = self.short(caption='Master CSS Flexbox in 60 seconds! #coding', topic=self.web,
+                           course=self.course, quiz=self.quiz, challenge=self.challenge)
+        body = self.client.get(f'/api/v1/shorts/{short.pk}/').data
+        self.assertEqual(body['caption'], 'Master CSS Flexbox in 60 seconds! #coding')
+        self.assertEqual((body['instructor_name'], body['instructor_photo_url'], body['instructor_title']),
+                         ('Sarah Codes', 'https://example.com/sarah.png', 'Adobe Certified Instructor'))
+        self.assertEqual((body['topic'], body['topic_name'], body['topic_slug']), (self.web.pk, 'Web Dev', 'web-dev'))
+        self.assertEqual((body['course'], body['course_title']), (self.course.pk, 'CSS Masterclass Course'))
+        self.assertEqual((body['quiz'], body['quiz_title']), (self.quiz.pk, 'Flexbox quiz'))
+        self.assertEqual((body['challenge'], body['challenge_title']), (self.challenge.pk, 'Build a layout'))
+
+    def test_unlinked_short_and_instructor_without_profile_return_nulls(self):
+        short = self.short(instructor=self.other_instructor)
+        body = self.client.get(f'/api/v1/shorts/{short.pk}/').data
+        for key in ('instructor_title','topic','topic_name','topic_slug','course','course_title','quiz','quiz_title','challenge','challenge_title'):
+            self.assertIsNone(body[key], key)
+        self.assertEqual(body['caption'], '')
+
+    def test_instructor_creates_with_links(self):
+        self.client.force_authenticate(self.instructor)
+        response = self.client.post('/api/v1/shorts/', {'title':'Flexbox', 'video_url':'https://example.com/n', 'caption':'#css',
+            'topic':self.web.pk, 'course':self.course.pk, 'quiz':self.quiz.pk, 'challenge':self.challenge.pk}, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        short = Short.objects.get(pk=response.data['id'])
+        self.assertEqual((short.caption, short.topic, short.course, short.quiz, short.challenge),
+                         ('#css', self.web, self.course, self.quiz, self.challenge))
+        self.assertEqual((response.data['like_count'], response.data['comment_count'], response.data['is_liked']), (0, 0, False))
+
+    def test_links_are_validated(self):
+        foreign_course = Course.objects.create(title='Not mine', instructor=self.other_instructor, course_type='skill', is_published=True)
+        foreign_quiz = Quiz.objects.create(course=foreign_course, title='Not mine', is_published=True)
+        own_course = Course.objects.create(title='Second', instructor=self.instructor, course_type='skill', is_published=True)
+        draft_challenge = Challenge.objects.create(title='Draft', description='', created_by=self.other_instructor,
+            end_at=timezone.now()+timedelta(days=1))
+        self.drawing.is_active = False
+        self.drawing.save(update_fields=['is_active'])
+        self.client.force_authenticate(self.instructor)
+        base = {'title':'T', 'video_url':'https://example.com/n'}
+        for field, payload in (
+            ('course', {'course':foreign_course.pk}),
+            ('quiz', {'quiz':foreign_quiz.pk}),
+            ('quiz', {'course':own_course.pk, 'quiz':self.quiz.pk}),
+            ('challenge', {'challenge':draft_challenge.pk}),
+            ('topic', {'topic':self.drawing.pk}),
+        ):
+            with self.subTest(payload=payload):
+                response = self.client.post('/api/v1/shorts/', {**base, **payload}, format='json')
+                self.assertEqual(response.status_code, 400, response.data)
+                self.assertIn(field, response.data)
+        self.assertFalse(Short.objects.exists())
+
+    def test_patch_cannot_split_course_and_quiz(self):
+        short = self.short(course=self.course, quiz=self.quiz)
+        other = Course.objects.create(title='Second', instructor=self.instructor, course_type='skill', is_published=True)
+        self.client.force_authenticate(self.instructor)
+        response = self.client.patch(f'/api/v1/shorts/{short.pk}/', {'course':other.pk}, format='json')
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn('quiz', response.data)
+        response = self.client.patch(f'/api/v1/shorts/{short.pk}/', {'course':other.pk, 'quiz':None}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_admin_may_link_any_course_and_draft_challenge(self):
+        admin = User.objects.create_user(email='feed-admin@example.com', name='Admin', role=Role.objects.get(name='super_admin'))
+        foreign_course = Course.objects.create(title='Not mine', instructor=self.other_instructor, course_type='skill')
+        draft_challenge = Challenge.objects.create(title='Draft', description='', created_by=admin, end_at=timezone.now()+timedelta(days=1))
+        short = self.short()
+        self.client.force_authenticate(admin)
+        response = self.client.patch(f'/api/v1/shorts/{short.pk}/', {'course':foreign_course.pk, 'challenge':draft_challenge.pk}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_unpublished_links_hidden_from_students_but_not_owner(self):
+        self.course.is_published = False
+        self.course.save(update_fields=['is_published'])
+        self.challenge.is_published = False
+        self.challenge.save(update_fields=['is_published'])
+        short = self.short(course=self.course, quiz=self.quiz, challenge=self.challenge)
+        url = f'/api/v1/shorts/{short.pk}/'
+        body = self.client.get(url).data
+        # The quiz is published but its course is not, so it stays hidden too.
+        for key in ('course','course_title','quiz','quiz_title','challenge','challenge_title'):
+            self.assertIsNone(body[key], key)
+        self.client.force_authenticate(self.instructor)
+        body = self.client.get(url).data
+        self.assertEqual((body['course'], body['quiz'], body['challenge']), (self.course.pk, self.quiz.pk, self.challenge.pk))
+
+    def test_stem_feed_filters_by_stem_topics(self):
+        stem = self.short('Flexbox', topic=self.web)
+        physics = self.short('Gravity', topic=LearningInterest.objects.get(slug='physics'))
+        self.short('Sketching', topic=self.drawing)
+        self.short('No topic')
+        self.assertEqual(self.ids('?feed=stem'), [physics.pk, stem.pk])
+
+    def test_challenge_feed_only_shows_live_published_challenges(self):
+        live = self.short('Live', challenge=self.challenge)
+        ended = Challenge.objects.create(title='Ended', description='', created_by=self.instructor,
+            end_at=timezone.now()-timedelta(days=1), is_published=True)
+        draft = Challenge.objects.create(title='Draft', description='', created_by=self.instructor,
+            end_at=timezone.now()+timedelta(days=1))
+        self.short('Ended', challenge=ended)
+        self.short('Draft', challenge=draft)
+        self.short('None')
+        self.assertEqual(self.ids('?feed=challenge'), [live.pk])
+
+    def test_for_you_ranks_interest_matches_first_and_never_empties(self):
+        match = self.short('Match', topic=self.web)
+        newer = self.short('Newer, other topic', topic=self.drawing)
+        self.assertEqual(self.ids('?feed=for_you'), [newer.pk, match.pk])
+        self.student.student_profile.learning_interests.set([self.web])
+        self.assertEqual(self.ids('?feed=for_you'), [match.pk, newer.pk])
+        self.student.student_profile.learning_interests.set([LearningInterest.objects.get(slug='music')])
+        self.assertEqual(self.ids('?feed=for_you'), [newer.pk, match.pk])
+
+    def test_for_you_works_for_users_without_a_student_profile(self):
+        short = self.short()
+        self.client.force_authenticate(self.instructor)
+        self.assertEqual(self.ids('?feed=for_you'), [short.pk])
+
+    def test_topic_and_search(self):
+        flex = self.short('Flexbox basics', topic=self.web, caption='#css #webdev')
+        grid = self.short('Grid', topic=self.web, caption='Two-dimensional #css')
+        other = self.short('Perspective', topic=self.drawing, instructor=self.other_instructor)
+        self.assertEqual(self.ids('?topic=web-dev'), [grid.pk, flex.pk])
+        self.assertEqual(self.ids('?search=flexbox'), [flex.pk])
+        self.assertEqual(self.ids('?search=%23CSS'), [grid.pk, flex.pk])
+        self.assertEqual(self.ids('?search=other'), [other.pk])
+        self.assertEqual(self.ids('?feed=stem&search=grid'), [grid.pk])
+        self.assertEqual(self.ids('?topic=no-such-topic'), [])
+
+    def test_unknown_feed_is_rejected(self):
+        response = self.client.get('/api/v1/shorts/?feed=trending')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('feed', response.data)
+
+    def test_feed_does_not_leak_drafts(self):
+        self.short('Draft', topic=self.web, is_published=False)
+        self.assertEqual(self.ids('?feed=stem'), [])
+
+    def test_counts_are_correct_and_cost_no_per_short_queries(self):
+        other = User.objects.create_user(email='feed-other-student@example.com', name='Other', role=Role.objects.get(name='student'))
+        first = self.short('First', course=self.course, quiz=self.quiz, challenge=self.challenge, topic=self.web)
+        ShortLike.objects.create(student=self.student, short=first)
+        ShortLike.objects.create(student=other, short=first)
+        for text in ('a', 'b', 'c'):
+            ShortComment.objects.create(student=other, short=first, text=text)
+        body = self.client.get('/api/v1/shorts/').data[0]
+        self.assertEqual((body['like_count'], body['comment_count'], body['is_liked']), (2, 3, True))
+
+        def list_queries():
+            with CaptureQueriesContext(connection) as queries:
+                self.assertEqual(self.client.get('/api/v1/shorts/?feed=for_you').status_code, 200)
+            return len(queries)
+        baseline = list_queries()
+        for i in range(8):
+            short = self.short(str(i), course=self.course, quiz=self.quiz, challenge=self.challenge, topic=self.web)
+            ShortLike.objects.create(student=other, short=short)
+            ShortComment.objects.create(student=other, short=short, text='x')
+        self.assertEqual(list_queries(), baseline)
+
+
+class ShortCommentThreadTests(TestCase):
+    """One-level replies and comment likes, by students and the Short's instructor."""
+
+    def setUp(self):
+        cache.clear()
+        student_role = Role.objects.get(name='student')
+        self.student = User.objects.create_user(email='thread-student@example.com', name='Asha', role=student_role)
+        self.other = User.objects.create_user(email='thread-other@example.com', name='Bikash', role=student_role)
+        self.instructor = User.objects.create_user(email='thread-instructor@example.com', name='Sarah',
+            role=Role.objects.get(name='instructor'), verification_status='verified')
+        self.outsider = User.objects.create_user(email='thread-outsider@example.com', name='Other teacher',
+            role=Role.objects.get(name='instructor'), verification_status='verified')
+        self.short = Short.objects.create(title='Flexbox', instructor=self.instructor, video_url='https://example.com/v', is_published=True)
+        self.comments_url = f'/api/v1/student/shorts/{self.short.pk}/comments/'
+        self.client = APIClient()
+        self.client.force_authenticate(self.student)
+        self.top = self.post({'text':'How does flex-grow work?'}).data
+
+    def post(self, payload, user=None, expect=201):
+        if user is not None:
+            self.client.force_authenticate(user)
+        response = self.client.post(self.comments_url, payload, format='json')
+        self.assertEqual(response.status_code, expect, response.data)
+        self.client.force_authenticate(self.student)
+        return response
+
+    def replies(self, comment_id):
+        response = self.client.get(f'/api/v1/shorts/comments/{comment_id}/replies/')
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data
+
+    def like(self, comment_id, user=None):
+        if user is not None:
+            self.client.force_authenticate(user)
+        response = self.client.post(f'/api/v1/shorts/comments/{comment_id}/like/')
+        self.client.force_authenticate(self.student)
+        return response
+
+    def test_reply_is_threaded_and_counted(self):
+        reply = self.post({'text':'It shares spare space', 'parent':self.top['id']}, self.other).data
+        self.assertEqual(reply['parent'], self.top['id'])
+        listed = self.client.get(self.comments_url).data
+        self.assertEqual([c['id'] for c in listed], [self.top['id']])
+        self.assertEqual((listed[0]['reply_count'], listed[0]['parent']), (1, None))
+        self.assertEqual([r['id'] for r in self.replies(self.top['id'])], [reply['id']])
+        self.assertEqual(self.client.get(f'/api/v1/shorts/{self.short.pk}/').data['comment_count'], 2)
+
+    def test_reply_to_a_reply_joins_the_same_thread_oldest_first(self):
+        first = self.post({'text':'First', 'parent':self.top['id']}, self.other).data
+        second = self.post({'text':'@Bikash thanks', 'parent':first['id']}).data
+        self.assertEqual(second['parent'], self.top['id'])
+        self.assertEqual([r['id'] for r in self.replies(self.top['id'])], [first['id'], second['id']])
+        self.assertEqual(self.client.get(f'/api/v1/shorts/comments/{first["id"]}/replies/').status_code, 404)
+
+    def test_parent_must_be_on_the_same_short(self):
+        other_short = Short.objects.create(title='Grid', instructor=self.instructor, video_url='https://example.com/g', is_published=True)
+        foreign = ShortComment.objects.create(student=self.other, short=other_short, text='Elsewhere')
+        response = self.post({'text':'Wrong thread', 'parent':foreign.pk}, expect=400)
+        self.assertIn('parent', response.data)
+        self.assertEqual(self.post({'text':'Missing', 'parent':999999}, expect=400).status_code, 400)
+
+    def test_short_instructor_can_comment_and_reply_on_own_short_only(self):
+        reply = self.post({'text':'Great question!', 'parent':self.top['id']}, self.instructor).data
+        self.assertTrue(reply['is_creator'])
+        self.assertFalse(self.top['is_creator'])
+        self.assertTrue(self.replies(self.top['id'])[0]['is_creator'])
+        pinned_tip = self.post({'text':'Tip: try flex-wrap next'}, self.instructor).data
+        self.assertTrue(pinned_tip['is_creator'])
+        self.assertIsNone(pinned_tip['parent'])
+        self.assertIn(pinned_tip['id'], [c['id'] for c in self.client.get(self.comments_url).data])
+        self.post({'text':'Not my Short'}, self.outsider, expect=403)
+        self.post({'text':'Not my Short', 'parent':self.top['id']}, self.outsider, expect=403)
+        self.assertEqual(ShortComment.objects.count(), 3)
+
+    def test_short_instructor_can_like_own_short_only(self):
+        like_url = f'/api/v1/student/shorts/{self.short.pk}/like/'
+        self.client.force_authenticate(self.instructor)
+        response = self.client.post(like_url)
+        self.assertEqual((response.status_code, response.data['is_liked'], response.data['like_count']), (201, True, 1))
+        detail = self.client.get(f'/api/v1/shorts/{self.short.pk}/').data
+        self.assertEqual((detail['is_liked'], detail['like_count']), (True, 1))
+        self.assertFalse(self.client.post(like_url).data['is_liked'])
+        self.client.force_authenticate(self.outsider)
+        self.assertEqual(self.client.post(like_url).status_code, 403)
+        self.client.force_authenticate(self.student)
+        self.assertEqual(self.client.post(like_url).status_code, 201)
+        self.assertEqual(ShortLike.objects.count(), 1)
+
+    def test_like_toggles_and_shows_in_lists(self):
+        response = self.like(self.top['id'])
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual((response.data['is_liked'], response.data['like_count']), (True, 1))
+        self.assertEqual(self.like(self.top['id'], self.other).data['like_count'], 2)
+        listed = self.client.get(self.comments_url).data[0]
+        self.assertEqual((listed['like_count'], listed['is_liked']), (2, True))
+        response = self.like(self.top['id'])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual((response.data['is_liked'], response.data['like_count']), (False, 1))
+        self.assertFalse(self.client.get(self.comments_url).data[0]['is_liked'])
+
+    def test_replies_can_be_liked_and_like_permissions(self):
+        reply = self.post({'text':'Reply', 'parent':self.top['id']}, self.other).data
+        self.assertEqual(self.like(reply['id']).status_code, 201)
+        self.assertEqual(self.replies(self.top['id'])[0]['like_count'], 1)
+        self.assertEqual(self.like(self.top['id'], self.instructor).status_code, 201)
+        self.assertEqual(self.like(self.top['id'], self.outsider).status_code, 403)
+        self.client.force_authenticate(None)
+        self.assertEqual(self.client.post(f'/api/v1/shorts/comments/{self.top["id"]}/like/').status_code, 401)
+        self.assertEqual(self.like(999999, self.student).status_code, 404)
+        self.short.is_published = False
+        self.short.save(update_fields=['is_published'])
+        self.assertEqual(self.like(self.top['id']).status_code, 404)
+        self.assertEqual(self.client.get(f'/api/v1/shorts/comments/{self.top["id"]}/replies/').status_code, 404)
+
+    def test_one_like_per_user_in_the_database(self):
+        comment = ShortComment.objects.get(pk=self.top['id'])
+        ShortCommentLike.objects.create(student=self.other, comment=comment)
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ShortCommentLike.objects.create(student=self.other, comment=comment)
+
+    def test_deleting_a_comment_removes_its_replies_and_likes(self):
+        reply = self.post({'text':'Reply', 'parent':self.top['id']}, self.other).data
+        self.like(self.top['id'])
+        self.like(reply['id'])
+        self.assertEqual(self.client.delete(f'/api/v1/shorts/comments/{self.top["id"]}/').status_code, 204)
+        self.assertFalse(ShortComment.objects.exists())
+        self.assertFalse(ShortCommentLike.objects.exists())
+
+    def test_comment_list_cost_does_not_grow_with_comments(self):
+        def list_queries():
+            with CaptureQueriesContext(connection) as queries:
+                self.assertEqual(self.client.get(self.comments_url).status_code, 200)
+            return len(queries)
+        baseline = list_queries()
+        for i in range(6):
+            top = ShortComment.objects.create(student=self.other, short=self.short, text=str(i))
+            ShortComment.objects.create(student=self.student, short=self.short, parent=top, text='r')
+            ShortCommentLike.objects.create(student=self.student, comment=top)
+        self.assertEqual(list_queries(), baseline)
 
 
 class ShortBookmarkLiveTests(LiveServerTestCase):
