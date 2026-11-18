@@ -4079,15 +4079,6 @@ class ToggleShortLikeAPIView(APIView):
 	def post(self, request, short_id):
 		user = request.user
 
-		if _role_name(user) != 'student':
-			return Response(
-				{
-					'detail':
-						'Only students can like Shorts.'
-				},
-				status=status.HTTP_403_FORBIDDEN
-			)
-
 		short = Short.objects.filter(
 			id=short_id,
 			is_published=True
@@ -4100,6 +4091,16 @@ class ToggleShortLikeAPIView(APIView):
 						'Short not found or not published.'
 				},
 				status=status.HTTP_404_NOT_FOUND
+			)
+
+		# Students, and the instructor who posted this Short.
+		if _role_name(user) != 'student' and short.instructor_id != user.id:
+			return Response(
+				{
+					'detail':
+						"Only students and the Short's instructor can like this Short."
+				},
+				status=status.HTTP_403_FORBIDDEN
 			)
 
 		existing_like = ShortLike.objects.filter(

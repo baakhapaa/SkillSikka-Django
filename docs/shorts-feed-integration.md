@@ -72,7 +72,9 @@ prefix the text with `@name` in the app if you want to show who is answered.
 
 Students can comment, reply and like. The Short's own instructor can do the
 same on that Short (its comments carry `is_creator: true`); other instructors
-get `403`. A `parent` from a
+get `403`. The same rule applies to liking the Short itself
+(`POST /api/v1/student/shorts/<id>/like/`): students, or the Short's own
+instructor. A `parent` from a
 different Short returns `400`. The Short's `comment_count` includes replies.
 
 ## Share

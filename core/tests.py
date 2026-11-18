@@ -2681,6 +2681,20 @@ class ShortCommentThreadTests(TestCase):
         self.post({'text':'Not my Short', 'parent':self.top['id']}, self.outsider, expect=403)
         self.assertEqual(ShortComment.objects.count(), 3)
 
+    def test_short_instructor_can_like_own_short_only(self):
+        like_url = f'/api/v1/student/shorts/{self.short.pk}/like/'
+        self.client.force_authenticate(self.instructor)
+        response = self.client.post(like_url)
+        self.assertEqual((response.status_code, response.data['is_liked'], response.data['like_count']), (201, True, 1))
+        detail = self.client.get(f'/api/v1/shorts/{self.short.pk}/').data
+        self.assertEqual((detail['is_liked'], detail['like_count']), (True, 1))
+        self.assertFalse(self.client.post(like_url).data['is_liked'])
+        self.client.force_authenticate(self.outsider)
+        self.assertEqual(self.client.post(like_url).status_code, 403)
+        self.client.force_authenticate(self.student)
+        self.assertEqual(self.client.post(like_url).status_code, 201)
+        self.assertEqual(ShortLike.objects.count(), 1)
+
     def test_like_toggles_and_shows_in_lists(self):
         response = self.like(self.top['id'])
         self.assertEqual(response.status_code, 201)
