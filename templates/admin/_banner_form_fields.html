@@ -1,0 +1,13 @@
+{% csrf_token %}
+{% for error in form.non_field_errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+<div class="ev-grid">
+    {% for field in form %}
+    <div class="ev-field{% if field.name == 'title' or field.name == 'banner_image' or field.name == 'description' %} ev-wide{% endif %}{% if field.field.widget.input_type == 'checkbox' %} ev-check{% endif %}">
+        <label for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %} *{% endif %}</label>
+        {{ field }}
+        {% if field.name == 'banner_image' %}<img class="bn-preview" data-preview-for="{{ field.id_for_label }}" alt="Preview of the chosen image" hidden>{% endif %}
+        {% if field.help_text %}<small class="ev-help">{{ field.help_text }}</small>{% endif %}
+        {% for error in field.errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+    </div>
+    {% endfor %}
+</div>

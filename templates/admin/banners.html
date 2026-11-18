@@ -1,0 +1,85 @@
+{% extends 'base.html' %}
+{% block title %}Banners | SkillSikka{% endblock %}
+{% block content %}
+{% include 'admin/_banner_styles.html' %}
+<div class="app-shell">
+    <aside class="sidebar">
+        <div class="brand"><span class="brand-mark small">SS</span><strong>SkillSikka</strong></div>
+        <p class="sidebar-label">Workspace</p>
+        <nav>
+            <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
+            <a class="nav-item" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
+            <a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
+            {% include 'admin/course_navigation.html' %}
+            <a class="nav-item" href="{% url 'manage_events' %}"><span>◷</span> Events</a>
+            <a class="nav-item active" href="{% url 'manage_banners' %}"><span>▭</span> Banners</a>
+            <a class="nav-item" href="{% url 'manage_payments' %}"><span>₨</span> Payments</a>
+            <a class="nav-item" href="{% url 'manage_streak_settings' %}"><span>◈</span> Streak settings</a>
+            <a class="nav-item" href="{% url 'manage_certificate_criteria' %}"><span>⚑</span> Certificate criteria</a>
+            <a class="nav-item" href="{% url 'manage_users' %}"><span>◎</span> Users</a>
+        </nav>
+        {% include 'admin/sidebar_footer.html' %}
+    </aside>
+    <main class="dashboard-main">
+        <header class="topbar"><div><p class="eyebrow">Content management</p><h1>Banners</h1></div><div class="top-actions"><a class="outline-button" href="#new-banner">+ New banner</a></div></header>
+        {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
+        <p class="page-intro">Banners slide on the app's Home screen in this order. A banner shows when it is On and inside its dates. All times are Nepal time.</p>
+
+        <article class="management-card">
+            <div class="section-heading"><div><p class="eyebrow">Home carousel</p><h2>Banners</h2></div><span class="count-label">{{ live_count }} live · {{ banners|length }} total</span></div>
+            <div class="table-wrap"><table><thead><tr><th>#</th><th>Banner</th><th>Title</th><th>Dates (NPT)</th><th>Status</th><th></th></tr></thead><tbody>
+                {% for banner in banners %}
+                <tr>
+                    <td class="bn-order">{{ forloop.counter }}</td>
+                    <td><img class="bn-thumb" src="{{ banner.banner_image.url }}" alt=""></td>
+                    <td><strong>{{ banner.title }}</strong>{% if banner.cta_url %}<br><small>Opens {{ banner.cta_url|truncatechars:40 }}</small>{% endif %}</td>
+                    <td>{% if banner.starts_at or banner.ends_at %}{{ banner.starts_at|date:"d M Y g:i A"|default:"Now" }}<br><small>until {{ banner.ends_at|date:"d M Y g:i A"|default:"no end" }}</small>{% else %}<small>Always</small>{% endif %}</td>
+                    <td>
+                        {% if banner.status == 'live' %}<span class="pill verified">Live</span>
+                        {% elif banner.status == 'scheduled' %}<span class="pill pending">Scheduled</span>
+                        {% elif banner.status == 'expired' %}<span class="pill expired">Expired</span>
+                        {% else %}<span class="pill">Off</span>{% endif %}
+                    </td>
+                    <td>
+                        <div class="bn-actions">
+                            <form method="post" action="{% url 'banner_action' banner.pk %}">{% csrf_token %}<input type="hidden" name="action" value="up"><button class="outline-button" type="submit" title="Move up" {% if forloop.first %}disabled{% endif %}>↑</button></form>
+                            <form method="post" action="{% url 'banner_action' banner.pk %}">{% csrf_token %}<input type="hidden" name="action" value="down"><button class="outline-button" type="submit" title="Move down" {% if forloop.last %}disabled{% endif %}>↓</button></form>
+                            <form method="post" action="{% url 'banner_action' banner.pk %}">{% csrf_token %}<input type="hidden" name="action" value="toggle"><button class="outline-button" type="submit">{% if banner.is_active %}Turn off{% else %}Turn on{% endif %}</button></form>
+                            <a class="outline-button" href="{% url 'edit_banner' banner.pk %}">Edit</a>
+                            <form method="post" action="{% url 'banner_action' banner.pk %}" onsubmit="return confirm('Archive this banner? It leaves the app now and can be restored later.');">{% csrf_token %}<input type="hidden" name="action" value="archive"><button class="outline-button danger" type="submit">Archive</button></form>
+                        </div>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="6" class="empty-state">No banners yet. Add one below.</td></tr>
+                {% endfor %}
+            </tbody></table></div>
+        </article>
+
+        <article class="management-card" id="new-banner">
+            <div class="section-heading"><div><p class="eyebrow">Add</p><h2>New banner</h2></div></div>
+            <form method="post" enctype="multipart/form-data" class="form-stack">
+                {% include 'admin/_banner_form_fields.html' %}
+                <button class="primary-button" type="submit">Add banner</button>
+            </form>
+        </article>
+
+        {% if archived %}
+        <article class="management-card">
+            <div class="section-heading"><div><p class="eyebrow">Not shown in the app</p><h2>Archive</h2></div><span class="count-label">{{ archived|length }}</span></div>
+            <div class="table-wrap"><table><thead><tr><th>Banner</th><th>Title</th><th>Archived (NPT)</th><th></th></tr></thead><tbody>
+                {% for banner in archived %}
+                <tr>
+                    <td><img class="bn-thumb" src="{{ banner.banner_image.url }}" alt=""></td>
+                    <td><strong>{{ banner.title }}</strong></td>
+                    <td>{{ banner.archived_at|date:"d M Y g:i A" }}</td>
+                    <td><form method="post" action="{% url 'banner_action' banner.pk %}">{% csrf_token %}<input type="hidden" name="action" value="restore"><button class="outline-button" type="submit">Restore</button></form></td>
+                </tr>
+                {% endfor %}
+            </tbody></table></div>
+        </article>
+        {% endif %}
+    </main>
+</div>
+{% if form.errors %}<script>document.getElementById('new-banner').scrollIntoView();</script>{% endif %}
+{% endblock %}

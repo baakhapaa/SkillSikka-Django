@@ -1,0 +1,26 @@
+{% include 'admin/_event_styles.html' %}
+<style>
+.ev-field input[type=url]{width:100%;padding:12px 14px;border:1px solid #d7e1df;border-radius:3px;background:var(--white);font:inherit;color:var(--ink)}
+.bn-thumb{width:128px;height:72px;border-radius:3px;object-fit:cover;border:1px solid var(--line);display:block}
+.bn-preview{display:block;max-width:360px;width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:4px;border:1px solid var(--line);margin-top:10px}
+.bn-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.bn-actions form{margin:0}
+.bn-actions .outline-button{padding:6px 10px;font-size:12px}
+.bn-actions .outline-button[disabled]{opacity:.35;cursor:not-allowed}
+.bn-order{color:var(--muted);font-weight:700}
+.pill.expired{background:#f3e9e8;color:#8c4b45}
+</style>
+<script>
+document.addEventListener('change', function (event) {
+    var input = event.target;
+    if (input.type !== 'file') return;
+    var preview = document.querySelector('[data-preview-for="' + input.id + '"]');
+    if (!preview) return;
+    if (input.files && input.files[0]) {
+        preview.src = URL.createObjectURL(input.files[0]);
+        preview.hidden = false;
+    } else {
+        preview.hidden = true;
+    }
+});
+</script>

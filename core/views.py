@@ -10,6 +10,7 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
 
 from .forms import (
+	BannerForm,
 	BootcampForm,
 	BootcampInstructorForm,
 	BootcampLessonForm,
@@ -26,6 +27,7 @@ from .forms import (
 	UserAdminForm,
 )
 from .models import (
+	Advertisement,
 	Event,
 	Payment,
 	AdminAuditLog,
@@ -608,6 +610,159 @@ def delete_event(request, event_id):
 		storage.delete(cover)
 	messages.success(request, f'Event "{title}" deleted.')
 	return redirect('manage_events')
+
+
+# =========================================================
+# Banners (the Home carousel; stored as Advertisement)
+# =========================================================
+
+def _banner_status(banner, now):
+	if banner.archived_at is not None:
+		return 'archived'
+	if not banner.is_active:
+		return 'off'
+	if banner.ends_at is not None and banner.ends_at < now:
+		return 'expired'
+	if banner.starts_at is not None and banner.starts_at > now:
+		return 'scheduled'
+	return 'live'
+
+
+def _ordered_banners():
+	return list(Advertisement.objects.filter(archived_at__isnull=True).order_by('display_order', 'id'))
+
+
+def _renumber_banners(banners):
+	"""Store positions 1..n so ties from older rows never block a move."""
+	for position, banner in enumerate(banners, start=1):
+		if banner.display_order != position:
+			banner.display_order = position
+			banner.save(update_fields=['display_order', 'updated_at'])
+
+
+def _audit_banner(request, action, banner, before):
+	from .advertisement_views import advertisement_snapshot
+	from .api_views import _create_audit_log
+	_create_audit_log(request, action, 'advertisement', banner.pk, banner.title,
+		metadata={'before': before, 'after': advertisement_snapshot(banner), 'source': 'admin_dashboard'})
+
+
+def _delete_replaced_banner_image(storage, old_name, new_name):
+	if old_name and old_name != new_name and not Advertisement.objects.filter(banner_image=old_name).exists():
+		storage.delete(old_name)
+
+
+@login_required
+def manage_banners(request):
+	if not is_admin(request.user):
+		messages.error(request, 'You do not have permission to manage banners.')
+		return redirect('dashboard')
+
+	with timezone.override(EVENT_TIMEZONE):
+		form = BannerForm(initial={'is_active': True})
+		if request.method == 'POST':
+			form = BannerForm(request.POST, request.FILES)
+			if form.is_valid():
+				banner = form.save(commit=False)
+				banner.created_by = request.user
+				banner.display_order = len(_ordered_banners()) + 1
+				banner.save()
+				_audit_banner(request, 'create', banner, None)
+				messages.success(request, f'Banner "{banner.title}" added.')
+				return redirect('manage_banners')
+
+		now = timezone.now()
+		banners = _ordered_banners()
+		archived = list(Advertisement.objects.filter(archived_at__isnull=False).order_by('-archived_at'))
+		for banner in banners + archived:
+			banner.status = _banner_status(banner, now)
+		return render(request, 'admin/banners.html', {
+			'form': form,
+			'banners': banners,
+			'archived': archived,
+			'live_count': sum(1 for banner in banners if banner.status == 'live'),
+		})
+
+
+@login_required
+def edit_banner(request, banner_id):
+	if not is_admin(request.user):
+		messages.error(request, 'You do not have permission to manage banners.')
+		return redirect('dashboard')
+
+	from .advertisement_views import advertisement_snapshot
+	banner = get_object_or_404(Advertisement, pk=banner_id)
+	if banner.archived_at is not None:
+		messages.error(request, 'Restore this banner before editing it.')
+		return redirect('manage_banners')
+	old_image = banner.banner_image.name
+
+	with timezone.override(EVENT_TIMEZONE):
+		if request.method == 'POST':
+			before = advertisement_snapshot(banner)
+			form = BannerForm(request.POST, request.FILES, instance=banner)
+			if form.is_valid():
+				banner = form.save()
+				_audit_banner(request, 'update', banner, before)
+				_delete_replaced_banner_image(banner.banner_image.storage, old_image, banner.banner_image.name)
+				messages.success(request, f'Banner "{banner.title}" saved.')
+				return redirect('manage_banners')
+		else:
+			form = BannerForm(instance=banner)
+		return render(request, 'admin/banner_edit.html', {
+			'form': form,
+			'banner': banner,
+			'status': _banner_status(banner, timezone.now()),
+		})
+
+
+@login_required
+@require_POST
+def banner_action(request, banner_id):
+	if not is_admin(request.user):
+		messages.error(request, 'You do not have permission to manage banners.')
+		return redirect('dashboard')
+
+	from .advertisement_views import advertisement_snapshot
+	action = request.POST.get('action')
+	banner = get_object_or_404(Advertisement, pk=banner_id)
+	before = advertisement_snapshot(banner)
+
+	if action == 'restore':
+		if banner.archived_at is not None:
+			banner.archived_at = None
+			banner.display_order = len(_ordered_banners()) + 1
+			banner.save(update_fields=['archived_at', 'display_order', 'updated_at'])
+			_audit_banner(request, 'update', banner, before)
+			messages.success(request, f'Banner "{banner.title}" restored. It is off until you turn it on.')
+		return redirect('manage_banners')
+
+	if banner.archived_at is not None:
+		messages.error(request, 'Restore this banner first.')
+		return redirect('manage_banners')
+
+	if action == 'toggle':
+		banner.is_active = not banner.is_active
+		banner.save(update_fields=['is_active', 'updated_at'])
+		_audit_banner(request, 'activate' if banner.is_active else 'deactivate', banner, before)
+		messages.success(request, f'Banner "{banner.title}" turned {"on" if banner.is_active else "off"}.')
+	elif action in ('up', 'down'):
+		banners = _ordered_banners()
+		index = next(i for i, row in enumerate(banners) if row.pk == banner.pk)
+		target = index - 1 if action == 'up' else index + 1
+		if 0 <= target < len(banners):
+			banners[index], banners[target] = banners[target], banners[index]
+			_renumber_banners(banners)
+	elif action == 'archive':
+		banner.archived_at = timezone.now()
+		banner.is_active = False
+		banner.save(update_fields=['archived_at', 'is_active', 'updated_at'])
+		_renumber_banners(_ordered_banners())
+		_audit_banner(request, 'delete', banner, before)
+		messages.success(request, f'Banner "{banner.title}" archived. Restore it any time from the archive.')
+	else:
+		messages.error(request, 'Unknown action.')
+	return redirect('manage_banners')
 
 
 # =========================================================

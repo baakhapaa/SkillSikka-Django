@@ -1097,7 +1097,7 @@ class HomeFeedAPIView(APIView):
 	permission_classes = [IsAuthenticated]
 	COURSE_LIMIT = 6
 	EVENT_LIMIT = 3
-	ADVERTISEMENT_LIMIT = 3
+	ADVERTISEMENT_LIMIT = 5
 	INSTRUCTOR_LIMIT = 6
 
 	def get(self, request):

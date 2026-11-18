@@ -1203,7 +1203,7 @@ class HomeFeedTests(TestCase):
         self.assertEqual(len(expanded), len(initial))
         for section, limit in [('featured_courses', 6), ('recommended_courses', 6),
                                ('skill_courses', 6), ('events', 3),
-                               ('advertisements', 3), ('top_instructors', 6)]:
+                               ('advertisements', 5), ('top_instructors', 6)]:
             self.assertEqual(len(data[section]), limit)
         self.assertEqual(data['top_instructors'], self.client.get(reverse('api-top-instructors')).data[:6])
 
