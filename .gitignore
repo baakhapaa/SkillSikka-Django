@@ -13,3 +13,5 @@ staticfiles/
 .pytest_cache/
 .coverage
 plan.md
+# Local-only helper: generates throwaway course covers (media/ is ignored too).
+core/management/commands/seed_course_covers.py

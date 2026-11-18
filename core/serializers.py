@@ -2545,7 +2545,19 @@ class ShortSerializer(serializers.ModelSerializer):
 		read_only=True
 	)
 
-	instructor_photo_url = serializers.CharField(source='instructor.profile_photo_url', read_only=True)
+	instructor_photo_url = serializers.SerializerMethodField()
+	def get_instructor_photo_url(self, obj):
+		stored = obj.instructor.profile_photo_url
+		if not stored:
+			return ''
+		# An outside URL is not ours to rewrite; only stored media names need
+		# resolving through `profile_photo_src` and the current request host.
+		if str(stored).startswith(('http://', 'https://')):
+			return stored
+		photo = obj.instructor.profile_photo_src
+		request = self.context.get('request')
+		return request.build_absolute_uri(photo) if request else photo
+
 	# The badge under the handle ("Adobe Certified Instructor"). Null for an
 	# instructor without a profile row rather than a 500.
 	instructor_title = serializers.CharField(source='instructor.instructor_profile.qualification', read_only=True, allow_null=True)
