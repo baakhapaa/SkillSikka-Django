@@ -128,6 +128,8 @@ from .serializers import (
 	QuizManagementSerializer,
 	QuizStudentSerializer,
 	QuizSubmitSerializer,
+	StudentAnswerSubmitSerializer,
+	quiz_has_completed_attempts,
 	ResetPasswordSerializer,
 	SchoolSerializer,
 	StudentBadgeSerializer,
@@ -2937,6 +2939,38 @@ class MyChallengesAPIView(generics.ListAPIView):
 # Quiz Management
 # =========================================================
 
+QUIZ_QUESTIONS_LOCKED = 'This quiz already has attempts, so its questions are locked.'
+
+
+def _managed_quizzes():
+	return Quiz.objects.select_related(
+		'course',
+		'course__instructor'
+	).prefetch_related(
+		'questions__options'
+	).annotate(
+		has_completed_attempts=Exists(QuizAttempt.objects.filter(
+			quiz=OuterRef('pk'),
+			completed_at__isnull=False,
+		)),
+	)
+
+
+def _require_quiz_unlocked(quiz):
+	# Answers point at these rows, so changing them would rewrite past results.
+	if quiz_has_completed_attempts(quiz):
+		raise ValidationError({'detail': QUIZ_QUESTIONS_LOCKED})
+
+
+def _save_quiz(serializer, **kwargs):
+	# The serializer checks the module first; this covers two saves racing.
+	try:
+		with transaction.atomic():
+			serializer.save(**kwargs)
+	except IntegrityError:
+		raise ValidationError({'section': ['This module already has a quiz.']})
+
+
 class QuizListCreateAPIView(generics.ListCreateAPIView):
 	authentication_classes = [JWTAuthentication]
 	permission_classes = [IsAuthenticated]
@@ -2945,12 +2979,11 @@ class QuizListCreateAPIView(generics.ListCreateAPIView):
 	def get_queryset(self):
 		user = self.request.user
 
-		queryset = Quiz.objects.select_related(
-			'course',
-			'course__instructor'
-		).prefetch_related(
-			'questions__options'
-		)
+		queryset = _managed_quizzes()
+
+		course_id = positive_id_param(self.request.query_params, 'course')
+		if course_id is not None:
+			queryset = queryset.filter(course_id=course_id)
 
 		if _is_admin(user):
 			return queryset.order_by('-created_at')
@@ -2984,7 +3017,7 @@ class QuizListCreateAPIView(generics.ListCreateAPIView):
 				'for your own courses.'
 			)
 
-		serializer.save(is_published=False)
+		_save_quiz(serializer, is_published=False)
 
 
 class QuizDetailAPIView(
@@ -2997,12 +3030,7 @@ class QuizDetailAPIView(
 	def get_queryset(self):
 		user = self.request.user
 
-		queryset = Quiz.objects.select_related(
-			'course',
-			'course__instructor'
-		).prefetch_related(
-			'questions__options'
-		)
+		queryset = _managed_quizzes()
 
 		if _is_admin(user):
 			return queryset
@@ -3033,7 +3061,7 @@ class QuizDetailAPIView(
 				'for your own courses.'
 			)
 
-		serializer.save()
+		_save_quiz(serializer)
 
 	def perform_destroy(self, instance):
 		user = self.request.user
@@ -3105,6 +3133,7 @@ class QuestionListCreateAPIView(
 				'from your own courses.'
 			)
 
+		_require_quiz_unlocked(quiz)
 		serializer.save()
 
 
@@ -3155,6 +3184,9 @@ class QuestionDetailAPIView(
 				'from your own quizzes.'
 			)
 
+		_require_quiz_unlocked(question.quiz)
+		if target:
+			_require_quiz_unlocked(target)
 		serializer.save()
 
 	def perform_destroy(self, instance):
@@ -3170,6 +3202,7 @@ class QuestionDetailAPIView(
 				'from your own quizzes.'
 			)
 
+		_require_quiz_unlocked(instance.quiz)
 		instance.delete()
 
 
@@ -3226,6 +3259,7 @@ class QuestionOptionListCreateAPIView(
 				'from your own quizzes.'
 			)
 
+		_require_quiz_unlocked(question.quiz)
 		serializer.save()
 
 
@@ -3275,6 +3309,9 @@ class QuestionOptionDetailAPIView(
 				'from your own quizzes.'
 			)
 
+		_require_quiz_unlocked(option.question.quiz)
+		if target:
+			_require_quiz_unlocked(target.quiz)
 		serializer.save()
 
 	def perform_destroy(self, instance):
@@ -3290,6 +3327,7 @@ class QuestionOptionDetailAPIView(
 				'from your own quizzes.'
 			)
 
+		_require_quiz_unlocked(instance.question.quiz)
 		instance.delete()
 
 
@@ -3394,6 +3432,133 @@ class StartQuizAttemptAPIView(APIView):
 		)
 
 
+def _open_attempt(student, attempt_id):
+	"""The student's own attempt, locked so a check and a submit cannot interleave."""
+	attempt = QuizAttempt.objects.select_for_update().select_related(
+		'quiz',
+		'enrollment',
+		'quiz__course'
+	).filter(
+		id=attempt_id,
+		student=student
+	).first()
+
+	if attempt is None:
+		raise NotFound('Quiz attempt not found.')
+	require_course_access(student, attempt.quiz.course, managers=False)
+
+	if attempt.completed_at is not None:
+		raise ValidationError({
+			'detail':
+				'This quiz attempt has already been submitted.'
+		})
+
+	return attempt
+
+
+def _question_in_quiz(questions, question_id):
+	question = next(
+		(question for question in questions if question.id == question_id),
+		None
+	)
+
+	if question is None:
+		raise ValidationError({
+			'detail': (
+				f'Question {question_id} does not '
+				'belong to this quiz.'
+			)
+		})
+
+	return question
+
+
+def _answer_for(attempt, question, option_id):
+	selected_option = next(
+		(
+			option
+			for option in question.options.all()
+			if option.id == option_id
+		),
+		None
+	)
+
+	if selected_option is None:
+		raise ValidationError({
+			'detail': (
+				f'Option {option_id} does not belong '
+				f'to question {question.id}.'
+			)
+		})
+
+	return StudentAnswer(
+		attempt=attempt,
+		question=question,
+		selected_option=selected_option,
+		is_correct=selected_option.is_correct,
+		marks_awarded=(
+			Decimal(str(question.marks))
+			if selected_option.is_correct
+			else Decimal('0.00')
+		),
+	)
+
+
+class CheckQuizAnswerAPIView(APIView):
+	"""Stores one answer and reveals whether it was right. Checking is final."""
+	authentication_classes = [JWTAuthentication]
+	permission_classes = [IsAuthenticated]
+
+	@transaction.atomic
+	def post(self, request, attempt_id):
+		attempt = _open_attempt(request.user, attempt_id)
+
+		serializer = StudentAnswerSubmitSerializer(data=request.data)
+		serializer.is_valid(raise_exception=True)
+
+		question = _question_in_quiz(
+			attempt.quiz.questions.prefetch_related('options'),
+			serializer.validated_data['question'],
+		)
+		answer = _answer_for(
+			attempt,
+			question,
+			serializer.validated_data['selected_option'],
+		)
+
+		already_answered = Response(
+			{
+				'code': 'ALREADY_ANSWERED',
+				'detail': 'This question was already answered.',
+			},
+			status=status.HTTP_400_BAD_REQUEST,
+		)
+
+		if attempt.answers.filter(question=question).exists():
+			return already_answered
+
+		try:
+			with transaction.atomic():
+				answer.save()
+		except IntegrityError:
+			return already_answered
+
+		correct_option = next(
+			(option.id for option in question.options.all() if option.is_correct),
+			None
+		)
+
+		return Response(
+			{
+				'is_correct': answer.is_correct,
+				'correct_option': correct_option,
+				'explanation': question.explanation,
+				'marks_awarded': str(answer.marks_awarded.quantize(Decimal('0.01'))),
+			},
+			status=status.HTTP_200_OK,
+		)
+
+
 class SubmitQuizAttemptAPIView(APIView):
 	authentication_classes = [JWTAuthentication]
 	permission_classes = [IsAuthenticated]
@@ -3402,37 +3567,14 @@ class SubmitQuizAttemptAPIView(APIView):
 	def post(self, request, attempt_id):
 		student = request.user
 
-		attempt = QuizAttempt.objects.select_related(
-			'quiz',
-			'enrollment',
-			'quiz__course'
-		).filter(
-			id=attempt_id,
-			student=student
-		).first()
-
-		if attempt is None:
-			return Response(
-				{'detail': 'Quiz attempt not found.'},
-				status=status.HTTP_404_NOT_FOUND,
-			)
-		require_course_access(student, attempt.quiz.course, managers=False)
-
-		if attempt.completed_at is not None:
-			return Response(
-				{
-					'detail':
-						'This quiz attempt has already been submitted.'
-				},
-				status=status.HTTP_400_BAD_REQUEST,
-			)
+		attempt = _open_attempt(student, attempt_id)
 
 		serializer = QuizSubmitSerializer(
 			data=request.data
 		)
 		serializer.is_valid(raise_exception=True)
 
-		submitted_answers = serializer.validated_data['answers']
+		submitted_answers = serializer.validated_data.get('answers', [])
 
 		questions = list(
 			attempt.quiz.questions.prefetch_related(
@@ -3449,17 +3591,37 @@ class SubmitQuizAttemptAPIView(APIView):
 				status=status.HTTP_400_BAD_REQUEST,
 			)
 
-		quiz_question_ids = {
-			question.id
-			for question in questions
+		# Answers checked one at a time are final, so a submitted option for
+		# one of those questions is ignored.
+		stored_answers = list(attempt.answers.all())
+		stored_question_ids = {
+			answer.question_id
+			for answer in stored_answers
 		}
 
-		submitted_question_ids = {
-			answer['question']
-			for answer in submitted_answers
+		answers_to_create = []
+
+		for submitted_answer in submitted_answers:
+			question = _question_in_quiz(
+				questions,
+				submitted_answer['question'],
+			)
+
+			if question.id in stored_question_ids:
+				continue
+
+			answers_to_create.append(_answer_for(
+				attempt,
+				question,
+				submitted_answer['selected_option'],
+			))
+
+		answered_ids = stored_question_ids | {
+			answer.question_id
+			for answer in answers_to_create
 		}
 
-		if submitted_question_ids != quiz_question_ids:
+		if answered_ids != {question.id for question in questions}:
 			return Response(
 				{
 					'detail': (
@@ -3484,96 +3646,46 @@ class SubmitQuizAttemptAPIView(APIView):
 				status=status.HTTP_400_BAD_REQUEST,
 			)
 
+		all_answers = stored_answers + answers_to_create
+
+		score = sum(
+			(answer.marks_awarded for answer in all_answers),
+			Decimal('0.00')
+		)
+
+		# -----------------------------------------
+		# Gamification points, once per question
+		# -----------------------------------------
 		question_map = {
 			question.id: question
 			for question in questions
 		}
 
-		score = Decimal('0.00')
+		rewarded = [
+			question_map[answer.question_id]
+			for answer in all_answers
+			if answer.is_correct
+			and question_map[answer.question_id].points > 0
+		]
 
-		answers_to_create = []
+		already_awarded = set(
+			PointTransaction.objects.filter(
+				student=student,
+				question__in=rewarded,
+				event_type='quiz_correct_answer'
+			).values_list('question_id', flat=True)
+		)
 
-		# -----------------------------------------
-		# Points earned in this submission
-		# -----------------------------------------
-		points_earned = 0
+		point_awards = [
+			question
+			for question in rewarded
+			if question.id not in already_awarded
+		]
 
-		# Keep questions that should award points.
-		point_awards = []
-
-		for submitted_answer in submitted_answers:
-			question_id = submitted_answer['question']
-			option_id = submitted_answer['selected_option']
-
-			question = question_map.get(question_id)
-
-			if question is None:
-				return Response(
-					{
-						'detail': (
-							f'Question {question_id} does not '
-							'belong to this quiz.'
-						)
-					},
-					status=status.HTTP_400_BAD_REQUEST,
-				)
-
-			selected_option = next(
-				(
-					option
-					for option in question.options.all()
-					if option.id == option_id
-				),
-				None
-			)
-
-			if selected_option is None:
-				return Response(
-					{
-						'detail': (
-							f'Option {option_id} does not belong '
-							f'to question {question_id}.'
-						)
-					},
-					status=status.HTTP_400_BAD_REQUEST,
-				)
-
-			is_correct = selected_option.is_correct
-
-			marks_awarded = (
-				Decimal(str(question.marks))
-				if is_correct
-				else Decimal('0.00')
-			)
-
-			score += marks_awarded
-
-			answers_to_create.append(
-				StudentAnswer(
-					attempt=attempt,
-					question=question,
-					selected_option=selected_option,
-					is_correct=is_correct,
-					marks_awarded=marks_awarded,
-				)
-			)
-
-			# -----------------------------------------
-			# Gamification points
-			# -----------------------------------------
-			if is_correct and question.points > 0:
-
-				already_awarded = (
-					PointTransaction.objects.filter(
-						student=student,
-						question=question,
-						event_type='quiz_correct_answer'
-					).exists()
-				)
-
-				if not already_awarded:
-					points_earned += question.points
-					point_awards.append(question)
+		points_earned = sum(
+			question.points
+			for question in point_awards
+		)
 
 		percentage = (
 			score / Decimal(str(total_marks))

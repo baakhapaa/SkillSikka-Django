@@ -937,12 +937,22 @@ class Quiz(models.Model):
 	description = models.TextField(blank=True)
 	pass_percentage = models.PositiveSmallIntegerField(default=40)
 	max_attempts = models.PositiveSmallIntegerField(default=1)
+	# The module this quiz ends: the same text as `Lesson.section`. Null is a
+	# course-level quiz (old rows) or the lessons that have no section.
+	section = models.CharField(max_length=200, null=True, blank=True)
 	is_published = models.BooleanField(default=False)
 	created_at = models.DateTimeField(auto_now_add=True)
 	updated_at = models.DateTimeField(auto_now=True)
 
 	class Meta:
 		db_table = 'quizzes'
+		constraints = [
+			models.UniqueConstraint(
+				fields=['course', 'section'],
+				condition=models.Q(section__isnull=False),
+				name='unique_quiz_section_per_course',
+			),
+		]
 
 	def __str__(self):
 		return self.title
@@ -958,6 +968,9 @@ class Question(models.Model):
 	marks = models.PositiveSmallIntegerField(default=1)
 	points = models.PositiveIntegerField(default=0)
 	order = models.PositiveSmallIntegerField(default=0)
+	# Shown before answering; the explanation only after the answer is checked.
+	hint = models.TextField(blank=True)
+	explanation = models.TextField(blank=True)
 
 	class Meta:
 		db_table = 'questions'

@@ -109,6 +109,7 @@ from .api_views import (
 	SubjectListCreateAPIView,
 	SubmitChallengeAPIView,
 	SubmitQuizAttemptAPIView,
+	CheckQuizAnswerAPIView,
 	TopicDetailAPIView,
 	TopicListCreateAPIView,
 	VerifyPasswordResetOTPAPIView,
@@ -739,6 +740,12 @@ urlpatterns = [
 		'student/quiz-attempts/<int:attempt_id>/submit/',
 		SubmitQuizAttemptAPIView.as_view(),
 		name='submit-quiz-attempt',
+	),
+
+	path(
+		'student/quiz-attempts/<int:attempt_id>/answer/',
+		CheckQuizAnswerAPIView.as_view(),
+		name='check-quiz-answer',
 	),
 
 	path(

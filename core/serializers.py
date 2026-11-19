@@ -1896,6 +1896,13 @@ class VerifyPaymentSerializer(serializers.Serializer):
 		return attrs
 
 
+def quiz_has_completed_attempts(quiz):
+	return QuizAttempt.objects.filter(
+		quiz=quiz,
+		completed_at__isnull=False,
+	).exists()
+
+
 class QuestionOptionManagementSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = QuestionOption
@@ -1923,6 +1930,8 @@ class QuestionManagementSerializer(serializers.ModelSerializer):
 			'marks',
 			'points',
 			'order',
+			'hint',
+			'explanation',
 			'options',
 		]
 		read_only_fields = ['id']
@@ -1947,6 +1956,17 @@ class QuizManagementSerializer(serializers.ModelSerializer):
 		read_only=True
 	)
 
+	# The module name exactly as stored on its lessons, so no trimming.
+	section = serializers.CharField(
+		max_length=200,
+		required=False,
+		allow_null=True,
+		allow_blank=True,
+		trim_whitespace=False,
+	)
+
+	has_completed_attempts = serializers.SerializerMethodField()
+
 	class Meta:
 		model = Quiz
 		fields = [
@@ -1957,7 +1977,9 @@ class QuizManagementSerializer(serializers.ModelSerializer):
 			'description',
 			'pass_percentage',
 			'max_attempts',
+			'section',
 			'is_published',
+			'has_completed_attempts',
 			'questions',
 			'created_at',
 			'updated_at',
@@ -1967,6 +1989,9 @@ class QuizManagementSerializer(serializers.ModelSerializer):
 			'created_at',
 			'updated_at',
 		]
+		# DRF's validator for the conditional (course, section) constraint
+		# would make `section` required; validate() checks it instead.
+		validators = []
 
 	def validate_pass_percentage(self, value):
 		if value < 0 or value > 100:
@@ -1986,6 +2011,17 @@ class QuizManagementSerializer(serializers.ModelSerializer):
 
 		return value
 
+	def validate_section(self, value):
+		# A blank module name is the same as no module.
+		return value or None
+
+	@extend_schema_field(serializers.BooleanField())
+	def get_has_completed_attempts(self, obj):
+		annotated = getattr(obj, 'has_completed_attempts', None)
+		if annotated is not None:
+			return annotated
+		return quiz_has_completed_attempts(obj)
+
 	def validate(self, attrs):
 		attrs = super().validate(attrs)
 
@@ -1995,6 +2031,23 @@ class QuizManagementSerializer(serializers.ModelSerializer):
 			'course',
 			instance.course if instance else None
 		)
+
+		section = attrs.get(
+			'section',
+			instance.section if instance else None
+		)
+
+		if section is not None and course is not None:
+			duplicate = Quiz.objects.filter(
+				course=course,
+				section=section,
+			)
+			if instance is not None:
+				duplicate = duplicate.exclude(pk=instance.pk)
+			if duplicate.exists():
+				raise serializers.ValidationError({
+					'section': 'This module already has a quiz.'
+				})
 
 		is_published = attrs.get(
 			'is_published',
@@ -2096,6 +2149,7 @@ class QuestionStudentSerializer(serializers.ModelSerializer):
 			'text',
 			'marks',
 			'order',
+			'hint',
 			'options',
 		]
 
@@ -2121,8 +2175,10 @@ class QuizStudentSerializer(serializers.ModelSerializer):
 			'description',
 			'pass_percentage',
 			'max_attempts',
+			'section',
 			'questions',
 		]
+		read_only_fields = fields
 
 
 class QuizAttemptSerializer(serializers.ModelSerializer):
@@ -2163,14 +2219,11 @@ class StudentAnswerSubmitSerializer(serializers.Serializer):
 
 
 class QuizSubmitSerializer(serializers.Serializer):
-	answers = StudentAnswerSubmitSerializer(many=True)
+	# Questions already checked through the answer endpoint are stored, so
+	# the list may be empty when every question was checked.
+	answers = StudentAnswerSubmitSerializer(many=True, required=False)
 
 	def validate_answers(self, value):
-		if not value:
-			raise serializers.ValidationError(
-				'At least one answer is required.'
-			)
-
 		question_ids = [
 			answer['question']
 			for answer in value
