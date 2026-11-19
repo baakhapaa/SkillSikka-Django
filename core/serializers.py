@@ -2669,6 +2669,13 @@ class ShortSerializer(serializers.ModelSerializer):
 	comment_count = serializers.SerializerMethodField()
 	is_liked = serializers.SerializerMethodField()
 	is_saved = serializers.SerializerMethodField()
+	# Present on the saved list, where the queryset annotates the bookmark time.
+	# Null on the feed: a short there has not been saved, so there is no time.
+	saved_at = serializers.SerializerMethodField()
+
+	def get_saved_at(self, obj):
+		value = getattr(obj, 'saved_at', None)
+		return value
 
 	class Meta:
 		model = Short
@@ -2698,6 +2705,7 @@ class ShortSerializer(serializers.ModelSerializer):
 			'comment_count',
 			'is_liked',
 			'is_saved',
+			'saved_at',
 			'created_at',
 			'updated_at',
 		]

@@ -2268,7 +2268,7 @@ class ShortBookmarkTests(TestCase):
 
     def test_is_saved_in_list_detail_and_saved_list_preserves_fields(self):
         expected = {'id','title','instructor_id','instructor_name','video_url','thumbnail_url','is_published',
-                    'view_count','like_count','comment_count','is_liked','is_saved','created_at','updated_at',
+                    'view_count','like_count','comment_count','is_liked','is_saved','saved_at','created_at','updated_at',
                     'caption','instructor_photo_url','instructor_title','topic','topic_name','topic_slug',
                     'course','course_title','quiz','quiz_title','challenge','challenge_title'}
         self.assertFalse(self.client.get(self.detail_url).data['is_saved'])

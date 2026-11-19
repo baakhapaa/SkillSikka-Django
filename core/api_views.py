@@ -4072,6 +4072,11 @@ class SavedShortsListAPIView(generics.ListAPIView):
 	def get_queryset(self):
 		return _shorts_with_saved_state(self.request.user).filter(
 			bookmarks__student=self.request.user, is_published=True,
+		).annotate(
+			saved_at=Max(
+				'bookmarks__created_at',
+				filter=Q(bookmarks__student=self.request.user),
+			),
 		).order_by('-bookmarks__created_at', '-bookmarks__id')
 
 
