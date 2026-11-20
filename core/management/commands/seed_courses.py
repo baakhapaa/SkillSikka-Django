@@ -23,6 +23,10 @@ class Command(BaseCommand):
             raise CommandError('No instructor or superuser exists. Create an authorized owner before seeding courses; no accounts were created.')
         import_module('core.migrations.0044_seed_course_categories').seed_categories(apps, type('Schema', (), {'connection': connection})())
         courses = []
+        # Placeholders are published so the catalogue renders them, but they
+        # must stay lesson-free: the "Coming Soon" card is what the UI shows
+        # until real content lands. They still get outcomes/requirements below.
+        placeholder_titles = {'Creative Practice: Coming Soon', 'Draft: Advanced Creative Workshop'}
         # The level is part of the fixture, not a default: a catalogue where
         # every row is blank teaches the Skills tab nothing, and the builder's
         # level chips were added on 2026-10-28 without backfilling these rows.
@@ -73,6 +77,8 @@ class Command(BaseCommand):
             Course.objects.filter(pk=course.pk, requirements=[]).update(requirements=[
                 'A notebook and a willingness to practice.',
                 f'Familiarity with the preceding grade curriculum.' if course.course_type == 'academic' else 'No prior experience required.'])
+            if course.title in placeholder_titles:
+                continue
             for index in range(1, 10):
                 section = ['Foundations', 'Guided Practice', 'Apply Your Skills'][(index - 1) // 3]
                 kind = ['video', 'pdf', 'text'][(index - 1) % 3]
