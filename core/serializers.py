@@ -1328,6 +1328,7 @@ class CourseSerializer(serializers.ModelSerializer):
 		read_only=True
 	)
 	instructor_qualification = serializers.SerializerMethodField()
+	instructor_photo_url = serializers.SerializerMethodField()
 
 	def get_instructor_qualification(self, obj):
 		# The line under the name on the home premium card. A course owner
@@ -1336,6 +1337,20 @@ class CourseSerializer(serializers.ModelSerializer):
 		if profile is None:
 			return ''
 		return profile.qualification or ''
+
+	def get_instructor_photo_url(self, obj):
+		stored = obj.instructor.profile_photo_url
+		if not stored:
+			return ''
+		# An outside URL is already absolute. A stored media name has to be
+		# resolved against this request or the phone cannot load it.
+		if str(stored).startswith(('http://', 'https://')):
+			return stored
+		photo = obj.instructor.profile_photo_src
+		request = self.context.get('request')
+		if not photo:
+			return ''
+		return request.build_absolute_uri(photo) if request else photo
 
 	# allow_null keeps the key as null on skill/premium courses; without it DRF
 	# drops the key, and the app groups My Courses by these names.
@@ -1365,6 +1380,7 @@ class CourseSerializer(serializers.ModelSerializer):
 			'instructor',
 			'instructor_name',
 			'instructor_qualification',
+			'instructor_photo_url',
 			'course_type',
 			'level',
 			'language',
