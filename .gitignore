@@ -16,3 +16,5 @@ staticfiles/
 plan.md
 # Local-only helper: generates throwaway course covers (media/ is ignored too).
 core/management/commands/seed_course_covers.py
+# Local-only helper: fills demo courses with public sample videos.
+core/management/commands/fill_demo_curricula.py

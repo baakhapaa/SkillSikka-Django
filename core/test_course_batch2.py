@@ -166,7 +166,7 @@ class CourseBatch2Tests(TestCase):
         self.assertEqual(len(response.data), 1)
         row = response.data[0]
         self.assertEqual(set(row), {'id', 'title', 'description', 'section', 'question_count', 'pass_percentage',
-                                    'max_attempts', 'attempts_used', 'best_percentage', 'is_passed'})
+                                    'max_attempts', 'time_limit_seconds', 'attempts_used', 'best_percentage', 'is_passed'})
         self.assertEqual(row['attempts_used'], 2)
         self.assertEqual(row['best_percentage'], '80.00')
         self.assertTrue(row['is_passed'])

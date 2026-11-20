@@ -1249,6 +1249,7 @@ class CourseListCreateAPIView(generics.ListCreateAPIView):
 	def get_queryset(self):
 		queryset = with_bootcamp_data(Course.objects.with_review_stats().with_access(self.request.user), detail=False).select_related(
 			'instructor',
+			'instructor__instructor_profile',
 			'subject',
 			'grade',
 		)

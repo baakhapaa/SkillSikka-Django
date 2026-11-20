@@ -1327,6 +1327,16 @@ class CourseSerializer(serializers.ModelSerializer):
 		source='instructor.name',
 		read_only=True
 	)
+	instructor_qualification = serializers.SerializerMethodField()
+
+	def get_instructor_qualification(self, obj):
+		# The line under the name on the home premium card. A course owner
+		# without an instructor profile has no qualification to show.
+		profile = getattr(obj.instructor, 'instructor_profile', None)
+		if profile is None:
+			return ''
+		return profile.qualification or ''
+
 	# allow_null keeps the key as null on skill/premium courses; without it DRF
 	# drops the key, and the app groups My Courses by these names.
 	subject_name = serializers.CharField(
@@ -1354,6 +1364,7 @@ class CourseSerializer(serializers.ModelSerializer):
 			'description',
 			'instructor',
 			'instructor_name',
+			'instructor_qualification',
 			'course_type',
 			'level',
 			'language',
@@ -1977,6 +1988,7 @@ class QuizManagementSerializer(serializers.ModelSerializer):
 			'description',
 			'pass_percentage',
 			'max_attempts',
+			'time_limit_seconds',
 			'section',
 			'is_published',
 			'has_completed_attempts',
@@ -2007,6 +2019,14 @@ class QuizManagementSerializer(serializers.ModelSerializer):
 			raise serializers.ValidationError(
 				'Maximum attempts must be '
 				'at least 1.'
+			)
+
+		return value
+
+	def validate_time_limit_seconds(self, value):
+		if value < 15 or value > 3600:
+			raise serializers.ValidationError(
+				'Quiz time must be between 15 seconds and 60 minutes.'
 			)
 
 		return value
@@ -2175,6 +2195,7 @@ class QuizStudentSerializer(serializers.ModelSerializer):
 			'description',
 			'pass_percentage',
 			'max_attempts',
+			'time_limit_seconds',
 			'section',
 			'questions',
 		]

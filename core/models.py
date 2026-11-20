@@ -937,6 +937,8 @@ class Quiz(models.Model):
 	description = models.TextField(blank=True)
 	pass_percentage = models.PositiveSmallIntegerField(default=40)
 	max_attempts = models.PositiveSmallIntegerField(default=1)
+	# One clock for the whole attempt. The next question does not start it again.
+	time_limit_seconds = models.PositiveSmallIntegerField(default=180)
 	# The module this quiz ends: the same text as `Lesson.section`. Null is a
 	# course-level quiz (old rows) or the lessons that have no section.
 	section = models.CharField(max_length=200, null=True, blank=True)

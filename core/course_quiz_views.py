@@ -17,7 +17,7 @@ class CourseQuizSerializer(serializers.ModelSerializer):
     class Meta:
         model = Quiz
         fields = ['id', 'title', 'description', 'section', 'question_count', 'pass_percentage', 'max_attempts',
-                  'attempts_used', 'best_percentage', 'is_passed']
+                  'time_limit_seconds', 'attempts_used', 'best_percentage', 'is_passed']
         read_only_fields = fields
 
 

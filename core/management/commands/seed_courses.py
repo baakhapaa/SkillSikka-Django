@@ -65,6 +65,7 @@ class Command(BaseCommand):
                 'description': 'A forthcoming workshop for curious learners.', 'is_published': published,
                 'level': 'beginner', 'language': 'English'})
             Course.objects.filter(pk=course.pk, level='').update(level='beginner')
+            courses.append(course)
         for course in courses:
             Course.objects.filter(pk=course.pk, learning_outcomes=[]).update(learning_outcomes=[
                 f'Explain the key ideas in {course.title}.', 'Apply the concepts in a guided practical activity.',
