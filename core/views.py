@@ -2,9 +2,11 @@ from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
-from django.db.models import Count, Q, Sum
+from django.db import transaction
+from django.db.models import Count, ProtectedError, Q, Sum
 from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
@@ -14,6 +16,8 @@ from .forms import (
 	BootcampForm,
 	BootcampInstructorForm,
 	BootcampLessonForm,
+	BootcampQuestionForm,
+	BootcampQuizForm,
 	BootcampResourceForm,
 	CertificateCriteriaForm,
 	CourseForm,
@@ -43,14 +47,20 @@ from .models import (
 	Lesson,
 	Municipality,
 	Province,
+	Question,
+	Quiz,
 	Role,
 	School,
 	StreakSettings,
 	User,
 	VerificationDocument,
 )
+from .api_views import QUIZ_QUESTIONS_LOCKED
 from .documents import document_file_response
 from .payments import GatewayError, refresh_payment
+from .serializers import quiz_has_completed_attempts
+
+QUESTION_IN_USE = 'A student is part-way through this quiz and has answered this question, so its options cannot be removed.'
 
 
 def login_view(request):
@@ -574,16 +584,25 @@ def manage_bootcamp_content(request, course_id):
 		messages.error(request, 'That course is not a bootcamp.')
 		return redirect('manage_courses')
 
-	lesson_id = request.POST.get('lesson_id') if request.method == 'POST' else request.GET.get('lesson_id')
-	resource_id = request.POST.get('resource_id') if request.method == 'POST' else request.GET.get('resource_id')
+	params = request.POST if request.method == 'POST' else request.GET
+	lesson_id, resource_id, quiz_id, question_id = (params.get(key) for key in ['lesson_id', 'resource_id', 'quiz_id', 'question_id'])
 	# Resolve all edits/deletes within this bootcamp, including forged IDs.
-	if any(value and (not value.isascii() or not value.isdecimal() or len(value) > 18) for value in [lesson_id, resource_id]):
+	if any(value and (not value.isascii() or not value.isdecimal() or len(value) > 18) for value in [lesson_id, resource_id, quiz_id, question_id]):
+		raise Http404
+	if question_id and not quiz_id:
 		raise Http404
 	editing_lesson = get_object_or_404(Lesson, pk=lesson_id, course=course) if lesson_id else None
 	editing_resource = get_object_or_404(CourseResource, pk=resource_id, course=course) if resource_id else None
+	editing_quiz = get_object_or_404(Quiz, pk=quiz_id, course=course) if quiz_id else None
+	editing_question = get_object_or_404(Question, pk=question_id, quiz=editing_quiz) if question_id else None
 	lesson_form = BootcampLessonForm(bootcamp=course, instance=editing_lesson)
 	resource_form = BootcampResourceForm(bootcamp=course, instance=editing_resource)
+	quiz_form = BootcampQuizForm(bootcamp=course, instance=editing_quiz, request=request)
+	question_form = BootcampQuestionForm(instance=editing_question)
 	details_form = BootcampForm(instance=course)
+	content_url = reverse('manage_bootcamp_content', args=[course.pk])
+	# Answers point at a quiz's questions and options, so editing them would rewrite results.
+	quiz_locked = bool(editing_quiz) and quiz_has_completed_attempts(editing_quiz)
 
 	if request.method == 'POST':
 		action = request.POST.get('form')
@@ -613,9 +632,48 @@ def manage_bootcamp_content(request, course_id):
 			CourseResource.objects.filter(pk=request.POST.get('resource_id'), course=course).delete()
 			messages.success(request, 'File removed.')
 			return redirect('manage_bootcamp_content', course_id=course.pk)
+		elif action == 'quiz':
+			quiz_form = BootcampQuizForm(request.POST, bootcamp=course, instance=editing_quiz, request=request)
+			quiz = quiz_form.save() if quiz_form.is_valid() else None
+			if quiz:
+				messages.success(request, f'Quiz "{quiz.title}" saved.')
+				return redirect(f'{content_url}?quiz_id={quiz.pk}#questions')
+		elif action == 'delete_quiz' and editing_quiz:
+			editing_quiz.delete()
+			messages.success(request, 'Quiz removed.')
+			return redirect(f'{content_url}#quizzes')
+		elif action in ['question', 'delete_question'] and editing_quiz:
+			quiz_url = f'{content_url}?quiz_id={editing_quiz.pk}#questions'
+			if quiz_locked:
+				messages.error(request, QUIZ_QUESTIONS_LOCKED)
+				return redirect(quiz_url)
+			if action == 'question':
+				question_form = BootcampQuestionForm(request.POST, instance=editing_question)
+				if question_form.is_valid():
+					try:
+						with transaction.atomic():
+							question = question_form.save(editing_quiz)
+					except ProtectedError:
+						messages.error(request, QUESTION_IN_USE)
+					else:
+						messages.success(request, f'Question {question.order} saved.')
+					return redirect(quiz_url)
+			elif editing_question:
+				if editing_quiz.is_published and editing_quiz.questions.count() == 1:
+					messages.error(request, 'A published quiz needs a question. Unpublish it first.')
+				else:
+					try:
+						editing_question.delete()
+					except ProtectedError:
+						messages.error(request, QUESTION_IN_USE)
+					else:
+						messages.success(request, 'Question removed.')
+				return redirect(quiz_url)
 
 	lessons = Lesson.objects.filter(course=course).order_by('day_number', 'order', 'pk')
 	resources = CourseResource.objects.filter(course=course).select_related('lesson').order_by('order', 'pk')
+	quizzes = Quiz.objects.filter(course=course).annotate(question_count=Count('questions')).order_by('pk')
+	questions = editing_quiz.questions.prefetch_related('options') if editing_quiz else []
 
 	# Grouped here rather than in the template: the page mirrors the app's Day
 	# tabs, and `regroup` on a nullable `day_number` would print an empty tab.
@@ -635,6 +693,13 @@ def manage_bootcamp_content(request, course_id):
 		'lessons_count': lessons.count(),
 		'editing_lesson': editing_lesson,
 		'editing_resource': editing_resource,
+		'quiz_form': quiz_form,
+		'question_form': question_form,
+		'quizzes': quizzes,
+		'questions': questions,
+		'editing_quiz': editing_quiz,
+		'editing_question': editing_question,
+		'quiz_locked': quiz_locked,
 	})
 
 

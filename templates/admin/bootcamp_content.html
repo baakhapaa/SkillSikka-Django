@@ -26,7 +26,7 @@
         <header class="topbar"><div><p class="eyebrow">ICT &amp; AI Bootcamp</p><h1>{{ course.title }}</h1></div><div class="top-actions"><a class="outline-button" href="{% url 'manage_bootcamps' %}">Back to bootcamps</a></div></header>
         {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
         <p class="page-intro">Lessons appear under the app's Day tabs, in the order below. Files appear on the Resources tab, grouped by section.</p>
-        <nav class="top-actions" aria-label="Bootcamp management"><a href="#details">Edit / Publish</a><a href="#content">Manage Content</a><a href="{% url 'manage_bootcamp_instructors' course.id %}">Manage Instructors</a><a href="#resources">Manage Resources</a></nav>
+        <nav class="top-actions" aria-label="Bootcamp management"><a href="#details">Edit / Publish</a><a href="#content">Manage Content</a><a href="#quizzes">Manage Quizzes</a><a href="{% url 'manage_bootcamp_instructors' course.id %}">Manage Instructors</a><a href="#resources">Manage Resources</a></nav>
         <p class="count-label">Publication applies to the whole bootcamp. Lessons use the bootcamp's publication state.</p>
 
         <article class="management-card">
@@ -108,6 +108,96 @@
                 <p class="empty-state">No lessons yet. Add the first one above.</p>
             {% endfor %}
         </article>
+
+        <article class="management-card" id="quizzes">
+            <div class="section-heading"><div><p class="eyebrow">{% if editing_quiz %}Edit{% else %}Add{% endif %}</p><h2>Quiz</h2></div></div>
+            <p class="page-intro" style="margin:14px 0 0">One quiz per section. It shows after that section's lessons on every day that uses the section, and never locks the next lesson.</p>
+            <form method="post" class="form-stack">
+                {% csrf_token %}
+                <input type="hidden" name="form" value="quiz">
+                {% if editing_quiz %}<input type="hidden" name="quiz_id" value="{{ editing_quiz.id }}">{% endif %}
+                {% for field in quiz_form %}
+                    <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                    {{ field }}
+                    {% if field.help_text %}<small class="count-label">{{ field.help_text }}</small>{% endif %}
+                    {% for error in field.errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                {% endfor %}
+                {% for error in quiz_form.non_field_errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                <button class="primary-button" type="submit">{% if editing_quiz %}Save quiz{% else %}Add quiz{% endif %}</button>
+                {% if editing_quiz %}<a href="{% url 'manage_bootcamp_content' course.id %}#quizzes">Done</a>{% endif %}
+            </form>
+            <div class="table-wrap"><table><thead><tr><th>Section</th><th>Title</th><th>Questions</th><th>Time</th><th>Status</th><th></th></tr></thead><tbody>
+                {% for quiz in quizzes %}
+                <tr>
+                    <td>{{ quiz.section|default:'No section' }}</td>
+                    <td>{{ quiz.title }}</td>
+                    <td>{{ quiz.question_count }}</td>
+                    <td>{{ quiz.time_limit_seconds }}s</td>
+                    <td>{% if quiz.is_published %}<span class="pill verified">Published</span>{% else %}Draft{% endif %}</td>
+                    <td>
+                        <a href="?quiz_id={{ quiz.id }}#questions">Edit / questions</a>
+                        <form method="post" class="inline-form">
+                            {% csrf_token %}
+                            <input type="hidden" name="form" value="delete_quiz">
+                            <input type="hidden" name="quiz_id" value="{{ quiz.id }}">
+                            <button class="link-button" type="submit" onclick="return confirm('Remove this quiz and every student attempt on it?')">Remove</button>
+                        </form>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="6" class="empty-state">No quizzes yet.</td></tr>
+                {% endfor %}
+            </tbody></table></div>
+        </article>
+
+        {% if editing_quiz %}
+        <article class="management-card" id="questions">
+            <div class="section-heading"><div><p class="eyebrow">{{ editing_quiz.title }}</p><h2>Questions</h2></div><span class="count-label">{{ questions|length }} question{{ questions|length|pluralize }}</span></div>
+            {% if quiz_locked %}<p class="form-error" style="margin-top:14px">Students have finished this quiz, so its questions are locked.</p>{% endif %}
+            <div class="table-wrap" style="margin:18px 0 22px"><table><thead><tr><th>#</th><th>Question</th><th>Options</th><th>Marks</th><th></th></tr></thead><tbody>
+                {% for question in questions %}
+                <tr>
+                    <td>{{ question.order }}</td>
+                    <td>{{ question.text }}</td>
+                    <td>{% for option in question.options.all %}{% if option.is_correct %}<strong>✓ {{ option.text }}</strong>{% else %}{{ option.text }}{% endif %}{% if not forloop.last %}<br>{% endif %}{% endfor %}</td>
+                    <td>{{ question.marks }}</td>
+                    <td>
+                        {% if not quiz_locked %}
+                        <a href="?quiz_id={{ editing_quiz.id }}&question_id={{ question.id }}#question-form">Edit</a>
+                        <form method="post" class="inline-form">
+                            {% csrf_token %}
+                            <input type="hidden" name="form" value="delete_question">
+                            <input type="hidden" name="quiz_id" value="{{ editing_quiz.id }}">
+                            <input type="hidden" name="question_id" value="{{ question.id }}">
+                            <button class="link-button" type="submit">Remove</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="5" class="empty-state">No questions yet. Add the first one below, then publish the quiz.</td></tr>
+                {% endfor %}
+            </tbody></table></div>
+            {% if not quiz_locked %}
+            <div class="section-heading" id="question-form"><div><p class="eyebrow">{% if editing_question %}Edit{% else %}Add{% endif %}</p><h2>Question</h2></div></div>
+            <form method="post" class="form-stack">
+                {% csrf_token %}
+                <input type="hidden" name="form" value="question">
+                <input type="hidden" name="quiz_id" value="{{ editing_quiz.id }}">
+                {% if editing_question %}<input type="hidden" name="question_id" value="{{ editing_question.id }}">{% endif %}
+                {% for field in question_form %}
+                    <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                    {{ field }}
+                    {% if field.help_text %}<small class="count-label">{{ field.help_text }}</small>{% endif %}
+                    {% for error in field.errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                {% endfor %}
+                {% for error in question_form.non_field_errors %}<small class="form-error">{{ error }}</small>{% endfor %}
+                <button class="primary-button" type="submit">{% if editing_question %}Save question{% else %}Add question{% endif %}</button>
+                {% if editing_question %}<a href="?quiz_id={{ editing_quiz.id }}#questions">Cancel edit</a>{% endif %}
+            </form>
+            {% endif %}
+        </article>
+        {% endif %}
 
         <article class="management-card" id="resources">
             <div class="section-heading"><div><p class="eyebrow">{% if editing_resource %}Edit{% else %}Add{% endif %}</p><h2>Resource file</h2></div></div>

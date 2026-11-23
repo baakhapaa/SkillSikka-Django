@@ -1,6 +1,6 @@
 from django import forms
 from decimal import Decimal
-from django.db import transaction
+from django.db import IntegrityError, transaction
 
 from .models import (
 	Advertisement,
@@ -17,6 +17,8 @@ from .models import (
 	Lesson,
 	Municipality,
 	Province,
+	Question,
+	QuestionOption,
 	School,
 	StreakSettings,
 	User,
@@ -600,6 +602,166 @@ class BootcampResourceForm(BootcampUploadForm):
 			resource.file_size_bytes = data['resource_file'].size
 		resource.save()
 		return resource
+
+
+class BootcampQuizForm(forms.Form):
+	"""One section's quiz on a bootcamp, under that section's lessons in the app.
+
+	The app places a quiz by exact match on `Lesson.section`, so `section` only
+	offers titles this camp's lessons use. Everything else is checked by the
+	API's `QuizManagementSerializer`, so the panel cannot publish a quiz the API
+	would refuse.
+	"""
+
+	section = forms.ChoiceField(
+		required=False,
+		help_text="The quiz appears after this section's lessons. Add the lesson first to list its section.",
+	)
+	title = forms.CharField(
+		max_length=200,
+		widget=forms.TextInput(attrs={'placeholder': 'Research & Strategy check'}),
+	)
+	description = forms.CharField(required=False, widget=forms.Textarea(attrs={'rows': 2}))
+	pass_percentage = forms.IntegerField(min_value=0, max_value=100, initial=40, label='Pass percentage')
+	max_attempts = forms.IntegerField(min_value=1, max_value=32767, initial=1, label='Maximum attempts')
+	time_limit = forms.CharField(
+		initial='3:00',
+		label='Time limit',
+		help_text='mm:ss for the whole quiz, from 0:15 to 60:00.',
+	)
+	is_published = forms.BooleanField(
+		required=False,
+		label='Published',
+		help_text='Save it as a draft, add the questions, then publish.',
+	)
+
+	def __init__(self, *args, bootcamp, instance=None, request=None, **kwargs):
+		super().__init__(*args, **kwargs)
+		self.bootcamp = bootcamp
+		self.instance = instance
+		self.request = request
+		sections = dict.fromkeys(
+			Lesson.objects.filter(course=bootcamp).exclude(section__isnull=True).exclude(section='')
+			.order_by('day_number', 'order', 'pk').values_list('section', flat=True)
+		)
+		# Keep a quiz's section listed after its lessons were renamed or removed.
+		if instance and instance.section:
+			sections.setdefault(instance.section)
+		self.fields['section'].choices = [('', 'Lessons with no section')] + [(name, name) for name in sections]
+		if instance:
+			self.initial.update({key: getattr(instance, key) for key in [
+				'title', 'description', 'pass_percentage', 'max_attempts', 'is_published']})
+			self.initial['section'] = instance.section or ''
+			seconds = instance.time_limit_seconds
+			self.initial['time_limit'] = f'{seconds // 60}:{seconds % 60:02}'
+
+	def clean_time_limit(self):
+		return parse_duration(self.cleaned_data.get('time_limit'))
+
+	def clean(self):
+		cleaned = super().clean()
+		if self.errors:
+			return cleaned
+		from .serializers import QuizManagementSerializer
+		self.serializer = QuizManagementSerializer(self.instance, data={
+			'course': self.bootcamp.pk,
+			'section': cleaned.get('section') or None,
+			'title': cleaned['title'],
+			'description': cleaned.get('description') or '',
+			'pass_percentage': cleaned['pass_percentage'],
+			'max_attempts': cleaned['max_attempts'],
+			'time_limit_seconds': cleaned['time_limit'],
+			'is_published': cleaned.get('is_published', False),
+		}, context={'request': self.request})
+		if not self.serializer.is_valid():
+			for field, errors in self.serializer.errors.items():
+				field = 'time_limit' if field == 'time_limit_seconds' else field
+				for error in errors:
+					self.add_error(field if field in self.fields else None, str(error))
+		return cleaned
+
+	def save(self):
+		"""The saved quiz, or None when another save took the section first."""
+		try:
+			with transaction.atomic():
+				return self.serializer.save()
+		except IntegrityError:
+			self.add_error('section', 'This section already has a quiz.')
+			return None
+
+
+class BootcampQuestionForm(forms.Form):
+	"""One quiz question with its options, saved together.
+
+	The options follow the rule the API checks before a quiz is published: at
+	least two, and exactly one marked correct.
+	"""
+
+	MIN_OPTIONS = 4
+
+	text = forms.CharField(label='Question', widget=forms.Textarea(attrs={'rows': 2}))
+	hint = forms.CharField(required=False, help_text='Shown before the student answers.', widget=forms.Textarea(attrs={'rows': 2}))
+	explanation = forms.CharField(required=False, help_text='Shown after the answer is checked.', widget=forms.Textarea(attrs={'rows': 2}))
+	marks = forms.IntegerField(min_value=1, max_value=32767, initial=1)
+	points = forms.IntegerField(min_value=0, max_value=2147483647, initial=0, help_text='Reward points for a correct answer.')
+	order = forms.IntegerField(required=False, min_value=0, max_value=32767, help_text='Leave blank to append to the quiz.')
+
+	def __init__(self, *args, instance=None, **kwargs):
+		super().__init__(*args, **kwargs)
+		self.instance = instance
+		self.existing_options = list(instance.options.order_by('pk')) if instance else []
+		# Four blanks for a new question; never fewer rows than the question already has.
+		self.option_names = [f'option_{n}' for n in range(1, max(self.MIN_OPTIONS, len(self.existing_options)) + 1)]
+		for n, name in enumerate(self.option_names, start=1):
+			self.fields[name] = forms.CharField(required=False, max_length=500, label=f'Option {n}')
+		self.fields['correct_option'] = forms.ChoiceField(
+			choices=[(name, f'Option {n}') for n, name in enumerate(self.option_names, start=1)],
+			label='Correct option',
+		)
+		self.order_fields(['text', *self.option_names, 'correct_option'])
+		if instance:
+			self.initial.update({key: getattr(instance, key) for key in ['text', 'hint', 'explanation', 'marks', 'points', 'order']})
+			for name, option in zip(self.option_names, self.existing_options):
+				self.initial[name] = option.text
+				if option.is_correct:
+					self.initial['correct_option'] = name
+
+	def clean(self):
+		cleaned = super().clean()
+		filled = [name for name in self.option_names if cleaned.get(name)]
+		if len(filled) < 2:
+			self.add_error(self.option_names[1], 'Give at least two options.')
+		correct = cleaned.get('correct_option')
+		if correct and correct not in filled:
+			self.add_error('correct_option', 'The correct option is blank.')
+		return cleaned
+
+	@transaction.atomic
+	def save(self, quiz):
+		data = self.cleaned_data
+		order = data.get('order')
+		if order is None:
+			last = quiz.questions.order_by('-order').values_list('order', flat=True).first()
+			order = (last or 0) + 1
+		question = self.instance or Question(quiz=quiz)
+		question.text = data['text']
+		question.hint = data.get('hint') or ''
+		question.explanation = data.get('explanation') or ''
+		question.marks = data['marks']
+		question.points = data['points']
+		question.order = order
+		question.save()
+		# Reuse the existing rows in order, so an unchanged option keeps its id.
+		unused = list(self.existing_options)
+		for name in self.option_names:
+			if not data.get(name):
+				continue
+			option = unused.pop(0) if unused else QuestionOption(question=question)
+			option.text = data[name]
+			option.is_correct = name == data['correct_option']
+			option.save()
+		QuestionOption.objects.filter(pk__in=[option.pk for option in unused]).delete()
+		return question
 
 
 def parse_duration(value):

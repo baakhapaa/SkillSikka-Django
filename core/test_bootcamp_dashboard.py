@@ -13,6 +13,7 @@ from django.test import TestCase, override_settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from tempfile import TemporaryDirectory
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from core.models import (
@@ -21,13 +22,18 @@ from core.models import (
     CourseInstructor,
     CourseResource,
     Lesson,
+    Question,
+    QuestionOption,
+    Quiz,
+    QuizAttempt,
     Role,
+    StudentAnswer,
     User,
     Enrollment,
 )
 
 
-class BootcampDashboardTests(TestCase):
+class BootcampDashboardTestCase(TestCase):
     def setUp(self):
         self.admin = self.user('admin', 'super_admin')
         self.lead = self.user('lead', 'instructor', verification_status='verified')
@@ -69,6 +75,15 @@ class BootcampDashboardTests(TestCase):
         response = self.client.post(reverse('add_bootcamp'), self.payload(**overrides))
         return response
 
+    def bootcamp(self):
+        self.create_bootcamp()
+        return Course.objects.get(course_type='bootcamp')
+
+    def content_url(self, course):
+        return reverse('manage_bootcamp_content', args=[course.pk])
+
+
+class BootcampDashboardTests(BootcampDashboardTestCase):
     # ── creating ─────────────────────────────────────────────────────────────
 
     def test_admin_creates_course_profile_and_roster_in_one_post(self):
@@ -146,13 +161,6 @@ class BootcampDashboardTests(TestCase):
         self.assertFalse(Course.objects.filter(title='Sneaky camp').exists())
 
     # ── content ──────────────────────────────────────────────────────────────
-
-    def bootcamp(self):
-        self.create_bootcamp()
-        return Course.objects.get(course_type='bootcamp')
-
-    def content_url(self, course):
-        return reverse('manage_bootcamp_content', args=[course.pk])
 
     def test_lessons_and_files_are_added_from_the_content_page(self):
         course = self.bootcamp()
@@ -499,3 +507,188 @@ class BootcampDashboardTests(TestCase):
                 'file_format': 'other', 'resource_file': invalid})
             self.assertContains(response, 'This file type is not supported.')
             self.assertEqual(CourseResource.objects.filter(course=camp).count(), 1)
+
+
+class BootcampQuizDashboardTests(BootcampDashboardTestCase):
+    """An admin attaches a quiz to a camp section from the content page.
+
+    The app places it by exact match on `Lesson.section` and reads it through
+    the ordinary course quiz endpoints, which is what the last check covers.
+    """
+    SECTION = 'Section 1: Research & Strategy Foundations'
+
+    def setUp(self):
+        super().setUp()
+        self.camp = self.bootcamp()
+        self.url = self.content_url(self.camp)
+        Lesson.objects.create(
+            course=self.camp, title='Strategy grid', section=self.SECTION, day_number=1,
+            content_type='text', content_text='x',
+        )
+
+    def quiz_data(self, **overrides):
+        data = {'form': 'quiz', 'section': self.SECTION, 'title': 'Strategy check', 'description': '',
+                'pass_percentage': 60, 'max_attempts': 2, 'time_limit': '5:00'}
+        data.update(overrides)
+        return data
+
+    def question_data(self, quiz, **overrides):
+        data = {'form': 'question', 'quiz_id': quiz.pk, 'text': 'What does the grid map?',
+                'option_1': 'Risk', 'option_2': 'Effort against impact', 'option_3': '', 'option_4': '',
+                'correct_option': 'option_2', 'hint': 'Two axes.', 'explanation': 'It plots effort and impact.',
+                'marks': 1, 'points': 5}
+        data.update(overrides)
+        return data
+
+    def quiz(self, published=False, **fields):
+        quiz = Quiz.objects.create(course=self.camp, title='Strategy check', section=self.SECTION, **fields)
+        question = Question.objects.create(quiz=quiz, text='Q1', order=1)
+        QuestionOption.objects.create(question=question, text='Right', is_correct=True)
+        QuestionOption.objects.create(question=question, text='Wrong')
+        if published:
+            Quiz.objects.filter(pk=quiz.pk).update(is_published=True)
+            quiz.refresh_from_db()
+        return quiz
+
+    def test_admin_builds_and_publishes_a_quiz_the_student_receives(self):
+        self.assertIn((self.SECTION, self.SECTION), self.client.get(self.url).context['quiz_form'].fields['section'].choices)
+
+        response = self.client.post(self.url, self.quiz_data())
+        quiz = Quiz.objects.get(course=self.camp)
+        self.assertRedirects(response, f'{self.url}?quiz_id={quiz.pk}#questions', fetch_redirect_response=False)
+        self.assertEqual((quiz.section, quiz.time_limit_seconds, quiz.is_published), (self.SECTION, 300, False))
+
+        response = self.client.post(self.url, self.question_data(quiz))
+        self.assertEqual(response.status_code, 302)
+        question = quiz.questions.get()
+        self.assertEqual((question.hint, question.points, question.order), ('Two axes.', 5, 1))
+        self.assertEqual(list(question.options.order_by('pk').values_list('text', 'is_correct')),
+                         [('Risk', False), ('Effort against impact', True)])
+
+        self.client.post(self.url, self.quiz_data(quiz_id=quiz.pk, is_published='on'))
+        quiz.refresh_from_db()
+        self.assertTrue(quiz.is_published)
+
+        Enrollment.objects.create(student=self.student, course=self.camp, status='active')
+        api = APIClient()
+        api.force_authenticate(self.student)
+        listing = api.get(f'/api/v1/courses/{self.camp.pk}/quizzes/')
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual([(row['id'], row['section'], row['time_limit_seconds']) for row in listing.data],
+                         [(quiz.pk, self.SECTION, 300)])
+        self.assertEqual(api.post(f'/api/v1/student/quizzes/{quiz.pk}/start/').status_code, 201)
+
+    def test_publishing_follows_the_api_rules(self):
+        response = self.client.post(self.url, self.quiz_data(is_published='on'))
+        self.assertContains(response, 'Create the quiz as draft')
+        self.assertFalse(Quiz.objects.exists())
+
+        empty = Quiz.objects.create(course=self.camp, title='Empty', section=self.SECTION)
+        response = self.client.post(self.url, self.quiz_data(quiz_id=empty.pk, is_published='on'))
+        self.assertContains(response, 'at least one question')
+        empty.refresh_from_db()
+        self.assertFalse(empty.is_published)
+
+        response = self.client.post(self.url, self.quiz_data(quiz_id=empty.pk, time_limit='0:05'))
+        self.assertContains(response, 'Quiz time must be between 15 seconds and 60 minutes.')
+
+    def test_section_must_be_one_the_lessons_use_and_hold_one_quiz(self):
+        response = self.client.post(self.url, self.quiz_data(section='Section 1: Research & Strategy'))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('section', response.context['quiz_form'].errors)
+        self.assertFalse(Quiz.objects.exists())
+
+        self.quiz()
+        response = self.client.post(self.url, self.quiz_data(title='Second'))
+        self.assertContains(response, 'This module already has a quiz.')
+        self.assertEqual(Quiz.objects.count(), 1)
+
+        # A quiz on the lessons with no section is the blank choice.
+        self.assertEqual(self.client.post(self.url, self.quiz_data(section='', title='Loose')).status_code, 302)
+        self.assertIsNone(Quiz.objects.get(title='Loose').section)
+
+    def test_question_needs_two_options_and_a_filled_correct_one(self):
+        quiz = self.quiz()
+        response = self.client.post(self.url, self.question_data(quiz, option_2='', correct_option='option_1'))
+        self.assertContains(response, 'Give at least two options.')
+        response = self.client.post(self.url, self.question_data(quiz, correct_option='option_3'))
+        self.assertContains(response, 'The correct option is blank.')
+        self.assertEqual(quiz.questions.count(), 1)
+
+    def test_editing_a_question_keeps_option_rows_and_drops_blanked_ones(self):
+        quiz = self.quiz()
+        question = quiz.questions.get()
+        QuestionOption.objects.create(question=question, text='Third')
+        first, second, third = question.options.order_by('pk')
+
+        self.client.post(self.url, self.question_data(
+            quiz, question_id=question.pk, text='Edited', option_1='Right!', option_2='Wrong', option_3='',
+            correct_option='option_1', order=4))
+
+        question.refresh_from_db()
+        self.assertEqual((question.text, question.order), ('Edited', 4))
+        self.assertEqual(list(question.options.order_by('pk').values_list('pk', 'text', 'is_correct')),
+                         [(first.pk, 'Right!', True), (second.pk, 'Wrong', False)])
+        self.assertFalse(QuestionOption.objects.filter(pk=third.pk).exists())
+
+    def test_questions_lock_once_a_student_has_finished_the_quiz(self):
+        quiz = self.quiz(published=True)
+        QuizAttempt.objects.create(student=self.student, quiz=quiz, completed_at=timezone.now())
+        question = quiz.questions.get()
+
+        self.assertContains(self.client.get(self.url, {'quiz_id': quiz.pk}), 'its questions are locked')
+        self.client.post(self.url, self.question_data(quiz))
+        self.client.post(self.url, self.question_data(quiz, question_id=question.pk, text='Changed'))
+        self.client.post(self.url, {'form': 'delete_question', 'quiz_id': quiz.pk, 'question_id': question.pk})
+
+        self.assertEqual(list(quiz.questions.values_list('text', flat=True)), ['Q1'])
+        # Settings that do not rewrite answers stay editable.
+        self.client.post(self.url, self.quiz_data(quiz_id=quiz.pk, max_attempts=3, is_published='on'))
+        quiz.refresh_from_db()
+        self.assertEqual(quiz.max_attempts, 3)
+
+    def test_an_answered_option_in_an_open_attempt_is_not_deleted(self):
+        quiz = self.quiz(published=True)
+        question = quiz.questions.get()
+        wrong = question.options.get(is_correct=False)
+        attempt = QuizAttempt.objects.create(student=self.student, quiz=quiz)
+        StudentAnswer.objects.create(attempt=attempt, question=question, selected_option=wrong)
+        Question.objects.create(quiz=quiz, text='Spare', order=2)
+
+        response = self.client.post(self.url, {'form': 'delete_question', 'quiz_id': quiz.pk, 'question_id': question.pk}, follow=True)
+
+        self.assertContains(response, 'part-way through this quiz')
+        self.assertTrue(Question.objects.filter(pk=question.pk).exists())
+
+    def test_last_question_of_a_published_quiz_stays(self):
+        quiz = self.quiz(published=True)
+        question = quiz.questions.get()
+
+        response = self.client.post(self.url, {'form': 'delete_question', 'quiz_id': quiz.pk, 'question_id': question.pk}, follow=True)
+
+        self.assertContains(response, 'Unpublish it first.')
+        self.assertTrue(Question.objects.filter(pk=question.pk).exists())
+
+    def test_quiz_can_be_removed(self):
+        quiz = self.quiz()
+        self.client.post(self.url, {'form': 'delete_quiz', 'quiz_id': quiz.pk})
+        self.assertFalse(Quiz.objects.filter(pk=quiz.pk).exists())
+
+    def test_quiz_edits_are_scoped_to_the_bootcamp_and_admin_only(self):
+        other = Course.objects.create(title='Other', instructor=self.lead, course_type='skill')
+        foreign = Quiz.objects.create(course=other, title='Protected')
+        foreign_question = Question.objects.create(quiz=foreign, text='Protected')
+        own = self.quiz()
+        for params in [{'quiz_id': foreign.pk}, {'quiz_id': own.pk, 'question_id': foreign_question.pk},
+                       {'question_id': own.questions.get().pk}]:
+            with self.subTest(params=params):
+                self.assertEqual(self.client.get(self.url, params).status_code, 404)
+                for action in ['quiz', 'delete_quiz', 'question', 'delete_question']:
+                    self.assertEqual(self.client.post(self.url, {'form': action, **params}).status_code, 404)
+        self.assertTrue(Quiz.objects.filter(pk=foreign.pk).exists())
+        self.assertTrue(Question.objects.filter(pk=foreign_question.pk).exists())
+
+        self.client.force_login(self.lead)
+        response = self.client.post(self.url, self.quiz_data(section='', title='Instructor quiz'))
+        self.assertRedirects(response, reverse('dashboard'), fetch_redirect_response=False)
+        self.assertFalse(Quiz.objects.filter(title='Instructor quiz').exists())
