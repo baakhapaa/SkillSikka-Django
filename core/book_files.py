@@ -83,6 +83,10 @@ def book_cover_path(instance, filename):
     return f'book-covers/{uuid4().hex}{Path(filename).suffix.lower()}'
 
 
+def book_author_photo_path(instance, filename):
+    return f'book-authors/{uuid4().hex}{Path(filename).suffix.lower()}'
+
+
 def validate_highlights(value):
     if (not isinstance(value, list) or len(value) > 30
             or any(not isinstance(item, str) or not item.strip() or len(item) > 500 for item in value)):
@@ -179,17 +183,17 @@ def validate_book_cover(upload):
     formats = {'.jpg': 'JPEG', '.jpeg': 'JPEG', '.png': 'PNG', '.webp': 'WEBP'}
     extension = Path(upload.name).suffix.lower()
     if extension not in formats or not upload.size or upload.size > settings.BOOK_MAX_COVER_BYTES:
-        raise ValidationError('Upload a JPEG, PNG or WebP cover within the configured size limit.')
+        raise ValidationError('Upload a JPEG, PNG or WebP image within the configured size limit.')
     try:
         upload.seek(0)
         with warnings.catch_warnings():
             warnings.simplefilter('error', Image.DecompressionBombWarning)
             with Image.open(upload) as picture:
                 if picture.format != formats[extension] or picture.width * picture.height > 40_000_000:
-                    raise ValidationError('Invalid cover image dimensions or format.')
+                    raise ValidationError('Invalid image dimensions or format.')
                 picture.verify()
     except (UnidentifiedImageError, OSError, ValueError, SyntaxError,
             Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
-        raise ValidationError('Invalid cover image.') from exc
+        raise ValidationError('Invalid image.') from exc
     finally:
         upload.seek(0)

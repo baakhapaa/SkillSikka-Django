@@ -2920,6 +2920,7 @@ class EBookSerializer(serializers.ModelSerializer):
 	clear_file_url = serializers.BooleanField(write_only=True, required=False)
 	source_file = serializers.FileField(write_only=True, required=False, validators=[validate_book_source])
 	cover_image = serializers.ImageField(write_only=True, required=False, validators=[validate_book_cover])
+	author_photo = serializers.ImageField(write_only=True, required=False, validators=[validate_book_cover])
 	subject_name = serializers.CharField(
 		source='subject.name',
 		read_only=True,
@@ -2942,6 +2943,7 @@ class EBookSerializer(serializers.ModelSerializer):
 			'title',
 			'description',
 			'author',
+			'author_photo',
 			'subject',
 			'subject_name',
 			'grade',
@@ -2994,6 +2996,11 @@ class EBookSerializer(serializers.ModelSerializer):
 		if instance.cover_image:
 			url = instance.cover_image.url
 			data['cover_url'] = request.build_absolute_uri(url) if request else url
+		# Always present: an empty string tells the app to keep its bundled face.
+		data['author_photo_url'] = ''
+		if instance.author_photo:
+			url = instance.author_photo.url
+			data['author_photo_url'] = request.build_absolute_uri(url) if request else url
 		if request and request.user.is_authenticated and hasattr(instance, 'review_count'):
 			from .book_commerce_api import commerce_metadata
 			data.update(commerce_metadata(instance, request.user))
@@ -3021,18 +3028,19 @@ class BookChapterSerializer(StrictBookInput, serializers.ModelSerializer):
 	from .models import BookChapter as _BookChapter
 	content_format = serializers.CharField(default='text', read_only=True)
 	content = serializers.CharField(max_length=200000, allow_blank=True, required=False, trim_whitespace=False)
+	pause_prompt = serializers.CharField(max_length=2000, allow_blank=True, required=False, trim_whitespace=False)
 
 	class Meta:
 		from .models import BookChapter
 		model = BookChapter
-		fields = ['id', 'chapter_number', 'title', 'content', 'content_format', 'estimated_reading_minutes', 'pdf_page_start', 'pdf_page_end', 'created_at', 'updated_at']
+		fields = ['id', 'chapter_number', 'title', 'content', 'pause_prompt', 'content_format', 'estimated_reading_minutes', 'pdf_page_start', 'pdf_page_end', 'created_at', 'updated_at']
 		read_only_fields = ['id', 'estimated_reading_minutes', 'created_at', 'updated_at']
 
 	def validate(self, attrs):
 		from .book_reader import plain_book_text
 		candidate = self.instance or self._BookChapter(book=self.context['book'])
 		for field, value in attrs.items():
-			setattr(candidate, field, plain_book_text(value) if field in ('title', 'content') else value)
+			setattr(candidate, field, plain_book_text(value) if field in ('title', 'content', 'pause_prompt') else value)
 		try:
 			candidate.full_clean()
 		except DjangoValidationError as exc:

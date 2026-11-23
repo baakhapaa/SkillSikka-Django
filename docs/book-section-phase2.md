@@ -106,7 +106,8 @@ GET `/ebooks/12/chapters/81/`:
 {
   "book": {"id": 12, "title": "Design", "file_url": ""},
   "chapter": {"id": 81, "chapter_number": 1, "title": "Introduction",
-    "content": "Welcome.\n\nRead the first example.", "content_format": "text",
+    "content": "Welcome.\n\nRead the first example.",
+    "pause_prompt": "Which example would you try first?", "content_format": "text",
     "estimated_reading_minutes": 1, "pdf_page_start": null, "pdf_page_end": null,
     "created_at": "2026-11-17T10:00:00Z", "updated_at": "2026-11-17T10:00:00Z"},
   "previous_chapter_id": null, "next_chapter_id": 82,
@@ -133,6 +134,14 @@ Use previous/next IDs supplied by the server; do not assume IDs are consecutive.
 Manual POST body: `{"chapter_number":1,"title":"Intro","content":"Text"}`.
 PATCH accepts those fields plus optional `pdf_page_start`/`pdf_page_end`. Titles
 must remain nonblank. Reading time is derived at 200 words/minute.
+
+`pause_prompt` is the reader's optional "Pause & think" line (2000 chars max),
+stored and rendered as plain text by the same rules as `content`. It is always
+present; an empty string means the app leaves the block out. POST and PATCH accept it.
+
+Catalogue and detail book objects carry `author_photo_url`: an absolute URL for the
+photo uploaded with the book (admin form or the `author_photo` multipart field),
+or an empty string when there is none.
 Reordering uses `{"chapter_ids":[82,81]}` with every book chapter exactly once.
 IDs, completion records and bookmarks remain stable across edits and reorder.
 

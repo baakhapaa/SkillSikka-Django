@@ -28,12 +28,13 @@ from .models import (
 class EBookForm(forms.ModelForm):
 	class Meta:
 		model = EBook
-		fields = ['title', 'author', 'description', 'subject', 'grade', 'category',
+		fields = ['title', 'author', 'author_photo', 'description', 'subject', 'grade', 'category',
 			'difficulty', 'highlights', 'price', 'currency', 'cover_url', 'cover_image',
 			'file_url', 'source_file', 'is_published']
 		# ClearableFileInput tries to render .url, forbidden for private content.
-		widgets = {'source_file': forms.FileInput(), 'cover_image': forms.FileInput()}
+		widgets = {'source_file': forms.FileInput(), 'cover_image': forms.FileInput(), 'author_photo': forms.FileInput()}
 		help_texts = {
+			'author_photo': 'Optional square JPEG, PNG or WebP. The app shows it in the round face next to the author name.',
 			'price': 'Leave blank for unknown pricing. Zero explicitly means free; Phase 1 does not grant reader access.',
 			'highlights': 'JSON list of up to 30 short strings, for example ["Practical examples"].',
 			'file_url': 'Legacy reference only. Not returned to readers; upload a private source to replace it.',
@@ -46,8 +47,10 @@ class BookChapterForm(forms.ModelForm):
 		help_text='Plain text only. Literal tags, code examples and whitespace are preserved; never render as HTML.')
 	class Meta:
 		model = BookChapter
-		fields = ['chapter_number', 'title', 'content', 'pdf_page_start', 'pdf_page_end']
+		fields = ['chapter_number', 'title', 'content', 'pause_prompt', 'pdf_page_start', 'pdf_page_end']
+		labels = {'pause_prompt': 'Pause & think'}
 		help_texts = {'content': 'Plain text only. Code examples and whitespace are preserved; never render this field as HTML.',
+			'pause_prompt': 'Optional plain-text prompt shown under the chapter. Leave blank to hide the block.',
 			'pdf_page_start': 'Optional inclusive 1-based PDF range. No automatic chapter boundaries.'}
 
 	def clean_title(self):

@@ -26,6 +26,7 @@ All parameters are optional. Search matches title or author. Category is case-in
   "id": 12,
   "title": "Geometry",
   "author": "Sample Writer",
+  "author_photo_url": "",
   "description": "An introduction to geometry",
   "subject": 1,
   "subject_name": "Mathematics",

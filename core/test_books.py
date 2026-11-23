@@ -290,6 +290,27 @@ class BookSectionTests(TestCase):
         self.assertIn('/media/book-covers/', response.data['cover_url'])
         self.assertNotIn('cover_image', response.data)
 
+    def test_author_photo_upload_and_url(self):
+        response = self.upload(author_photo=cover('author.png'))
+        self.assertEqual(response.status_code, 201, response.data)
+        url = response.data['author_photo_url']
+        self.assertTrue(url.startswith('http://testserver/media/book-authors/'), url)
+        self.assertNotIn('author_photo', response.data)
+        book = EBook.objects.get(pk=response.data['id'])
+        self.assertEqual(self.api.get(self.detail(book)).data['author_photo_url'], url)
+        row = next(row for row in self.api.get(self.list_url).data if row['id'] == book.pk)
+        self.assertEqual(row['author_photo_url'], url)
+        # No photo is an empty string, never a missing key or null.
+        self.assertEqual(self.api.get(self.detail(self.book())).data['author_photo_url'], '')
+        fake = SimpleUploadedFile('fake.png', b'<script>bad</script>', content_type='image/png')
+        self.assertEqual(self.upload(author_photo=fake).status_code, 400)
+
+    def test_admin_uploads_author_photo(self):
+        self.client.force_login(self.admin)
+        response = self.client.post(reverse('add_book'), self.admin_payload(author_photo=cover('author.png')))
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(EBook.objects.get(title='Dashboard book').author_photo.name.startswith('book-authors/'))
+
     def test_invalid_signatures_and_extensions(self):
         for upload in [pdf(body=b'<html>fake</html>'), pdf(name='fake.epub'), pdf(name='fake.exe'),
                        pdf(body=b'%PDF-1.7\nno end marker'), cover(name='fake.jpg')]:
@@ -767,6 +788,25 @@ class BookReaderPhase2Tests(TestCase):
         self.assertEqual(response.data['chapter']['content_format'], 'text')
         self.assertIsNone(self.api.get(self.chapter_url(book, first)).data['previous_chapter_id'])
         self.assertIsNone(self.api.get(self.chapter_url(book, last)).data['next_chapter_id'])
+
+    def test_pause_prompt_is_optional_plain_text(self):
+        book = self.book()
+        chapter = self.chapter(book)
+        self.assertEqual(self.api.get(self.chapter_url(book, chapter)).data['chapter']['pause_prompt'], '')
+        response = self.api.patch(self.chapter_url(book, chapter),
+                                  {'pause_prompt': 'Which <b>example</b>\r\nwould you try?\x07'}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.api.get(self.chapter_url(book, chapter)).data['chapter']['pause_prompt'],
+                         'Which <b>example</b>\nwould you try?')
+        self.assertEqual(self.api.patch(self.chapter_url(book, chapter), {'pause_prompt': 'x' * 2001}, format='json').status_code, 400)
+        # The contents list stays light, like `content`.
+        self.assertNotIn('pause_prompt', self.api.get(self.chapters(book)).data['chapters'][0])
+        self.client.force_login(self.admin)
+        response = self.client.post(reverse('edit_book_chapter', args=[book.pk, chapter.pk]), {
+            'chapter_number': 1, 'title': 'Chapter 1', 'content': chapter.content, 'pause_prompt': 'What surprised you?'})
+        self.assertEqual(response.status_code, 302)
+        chapter.refresh_from_db()
+        self.assertEqual(chapter.pause_prompt, 'What surprised you?')
 
     def test_unique_order_and_reorder_keeps_ids(self):
         book = self.book()

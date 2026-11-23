@@ -6,7 +6,7 @@ from django.db import models
 from django.utils import timezone
 from django.core.validators import MinValueValidator, MaxValueValidator
 from .book_files import (
-    PrivateBookStorage, book_cover_path, book_source_path,
+    PrivateBookStorage, book_author_photo_path, book_cover_path, book_source_path,
     validate_book_cover, validate_book_source, validate_highlights,
 )
 
@@ -1463,6 +1463,8 @@ class EBook(models.Model):
 	title = models.CharField(max_length=200)
 	description = models.TextField(blank=True)
 	author = models.CharField(max_length=200, blank=True)
+	# The author is a name, not an account, so the face is uploaded with the book.
+	author_photo = models.ImageField(upload_to=book_author_photo_path, blank=True, validators=[validate_book_cover])
 	subject = models.ForeignKey(Subject, on_delete=models.SET_NULL, null=True, blank=True, related_name='ebooks')
 	grade = models.ForeignKey(Grade, on_delete=models.SET_NULL, null=True, blank=True, related_name='ebooks')
 	uploaded_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name='ebooks')
@@ -1522,6 +1524,8 @@ class BookChapter(models.Model):
 	chapter_number = models.PositiveIntegerField(validators=[MinValueValidator(1), MaxValueValidator(10000)])
 	title = models.CharField(max_length=200)
 	content = models.TextField(blank=True, max_length=200000)
+	# The reader's "Pause & think" line under the chapter. Plain text, like `content`.
+	pause_prompt = models.TextField(blank=True, max_length=2000)
 	# Import identity, never a public asset URL; excluded from reader responses.
 	source_reference = models.CharField(max_length=500, null=True, blank=True, default=None)
 	imported_digest = models.CharField(max_length=64, blank=True, editable=False)
@@ -1555,9 +1559,10 @@ class BookChapter(models.Model):
 		from .book_reader import plain_book_text, reading_minutes
 		self.content = plain_book_text(self.content)
 		self.title = plain_book_text(self.title)
+		self.pause_prompt = plain_book_text(self.pause_prompt)
 		self.estimated_reading_minutes = reading_minutes(self.content)
 		if kwargs.get('update_fields') is not None:
-			kwargs['update_fields'] = set(kwargs['update_fields']) | {'content', 'title', 'estimated_reading_minutes', 'updated_at'}
+			kwargs['update_fields'] = set(kwargs['update_fields']) | {'content', 'title', 'pause_prompt', 'estimated_reading_minutes', 'updated_at'}
 		super().save(*args, **kwargs)
 
 
