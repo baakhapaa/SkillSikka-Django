@@ -45,6 +45,7 @@ from .models import (
 	LearningStreak,
 	Lesson,
 	LessonProgress,
+	LessonWatchTime,
 	Municipality,
 	Payment,
 	Province,
@@ -285,6 +286,16 @@ def _document_url(request, document):
 
 
 def _latest_document(user, document_type):
+	cached = getattr(user, '_prefetched_objects_cache', {}).get(
+		'verification_documents'
+	)
+	if cached is not None:
+		matches = [
+			document for document in cached
+			if document.document_type == document_type
+		]
+		matches.sort(key=lambda document: (document.uploaded_at, document.pk), reverse=True)
+		return matches[0] if matches else None
 	return user.verification_documents.filter(
 		document_type=document_type
 	).order_by('-uploaded_at', '-pk').first()
@@ -314,9 +325,21 @@ def _current_user_payload(request, user):
 			instructor_profile.cv_resume_document
 			or _latest_document(user, 'cv_resume')
 		)
-		certificates = user.verification_documents.filter(
-			document_type='certificate'
-		).order_by('uploaded_at', 'pk')
+		cached = getattr(user, '_prefetched_objects_cache', {}).get(
+			'verification_documents'
+		)
+		if cached is not None:
+			certificates = [
+				document for document in cached
+				if document.document_type == 'certificate'
+			]
+			certificates.sort(
+				key=lambda document: (document.uploaded_at, document.pk)
+			)
+		else:
+			certificates = user.verification_documents.filter(
+				document_type='certificate'
+			).order_by('uploaded_at', 'pk')
 		if instructor_profile.experience_years is not None:
 			experience_years = int(round(instructor_profile.experience_years))
 
@@ -409,8 +432,21 @@ class CurrentUserAPIView(APIView):
 	parser_classes = [JSONParser, MultiPartParser, FormParser]
 
 	def get(self, request):
+		user = (
+			User.objects.select_related(
+				'role',
+				'student_profile__school',
+				'student_profile__student_id_card_document',
+				'instructor_profile__cv_resume_document',
+			)
+			.prefetch_related(
+				'verification_documents',
+				'student_profile__learning_interests',
+			)
+			.get(pk=request.user.pk)
+		)
 		return Response(
-			_current_user_payload(request, request.user),
+			_current_user_payload(request, user),
 			status=status.HTTP_200_OK,
 		)
 
@@ -2048,6 +2084,10 @@ class CourseProgressAPIView(APIView):
 		).count()
 
 		summary = _course_progress_summary(course.id, total_lessons, completed_lessons)
+		summary['has_started'] = (
+			LessonProgress.objects.filter(student=student, lesson__course=course).exists()
+			or LessonWatchTime.objects.filter(student=student, lesson__course=course).exists()
+		)
 		if enrollment is not None and _apply_course_completion(enrollment, summary['is_completed']):
 			enrollment.course = course
 			_persist_course_completions([enrollment])

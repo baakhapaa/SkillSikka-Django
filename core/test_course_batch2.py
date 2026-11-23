@@ -11,7 +11,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from .models import (Certificate, Course, CourseReview, Enrollment, Grade, Lesson, LessonProgress,
-    Question, QuestionOption, Quiz, QuizAttempt, Role, StudentProfile, Subject, User)
+    LessonWatchTime, Question, QuestionOption, Quiz, QuizAttempt, Role, StudentProfile, Subject, User)
 
 
 class CourseBatch2Tests(TestCase):
@@ -54,6 +54,7 @@ class CourseBatch2Tests(TestCase):
             row = data[0] if isinstance(data, list) else data
             self.assertEqual(row['content_text'], 'Academic secret')
         self.assertEqual(self.client.get(self.progress_url(self.academic)).data['progress_percentage'], 0)
+        self.assertFalse(self.client.get(self.progress_url(self.academic)).data['has_started'])
         response = self.client.post(reverse('api-complete-lesson', args=[self.lesson.pk]))
         self.assertEqual(response.status_code, 200, response.data)
         progress = LessonProgress.objects.get(student=self.student, lesson=self.lesson)
@@ -61,7 +62,17 @@ class CourseBatch2Tests(TestCase):
         response = self.client.get(self.progress_url(self.academic))
         self.assertEqual(response.data['progress_percentage'], 100)
         self.assertTrue(response.data['is_completed'])
+        self.assertTrue(response.data['has_started'])
         self.assertFalse(Enrollment.objects.filter(course=self.academic).exists())
+
+    def test_progress_has_started_from_watch_time(self):
+        self.assertFalse(self.client.get(self.progress_url(self.academic)).data['has_started'])
+        LessonWatchTime.objects.create(
+            student=self.student, lesson=self.lesson, date=timezone.now().date(),
+            watched_seconds=4, position_seconds=4,
+        )
+        self.assertTrue(self.client.get(self.progress_url(self.academic)).data['has_started'])
+        self.assertEqual(self.client.get(self.progress_url(self.academic)).data['progress_percentage'], 0)
 
     def test_wrong_grade_academic_access_and_preview(self):
         self.client.force_authenticate(self.other)

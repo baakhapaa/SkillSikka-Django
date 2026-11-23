@@ -1928,6 +1928,15 @@ class CurrentUserProfileFieldsTests(TestCase):
 			self.assertIsNone(data[key], key)
 		self.assertEqual(data['certificates_and_recommendations_urls'], [])
 
+	def test_me_loads_the_profile_in_a_handful_of_queries(self):
+		self.client.force_authenticate(self.student)
+		with self.assertNumQueries(3):
+			self.assertEqual(self.client.get('/api/v1/me/').status_code, 200)
+
+		self.client.force_authenticate(self.instructor)
+		with self.assertNumQueries(2):
+			self.assertEqual(self.client.get('/api/v1/me/').status_code, 200)
+
 	def test_student_completion_fields_read_back_as_integers(self):
 		self.client.force_authenticate(self.student)
 		self.assertEqual(self.complete_student().status_code, 200)
