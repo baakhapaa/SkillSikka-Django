@@ -927,7 +927,7 @@ class LearningCompatibilityTests(TestCase):
         url = reverse('api-course-progress', kwargs={'course_id': self.course.pk})
         response = self.client.get(url)
         self.assertEqual(response.data, {'course_id': self.course.pk, 'total_lessons': 1,
-            'completed_lessons': 1, 'progress_percentage': 100.0, 'is_completed': True})
+            'completed_lessons': 1, 'progress_percentage': 100.0, 'is_completed': True, 'has_started': True})
         enrollment = Enrollment.objects.get(student=self.student, course=self.course)
         completed_at = enrollment.completed_at
         self.client.get(url)
@@ -1430,8 +1430,11 @@ class PublicInstructorTests(TestCase):
         self.teacher.save(update_fields=['profile_photo_url'])
         signed_url = 'https://cdn.example.com/photos/new.png?signature=fresh'
         with patch('core.documents.default_storage.url', return_value=signed_url) as resolve:
-            self.assertEqual(self.detail().data['profile_photo_url'], signed_url)
-            resolve.assert_called_once_with('profile-photos/1/new.png')
+            data = self.detail().data
+            self.assertEqual(data['profile_photo_url'], signed_url)
+            # The profile and each course card's instructor photo resolve the same name.
+            self.assertEqual([card['instructor_photo_url'] for card in data['courses']], [signed_url] * len(data['courses']))
+            self.assertEqual({call.args for call in resolve.call_args_list}, {('profile-photos/1/new.png',)})
         self.assertEqual(self.detail().data['profile_photo_url'], 'http://testserver/media/profile-photos/1/new.png')
 
     def test_authentication_and_read_only_endpoints(self):
@@ -1575,7 +1578,8 @@ class CourseReviewTests(TestCase):
             self.assertEqual(set(review), {'id', 'rating', 'review', 'student', 'created_at', 'updated_at'})
             self.assertEqual(set(review['student']), {'id', 'name', 'profile_photo_url'})
         with self.assertNumQueries(1):
-            data = CourseSerializer(Course.objects.with_review_stats().select_related('instructor', 'subject', 'grade'), many=True).data
+            data = CourseSerializer(Course.objects.with_review_stats().select_related(
+                'instructor__instructor_profile', 'subject', 'grade'), many=True).data
             self.assertEqual(data[0]['review_count'], 2)
 
     def test_visibility_and_authentication(self):

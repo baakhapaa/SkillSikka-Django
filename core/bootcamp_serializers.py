@@ -42,7 +42,8 @@ class CourseInstructorDisplaySerializer(serializers.ModelSerializer):
 
 
 def with_bootcamp_data(queryset, *, detail=False):
-    queryset = queryset.select_related('bootcamp_profile')
+    # Every course card reads the instructor's qualification and photo.
+    queryset = queryset.select_related('bootcamp_profile', 'instructor__instructor_profile')
     if detail:
         resources = CourseResource.objects.filter(course=OuterRef('pk')).order_by().values('course')
         discussions = CourseDiscussion.objects.filter(course=OuterRef('pk'), parent=None, is_hidden=False).order_by().values('course')
