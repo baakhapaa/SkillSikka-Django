@@ -1117,6 +1117,18 @@ class PublicInstructorSerializer(serializers.ModelSerializer):
 	review_count = serializers.IntegerField(read_only=True)
 	total_students = serializers.IntegerField(read_only=True)
 	total_courses = serializers.IntegerField(read_only=True)
+	categories = serializers.SerializerMethodField()
+
+	@extend_schema_field(serializers.ListField(child=serializers.CharField()))
+	def get_categories(self, obj):
+		"""Distinct category names of the published courses, for the subject chips."""
+		names = {}
+		for course in getattr(obj, 'category_courses', []):
+			category = {'academic': course.subject, 'skill': course.skill_category,
+				'premium': course.premium_category}.get(course.course_type)
+			if category is not None:
+				names.setdefault(category.name.casefold(), category.name)
+		return sorted(names.values(), key=str.casefold)
 
 	@extend_schema_field(serializers.CharField(allow_null=True))
 	def get_profile_photo_url(self, obj):
@@ -1135,7 +1147,7 @@ class PublicInstructorSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = User
 		fields = ['id', 'name', 'profile_photo_url', 'qualification', 'subject_expertise',
-			'average_rating', 'review_count', 'total_students', 'total_courses']
+			'average_rating', 'review_count', 'total_students', 'total_courses', 'categories']
 		read_only_fields = fields
 
 

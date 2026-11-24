@@ -1125,7 +1125,23 @@ def _with_instructor_stats(users):
 		total_courses=Coalesce(Subquery(public_courses.order_by().values('instructor_id')
 			.annotate(value=Count('pk')).values('value')), 0),
 		total_students=Coalesce(Subquery(students.values('value')), 0),
-	)
+	).prefetch_related(Prefetch(
+		'courses', to_attr='category_courses',
+		queryset=_category_courses().select_related('subject', 'skill_category', 'premium_category').only(
+			'instructor', 'course_type', 'subject__name', 'skill_category__name', 'premium_category__name'),
+	))
+
+
+def _category_courses():
+	"""The courses behind an instructor's subject chips. Bootcamps have no category."""
+	return Course.objects.filter(is_published=True, course_type__in=['academic', 'skill', 'premium'])
+
+
+def _in_category(name):
+	# Each course type keeps its category in its own field.
+	return (Q(course_type='academic', subject__name__iexact=name)
+		| Q(course_type='skill', skill_category__name__iexact=name)
+		| Q(course_type='premium', premium_category__name__iexact=name))
 
 
 def _public_instructors():
@@ -1211,7 +1227,17 @@ class TopInstructorsAPIView(generics.ListAPIView):
 	serializer_class = PublicInstructorSerializer
 
 	def get_queryset(self):
-		return _ranked_public_instructors()
+		instructors = _ranked_public_instructors()
+		search = self.request.query_params.get('search', '').strip()
+		if search:
+			instructors = instructors.filter(Q(name__icontains=search)
+				| Q(instructor_profile__qualification__icontains=search)
+				| Q(instructor_profile__subject_expertise__icontains=search))
+		category = self.request.query_params.get('category', '').strip()
+		if category:
+			instructors = instructors.filter(Exists(
+				_category_courses().filter(_in_category(category), instructor_id=OuterRef('pk'))))
+		return instructors
 
 
 class PublicInstructorDetailAPIView(generics.RetrieveAPIView):

@@ -28,6 +28,7 @@ from .models import Challenge, LearningInterest, Quiz
 from .models import PasswordResetOTP
 from .serializers import ShortSerializer
 from .models import Course, CourseReview, Enrollment, Lesson, LessonProgress, Payment, with_instructor_review_stats
+from .models import PremiumCategory, Subject
 from .serializers import CourseSerializer
 
 
@@ -1192,7 +1193,7 @@ class HomeFeedTests(TestCase):
         self.ad()
         with CaptureQueriesContext(connection) as initial:
             self.feed()
-        self.assertLessEqual(len(initial), 13)  # Includes the new bootcamp collection.
+        self.assertLessEqual(len(initial), 14)  # Includes the bootcamp collection and instructor categories.
         for index in range(10):
             teacher = self.user(f'HomeExtra{index}')
             self.course_for(f'Course {index}', instructor=teacher)
@@ -1240,7 +1241,7 @@ class HomeFeedTests(TestCase):
 
 class PublicInstructorTests(TestCase):
     fields = {'id', 'name', 'profile_photo_url', 'qualification', 'subject_expertise',
-              'average_rating', 'review_count', 'total_students', 'total_courses'}
+              'average_rating', 'review_count', 'total_students', 'total_courses', 'categories'}
 
     def setUp(self):
         cache.clear()
@@ -1402,18 +1403,59 @@ class PublicInstructorTests(TestCase):
         self.assertFalse(private & set(data))
 
     def test_query_counts_do_not_grow_with_instructors_or_courses(self):
-        with self.assertNumQueries(1):
+        with self.assertNumQueries(2):  # Instructors, category courses.
             self.assertEqual(self.client.get(self.url).status_code, 200)
-        with self.assertNumQueries(3):  # Instructor, courses, recent reviews.
+        with self.assertNumQueries(4):  # Instructor, category courses, courses, recent reviews.
             self.assertEqual(self.detail().status_code, 200)
         for index in range(5):
             teacher = self.user(f'Extra{index}')
             self.course_for(teacher)
             self.course_for(self.teacher)
-        with self.assertNumQueries(1):
+        with self.assertNumQueries(2):
             self.assertEqual(len(self.client.get(self.url).data), 6)
-        with self.assertNumQueries(3):
+        with self.assertNumQueries(4):
             self.assertEqual(len(self.detail().data['courses']), 6)
+
+    def categorised(self):
+        maths = Subject.objects.create(name='Mathematics')
+        coding = LearningInterest.objects.create(name='Programming', slug='chip-programming')
+        art = PremiumCategory.objects.create(name='Art & Design', slug='chip-art-design')
+        self.course.skill_category = coding
+        self.course.save(update_fields=['skill_category'])
+        Course.objects.create(instructor=self.teacher, title='Algebra', course_type='academic', subject=maths, is_published=True)
+        Course.objects.create(instructor=self.teacher, title='More code', course_type='skill', skill_category=coding, is_published=True)
+        Course.objects.create(instructor=self.teacher, title='Draft art', course_type='premium', premium_category=art)
+        painter = self.user('Painter')
+        Course.objects.create(instructor=painter, title='Painting', course_type='premium', premium_category=art,
+                              is_paid=True, price=500, is_published=True)
+        return painter
+
+    def test_categories_are_distinct_published_course_categories(self):
+        painter = self.categorised()
+        bare = self.user('Bare')
+        self.course_for(bare)
+        rows = {row['id']: row['categories'] for row in self.client.get(self.url).data}
+        # The draft premium course adds nothing; a duplicate skill category appears once.
+        self.assertEqual(rows, {self.teacher.pk: ['Mathematics', 'Programming'],
+                                painter.pk: ['Art & Design'], bare.pk: []})
+        self.assertEqual(self.detail().data['categories'], ['Mathematics', 'Programming'])
+
+    def test_category_and_search_filters(self):
+        painter = self.categorised()
+        def ids(**params):
+            response = self.client.get(self.url, params)
+            self.assertEqual(response.status_code, 200)
+            return {row['id'] for row in response.data}
+        self.assertEqual(ids(category='programming'), {self.teacher.pk})
+        self.assertEqual(ids(category='ART & DESIGN'), {painter.pk})
+        self.assertEqual(ids(category='Coding'), set())
+        self.assertEqual(ids(category=''), {self.teacher.pk, painter.pk})
+        # Only published courses count, so the teacher's draft art course does not match.
+        self.assertNotIn(self.teacher.pk, ids(category='Art & Design'))
+        self.assertEqual(ids(search='msc'), {self.teacher.pk})
+        self.assertEqual(ids(search='pyth'), {self.teacher.pk})
+        self.assertEqual(ids(search='paint'), {painter.pk})
+        self.assertEqual(ids(search='paint', category='Mathematics'), set())
 
     def test_public_photos_use_canonical_storage_resolution(self):
         for stored in ['profile-photos/1/new.png', '/media/profile-photos/1/old.png',
