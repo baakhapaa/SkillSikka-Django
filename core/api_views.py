@@ -1,7 +1,8 @@
 ﻿from django.db.models import Count, Prefetch, Q, QuerySet
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
-from django.db.models import Exists, OuterRef, Subquery, F, Max, Case, When, Value, IntegerField
+from django.db.models import Exists, OuterRef, Subquery, F, Max, Min, Case, When, Value, IntegerField
+from django.db.models.expressions import RawSQL
 from django.db.models.functions import Coalesce
 from django.db import transaction, IntegrityError
 from decimal import Decimal
@@ -22,7 +23,7 @@ from rest_framework import serializers
 
 from .authentication import EmailVerifiedJWTAuthentication as JWTAuthentication
 from .book_commerce_api import PrivateBookAPI
-from .course_access import CourseAPIError, require_course_access, require_bootcamp_admin
+from .course_access import CourseAPIError, academic_eligible, require_course_access, require_bootcamp_admin
 from .course_filters import positive_id_param
 from .bootcamp_serializers import with_bootcamp_data, load_bootcamp_rosters
 from rest_framework_simplejwt.exceptions import TokenError
@@ -1117,14 +1118,36 @@ class TopicDetailAPIView(
 
 def _with_instructor_stats(users):
 	public_courses = Course.objects.filter(instructor_id=OuterRef('pk'), is_published=True)
-	students = Enrollment.objects.filter(
-		course__instructor_id=OuterRef('pk'), course__is_published=True,
-		status__in=['active', 'completed'],
-	).order_by().values('course__instructor_id').annotate(value=Count('student_id', distinct=True))
+	# One student who takes two courses, or who started a grade course without
+	# an enrolment row, is still one student.
+	learners = Coalesce(RawSQL('''
+		(
+			SELECT COUNT(*) FROM (
+				SELECT e.student_id
+				FROM enrollments e
+				INNER JOIN courses c ON c.id = e.course_id
+				WHERE c.instructor_id = users.id
+					AND c.is_published
+					AND e.status IN ('active', 'completed')
+				UNION
+				SELECT lp.student_id
+				FROM lesson_progress lp
+				INNER JOIN lessons l ON l.id = lp.lesson_id
+				INNER JOIN courses c2 ON c2.id = l.course_id
+				WHERE c2.instructor_id = users.id AND c2.is_published
+				UNION
+				SELECT wt.student_id
+				FROM lesson_watch_time wt
+				INNER JOIN lessons l3 ON l3.id = wt.lesson_id
+				INNER JOIN courses c3 ON c3.id = l3.course_id
+				WHERE c3.instructor_id = users.id AND c3.is_published
+			) learners
+		)
+	''', [], output_field=IntegerField()), 0)
 	return with_instructor_review_stats(users).select_related('instructor_profile').annotate(
 		total_courses=Coalesce(Subquery(public_courses.order_by().values('instructor_id')
 			.annotate(value=Count('pk')).values('value')), 0),
-		total_students=Coalesce(Subquery(students.values('value')), 0),
+		total_students=learners,
 	).prefetch_related(Prefetch(
 		'courses', to_attr='category_courses',
 		queryset=_category_courses().select_related('subject', 'skill_category', 'premium_category').only(
@@ -1972,6 +1995,100 @@ def _issue_certificate(student, certificate_type, **target):
 	return certificate, created
 
 
+def _append_started_academic_courses(student, request, lessons, completed_ids, last_activity, active, completed):
+	"""Academic courses the student has opened, without creating an enrolment.
+
+	School courses are granted by grade, so `POST /enroll/` refuses them and
+	My Learning used to have nothing to list. A lesson completion or a watch
+	report is the start. The card matches an enrolment card; `enrollment_id`
+	stays null.
+	"""
+	progress_ids = LessonProgress.objects.filter(
+		student=student, lesson__course__course_type='academic', lesson__course__is_published=True,
+	).values('lesson__course_id')
+	watch_ids = LessonWatchTime.objects.filter(
+		student=student, lesson__course__course_type='academic', lesson__course__is_published=True,
+	).values('lesson__course_id')
+	started = {row['lesson__course_id'] for row in progress_ids.union(watch_ids)}
+	enrolled_ids = {row['course'].pk for row in active}
+	enrolled_ids.update(row['course'].pk for row in completed)
+	started.difference_update(enrolled_ids)
+	if not started:
+		return
+
+	def eligible(course):
+		try:
+			return academic_eligible(student, course)
+		except ObjectDoesNotExist:
+			return False
+
+	courses = {
+		course.pk: course
+		for course in with_bootcamp_data(
+			Course.objects.filter(pk__in=started).with_review_stats().with_access(student),
+		).select_related('instructor', 'subject', 'grade')
+		if eligible(course)
+	}
+	if not courses:
+		return
+	ids = set(courses)
+
+	for lesson in Lesson.objects.filter(course_id__in=ids).order_by('order', 'title', 'pk').values(
+		'id', 'course_id', 'title', 'content_type', 'order',
+	):
+		lessons.setdefault(lesson['course_id'], []).append(lesson)
+	for progress in LessonProgress.objects.filter(
+		student=student, lesson__course_id__in=ids, is_completed=True,
+	).values('lesson_id', 'lesson__course_id', 'completed_at'):
+		course_id = progress['lesson__course_id']
+		completed_ids.setdefault(course_id, set()).add(progress['lesson_id'])
+		when = progress['completed_at']
+		if when and (course_id not in last_activity or when > last_activity[course_id]):
+			last_activity[course_id] = when
+	started_at = {}
+	for row in LessonProgress.objects.filter(
+		student=student, lesson__course_id__in=ids, completed_at__isnull=False,
+	).values('lesson__course_id').annotate(started=Min('completed_at')):
+		started_at[row['lesson__course_id']] = row['started']
+	for row in LessonWatchTime.objects.filter(
+		student=student, lesson__course_id__in=ids,
+	).values('lesson__course_id').annotate(last=Max('updated_at'), started=Min('updated_at')):
+		course_id = row['lesson__course_id']
+		if course_id not in last_activity or row['last'] > last_activity[course_id]:
+			last_activity[course_id] = row['last']
+		previous = started_at.get(course_id)
+		if previous is None or row['started'] < previous:
+			started_at[course_id] = row['started']
+
+	now = timezone.now()
+	for course_id, course in courses.items():
+		course_lessons = lessons.get(course_id, [])
+		done = completed_ids.get(course_id, set())
+		summary = _course_progress_summary(course_id, len(course_lessons), len(done))
+		next_lesson = next((
+			dict(lesson, lesson_number=index)
+			for index, lesson in enumerate(course_lessons, 1)
+			if lesson['id'] not in done
+		), None)
+		row = dict(
+			summary,
+			enrollment_id=None,
+			enrollment_status='completed' if summary['is_completed'] else 'active',
+			enrolled_at=started_at.get(course_id) or now,
+			completed_at=last_activity.get(course_id) if summary['is_completed'] else None,
+			course=course,
+			next_lesson=None if summary['is_completed'] else next_lesson,
+			resume_url=None if summary['is_completed'] or next_lesson is None else request.build_absolute_uri(
+				reverse('api-lesson-detail', kwargs={'pk': next_lesson['id']}),
+			),
+			last_learning_activity=last_activity.get(course_id),
+		)
+		if summary['is_completed']:
+			completed.append(row)
+		else:
+			active.append(row)
+
+
 class MyLearningAPIView(APIView):
 	authentication_classes = [JWTAuthentication, SessionAuthentication]
 	permission_classes = [IsAuthenticated]
@@ -2063,6 +2180,9 @@ class MyLearningAPIView(APIView):
 				payment = latest.get(row['enrollment_id'])
 				row['latest_payment_id'] = payment['id'] if payment else None
 				row['latest_payment_status'] = payment['status'] if payment else None
+		_append_started_academic_courses(
+			student, request, lessons, completed_ids, last_activity, active, completed,
+		)
 		def activity_order(row):
 			return (row['last_learning_activity'] is not None,
 				row['last_learning_activity'] or row['enrolled_at'], row['enrolled_at'], row['enrollment_id'])
@@ -8933,6 +9053,17 @@ class CourseReviewAccessMixin:
 			raise PermissionDenied('Only active students can manage course reviews.')
 
 	def check_enrollment(self, course):
+		# A grade course is opened by class, not by an enrolment row. A student
+		# in that grade may review it the same way an enrolled student reviews
+		# a skill course.
+		if course.course_type == 'academic':
+			if not academic_eligible(self.request.user, course):
+				raise CourseAPIError(
+					'ACADEMIC_NOT_ELIGIBLE',
+					'This course is not available for your grade.',
+					403,
+				)
+			return
 		if not Enrollment.objects.filter(student=self.request.user, course=course, status__in=['active', 'completed']).exists():
 			raise CourseAPIError('NOT_ENROLLED', 'An active or completed enrollment is required to review this course.', 403)
 

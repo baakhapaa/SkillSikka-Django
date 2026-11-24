@@ -879,7 +879,7 @@ class MyLearningTests(TestCase):
         from .models import Certificate
         self.progress(self.lessons[0])
         Certificate.objects.create(student=self.student, course=self.course, certificate_type='course')
-        with self.assertNumQueries(7):
+        with self.assertNumQueries(8):
             self.feed()
         for index in range(8):
             course, enrollment = self.enroll(f'Bulk course {index}')
@@ -888,7 +888,7 @@ class MyLearningTests(TestCase):
                 if order == 0:
                     self.progress(lesson, enrollment=enrollment)
             Certificate.objects.create(student=self.student, course=course, certificate_type='course')
-        with self.assertNumQueries(7):
+        with self.assertNumQueries(8):
             data = self.feed()
         self.assertEqual(len(self.cards(data)), 9)
         self.assertEqual(len(data['certificates']), 9)

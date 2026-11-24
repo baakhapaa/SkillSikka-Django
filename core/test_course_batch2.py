@@ -64,6 +64,35 @@ class CourseBatch2Tests(TestCase):
         self.assertTrue(response.data['is_completed'])
         self.assertTrue(response.data['has_started'])
         self.assertFalse(Enrollment.objects.filter(course=self.academic).exists())
+        self.assertEqual(
+            self.client.get(reverse('api-course-detail', args=[self.academic.pk])).data['students_enrolled'],
+            1,
+        )
+
+    def test_started_academic_course_is_listed_in_my_learning(self):
+        second = Lesson.objects.create(
+            course=self.academic, title='Second lesson', content_type='text',
+            content_text='More', order=2,
+        )
+        self.assertEqual(self.client.post(reverse('api-complete-lesson', args=[self.lesson.pk])).status_code, 200)
+
+        data = self.client.get(reverse('api-my-learning')).data
+        card = data['continue_learning']
+        self.assertEqual(card['course']['id'], self.academic.pk)
+        self.assertIsNone(card['enrollment_id'])
+        self.assertEqual(card['enrollment_status'], 'active')
+        self.assertEqual(card['completed_lessons'], 1)
+        self.assertEqual(card['next_lesson']['id'], second.pk)
+        self.assertEqual(data['courses'], [])
+        self.assertFalse(Enrollment.objects.filter(course=self.academic).exists())
+
+        LessonWatchTime.objects.create(
+            student=self.other, lesson=self.lesson, date=timezone.now().date(), watched_seconds=4,
+        )
+        self.client.force_authenticate(self.other)
+        hidden = self.client.get(reverse('api-my-learning')).data
+        self.assertIsNone(hidden['continue_learning'])
+        self.assertEqual(hidden['courses'], [])
 
     def test_progress_has_started_from_watch_time(self):
         self.assertFalse(self.client.get(self.progress_url(self.academic)).data['has_started'])
@@ -73,6 +102,15 @@ class CourseBatch2Tests(TestCase):
         )
         self.assertTrue(self.client.get(self.progress_url(self.academic)).data['has_started'])
         self.assertEqual(self.client.get(self.progress_url(self.academic)).data['progress_percentage'], 0)
+        self.assertEqual(
+            self.client.get(reverse('api-course-detail', args=[self.academic.pk])).data['students_enrolled'],
+            1,
+        )
+        from core.api_views import _with_instructor_stats
+        self.assertEqual(
+            _with_instructor_stats(User.objects.filter(pk=self.owner.pk)).get().total_students,
+            1,
+        )
 
     def test_wrong_grade_academic_access_and_preview(self):
         self.client.force_authenticate(self.other)
@@ -269,6 +307,14 @@ class CourseBatch2Tests(TestCase):
         self.skill.is_published = False
         self.skill.save()
         self.assert_code(self.client.post(reverse('api-enroll-course', args=[self.skill.pk])), 'COURSE_NOT_PUBLISHED', 400)
+
+    def test_grade_course_review_does_not_need_an_enrollment(self):
+        url = reverse('api-course-reviews', args=[self.academic.pk])
+        response = self.client.post(url, {'rating': 5, 'review': 'Clear examples.'}, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertFalse(Enrollment.objects.filter(course=self.academic).exists())
+        self.client.force_authenticate(self.other)
+        self.assert_code(self.client.post(url, {'rating': 4}, format='json'), 'ACADEMIC_NOT_ELIGIBLE', 403)
 
     def test_review_duplicate_and_me_lifecycle(self):
         Enrollment.objects.create(student=self.student, course=self.skill)

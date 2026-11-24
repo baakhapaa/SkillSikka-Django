@@ -547,6 +547,24 @@ class Chapter(models.Model):
 		return self.name
 
 
+def _distinct_students(rows, group):
+	"""One integer: distinct students in [rows], grouped onto the course."""
+	return models.functions.Coalesce(models.Subquery(
+		rows.annotate(value=models.Count('student_id', distinct=True)).values('value'),
+	), 0)
+
+
+def _started_without_enrollment(rows):
+	"""Progress or watch rows for this course whose student is not enrolled."""
+	return rows.filter(lesson__course=models.OuterRef('pk')).exclude(models.Exists(
+		Enrollment.objects.filter(
+			course_id=models.OuterRef('lesson__course_id'),
+			student_id=models.OuterRef('student_id'),
+			status__in=['active', 'completed'],
+		),
+	)).order_by().values('lesson__course')
+
+
 class CourseQuerySet(models.QuerySet):
 	def with_access(self, user):
 		return self.annotate(is_enrolled=models.Exists(Enrollment.objects.filter(
@@ -561,9 +579,25 @@ class CourseQuerySet(models.QuerySet):
 
 	def with_card_stats(self):
 		lessons = Lesson.objects.filter(course=models.OuterRef('pk')).order_by().values('course')
-		students = Enrollment.objects.filter(course=models.OuterRef('pk'), status__in=['active', 'completed']).order_by().values('course')
+		enrolled = Enrollment.objects.filter(
+			course=models.OuterRef('pk'), status__in=['active', 'completed'],
+		).order_by().values('course')
+		# A grade course has no enrolment, but a student who has opened it is
+		# still a student of that course. Count them once, and not again if
+		# they also have an enrolment.
+		started = _started_without_enrollment(LessonProgress.objects.all())
+		watched = _started_without_enrollment(LessonWatchTime.objects.all()).exclude(
+			models.Exists(LessonProgress.objects.filter(
+				lesson__course_id=models.OuterRef('lesson__course_id'),
+				student_id=models.OuterRef('student_id'),
+			)),
+		)
 		return self.select_related('skill_category').annotate(
-			students_enrolled=models.functions.Coalesce(models.Subquery(students.annotate(value=models.Count('student', distinct=True)).values('value')), 0),
+			students_enrolled=(
+				_distinct_students(enrolled, 'course')
+				+ _distinct_students(started, 'lesson__course')
+				+ _distinct_students(watched, 'lesson__course')
+			),
 			lessons_count=models.functions.Coalesce(models.Subquery(lessons.annotate(value=models.Count('pk')).values('value')), 0),
 			total_duration_seconds=models.Subquery(lessons.annotate(value=models.Sum('duration_seconds')).values('value')),
 		)

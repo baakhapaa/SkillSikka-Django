@@ -18,3 +18,10 @@ plan.md
 core/management/commands/seed_course_covers.py
 # Local-only helper: fills demo courses with public sample videos.
 core/management/commands/fill_demo_curricula.py
+# Local-only demo fixtures: instructors, books and their bundled portraits.
+# seed_instructors.py imports seed_course_covers.py, so both stay local.
+core/management/commands/seed_instructors.py
+core/management/commands/seed_books.py
+core/management/assets/
+core/test_seed_instructors.py
+core/test_seed_books.py

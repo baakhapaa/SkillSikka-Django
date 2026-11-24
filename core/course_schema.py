@@ -65,7 +65,7 @@ def document_course_views(views):
         'StartQuizAttemptAPIView': {'post': extend_schema(request=None, responses={200: QuizAttemptSerializer, 201: QuizAttemptSerializer, 400: QuizLimitErrorSerializer})},
         'EnrollCourseAPIView': {'post': extend_schema(description='Skill and bootcamp courses use existing Enrollment: free courses become active; paid courses await payment. Academic courses return COURSE_NOT_ENROLLABLE.', request=None, responses={201: EnrollmentSerializer, **errors})},
         'CourseProgressAPIView': {'get': extend_schema(responses={200: CourseProgressSerializer, **errors}, description='Skill progress requires active/completed enrollment. Academic progress uses the active student’s matching grade, without enrollment.')},
-        'MyLearningAPIView': {'get': extend_schema(responses={200: MyLearningResponseSerializer}, description='Enrollment-based skill learning dashboard. Academic progress is available through course progress.')},
+        'MyLearningAPIView': {'get': extend_schema(responses={200: MyLearningResponseSerializer}, description='Enrolments, plus academic courses the student has started. An academic course still has no enrolment row.')},
         'HomeFeedAPIView': {'get': extend_schema(responses={200: HomeResponseSerializer}, description='Student dashboard with deterministic recommendations. Available without a Gemini/network request.')},
         'InitiatePaymentAPIView': {'post': extend_schema(request=InitiatePaymentSerializer, responses={201: PaymentInitiationResponseSerializer}, description='Existing payment initiation response. payment_url opens the provider checkout.')},
         'CourseDetailAPIView': {

@@ -1809,7 +1809,9 @@ class ResumeLessonSerializer(serializers.Serializer):
 
 
 class LearningCourseSerializer(serializers.Serializer):
-	enrollment_id = serializers.IntegerField(read_only=True)
+	# Null for an academic course: those are opened by grade and never get an
+	# enrolment row, but a course the student has started still belongs here.
+	enrollment_id = serializers.IntegerField(read_only=True, allow_null=True)
 	enrollment_status = serializers.CharField(read_only=True)
 	enrolled_at = serializers.DateTimeField(read_only=True)
 	completed_at = serializers.DateTimeField(read_only=True, allow_null=True)
