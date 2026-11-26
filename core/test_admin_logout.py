@@ -6,6 +6,8 @@ from django.contrib.sessions.models import Session
 from django.template import RequestContext, Template
 from django.test import Client, RequestFactory, TestCase
 from django.urls import reverse
+from django.utils import timezone
+from django.utils.dateformat import format as date_format
 
 from .models import Role, User
 
@@ -42,6 +44,24 @@ class AdminLogoutTests(TestCase):
             self.client.get(reverse('dashboard')),
             f"{reverse('login')}?next={reverse('dashboard')}",
         )
+
+    def test_dashboard_uses_current_date_and_marks_unavailable_controls(self):
+        User.objects.create_user(
+            email='logout-inactive@example.com', name='Inactive User',
+            role=Role.objects.get(name='student'), is_active=False,
+        )
+        response = self.client.get(reverse('dashboard'))
+
+        self.assertEqual(response.context['current_date'], timezone.localdate())
+        self.assertContains(response, date_format(timezone.localdate(), 'l, F j, Y'))
+        self.assertContains(response, 'Admin overview')
+        self.assertNotContains(response, 'All systems operational')
+        self.assertNotContains(response, 'aria-label="Notifications"')
+        self.assertContains(response, 'Export list unavailable')
+        self.assertContains(response, 'Recent Users')
+        self.assertContains(response, 'href="#users"')
+        self.assertContains(response, reverse('manage_users'))
+        self.assertContains(response, 'class="active-label inactive"')
 
     def test_get_logout_is_rejected_and_keeps_session(self):
         response = self.client.get(reverse('logout'))

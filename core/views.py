@@ -101,7 +101,11 @@ def dashboard(request):
 		'pending_reviews': users.filter(verification_status='pending').count(),
 		'active_users': users.filter(is_active=True).count(),
 	}
-	return render(request, 'admin/dashboard.html', {'users': users[:8], 'stats': stats})
+	return render(request, 'admin/dashboard.html', {
+		'users': users[:8],
+		'stats': stats,
+		'current_date': timezone.localdate(),
+	})
 
 
 @login_required

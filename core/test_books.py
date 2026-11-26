@@ -612,6 +612,13 @@ class BookSectionTests(TestCase):
         self.assertContains(response, 'Find me')
         self.assertNotContains(response, 'Legacy book')
         self.assertEqual(response.context['page'].paginator.count, 1)
+        self.assertContains(response, '<option value="published" selected>Published</option>', html=True)
+        self.assertContains(response, '<option value="">All</option>', html=True)
+
+        response = self.client.get(reverse('manage_books'), {'status': 'draft'})
+        self.assertContains(response, '<option value="draft" selected>Draft</option>', html=True)
+        self.assertEqual(response.context['page'].paginator.count, 1)
+        self.assertContains(response, 'Other')
         self.assertContains(self.client.get(reverse('dashboard')), reverse('manage_books'))
 
     def test_admin_deletion_requires_confirmation_and_retains_files(self):
