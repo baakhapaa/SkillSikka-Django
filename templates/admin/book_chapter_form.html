@@ -1,5 +1,5 @@
 {% extends 'base.html' %}{% block title %}Edit chapter | SkillSikka{% endblock %}{% block content %}
-<div class="app-shell">{% include 'admin/bootcamp_sidebar.html' %}<main class="dashboard-main"><h1>{{ chapter.title }}</h1><p><a href="{% url 'manage_book_chapters' book.pk %}">All chapters</a></p>
+<div class="app-shell">{% include 'admin/sidebar.html' %}<main class="dashboard-main"><h1>{{ chapter.title }}</h1><p><a href="{% url 'manage_book_chapters' book.pk %}">All chapters</a></p>
 {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
 <form method="post" class="form-stack">{% csrf_token %}{{ form.as_p }}<button class="primary-button" type="submit">Save chapter</button></form>
 <h2>Plain-text preview</h2><div style="white-space:pre-wrap">{{ chapter.content }}</div>

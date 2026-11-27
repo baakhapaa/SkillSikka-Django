@@ -12,5 +12,85 @@
 </head>
 <body>
     {% block content %}{% endblock %}
+    <script>
+    (() => {
+        const sidebar = document.getElementById('admin-sidebar');
+        const toggle = document.querySelector('[data-sidebar-toggle]');
+        const closeButton = document.querySelector('[data-sidebar-close]');
+        if (!sidebar || !toggle || !closeButton) return;
+
+        const mobileQuery = window.matchMedia('(max-width: 850px)');
+        const focusableItems = () => Array.from(sidebar.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'));
+
+        function closeSidebar(returnFocus = false) {
+            document.body.classList.remove('admin-sidebar-open');
+            toggle.setAttribute('aria-expanded', 'false');
+            toggle.setAttribute('aria-label', 'Open admin navigation');
+            sidebar.setAttribute('aria-hidden', mobileQuery.matches ? 'true' : 'false');
+            sidebar.inert = mobileQuery.matches;
+            closeButton.hidden = true;
+            document.body.style.overflow = '';
+            if (returnFocus && mobileQuery.matches) toggle.focus();
+        }
+
+        function openSidebar() {
+            document.body.classList.add('admin-sidebar-open');
+            toggle.setAttribute('aria-expanded', 'true');
+            toggle.setAttribute('aria-label', 'Close admin navigation');
+            sidebar.setAttribute('aria-hidden', 'false');
+            sidebar.inert = false;
+            closeButton.hidden = false;
+            const firstItem = focusableItems()[0];
+            (firstItem || sidebar).focus();
+            document.body.style.overflow = 'hidden';
+        }
+
+        function syncViewport() {
+            if (mobileQuery.matches) {
+                closeSidebar(false);
+                return;
+            }
+            document.body.classList.remove('admin-sidebar-open');
+            toggle.setAttribute('aria-expanded', 'false');
+            toggle.setAttribute('aria-label', 'Open admin navigation');
+            sidebar.removeAttribute('aria-hidden');
+            sidebar.inert = false;
+            closeButton.hidden = true;
+            document.body.style.overflow = '';
+        }
+
+        toggle.addEventListener('click', () => {
+            if (toggle.getAttribute('aria-expanded') === 'true') closeSidebar(true);
+            else openSidebar();
+        });
+        closeButton.addEventListener('click', () => closeSidebar(true));
+        sidebar.addEventListener('click', (event) => {
+            if (mobileQuery.matches && event.target.closest('a[href]')) closeSidebar(true);
+        });
+        document.addEventListener('keydown', (event) => {
+            if (!mobileQuery.matches || !document.body.classList.contains('admin-sidebar-open')) return;
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                closeSidebar(true);
+                return;
+            }
+            if (event.key === 'Tab') {
+                const focusable = focusableItems();
+                if (!focusable.length) return;
+                const first = focusable[0];
+                const last = focusable[focusable.length - 1];
+                if (event.shiftKey && (document.activeElement === first || !sidebar.contains(document.activeElement))) {
+                    event.preventDefault();
+                    last.focus();
+                } else if (!event.shiftKey && (document.activeElement === last || !sidebar.contains(document.activeElement))) {
+                    event.preventDefault();
+                    first.focus();
+                }
+            }
+        });
+        mobileQuery.addEventListener('change', syncViewport);
+        syncViewport();
+    })();
+    </script>
 </body>
 </html>

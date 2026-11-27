@@ -370,6 +370,7 @@ class PaymentAdminTests(TestCase):
 		self.client.force_login(self.admin)
 		page = self.client.get('/admin/payments')
 		self.assertContains(page, 'Rs. 500.00')  # revenue counts successful only
+		self.assertContains(page, 'Global revenue (successful)')
 		self.assertContains(page, 'Asha Student')
 		self.assertContains(page, 'Re-check')
 

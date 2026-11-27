@@ -3,30 +3,22 @@
 {% block content %}
 {% include 'admin/_event_styles.html' %}
 <div class="app-shell">
-    <aside class="sidebar">
-        <div class="brand"><span class="brand-mark small">SS</span><strong>SkillSikka</strong></div>
-        <p class="sidebar-label">Workspace</p>
-        <nav>
-            <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
-            <a class="nav-item" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
-            <a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
-            {% include 'admin/course_navigation.html' %}
-            <a class="nav-item active" href="{% url 'manage_events' %}"><span>◷</span> Events</a>
-            <a class="nav-item" href="{% url 'manage_banners' %}"><span>▭</span> Banners</a>
-            <a class="nav-item" href="{% url 'manage_payments' %}"><span>₨</span> Payments</a>
-            <a class="nav-item" href="{% url 'manage_streak_settings' %}"><span>◈</span> Streak settings</a>
-            <a class="nav-item" href="{% url 'manage_certificate_criteria' %}"><span>⚑</span> Certificate criteria</a>
-            <a class="nav-item" href="{% url 'manage_users' %}"><span>◎</span> Users</a>
-        </nav>
-        {% include 'admin/sidebar_footer.html' %}
-    </aside>
+    {% include 'admin/sidebar.html' %}
     <main class="dashboard-main">
         <header class="topbar"><div><p class="eyebrow">Content management</p><h1>Events</h1></div><div class="top-actions"><a class="outline-button" href="#new-event">+ New event</a></div></header>
         {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
         <p class="page-intro">Events appear in the app's "Event near you" rail once published. All times are Nepal time.</p>
 
+        <form method="get" class="admin-list-filters event-admin-filters">
+            <div><label for="event-search">Search name, description, venue, city or host</label><input id="event-search" type="search" name="q" value="{{ filters.q }}"></div>
+            <div><label for="event-publication">Publication</label><select id="event-publication" name="publication"><option value="">All</option>{% for value,label in publication_choices %}<option value="{{ value }}"{% if filters.publication == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+            <div><label for="event-start-after">Starts on or after</label><input id="event-start-after" type="date" name="start_after" value="{{ filters.start_after }}"></div>
+            <div><label for="event-start-before">Starts on or before</label><input id="event-start-before" type="date" name="start_before" value="{{ filters.start_before }}"></div>
+            <div class="filter-actions"><button class="primary-button" type="submit">Filter</button><a class="outline-button" href="{% url 'manage_events' %}">Reset</a></div>
+        </form>
+
         <article class="management-card">
-            <div class="section-heading"><div><p class="eyebrow">All events</p><h2>Events</h2></div><span class="count-label">{{ events|length }} total</span></div>
+            <div class="section-heading"><div><p class="eyebrow">All events</p><h2>Events</h2></div><span class="count-label">{{ events.paginator.count }} total</span></div>
             <div class="table-wrap"><table><thead><tr><th>Event</th><th>When (NPT)</th><th>Where</th><th>Host</th><th>Sign-ups</th><th>Status</th><th></th></tr></thead><tbody>
                 {% for event in events %}
                 <tr>
@@ -46,6 +38,7 @@
                 <tr><td colspan="7" class="empty-state">No events yet. Create one below.</td></tr>
                 {% endfor %}
             </tbody></table></div>
+            <nav class="admin-list-pager" aria-label="Event pages"><span>Page {{ events.number }} of {{ events.paginator.num_pages }}</span><span>{% if events.has_previous %}<a class="outline-button" href="?{% if query_string %}{{ query_string }}&amp;{% endif %}page={{ events.previous_page_number }}">Previous</a>{% endif %} {% if events.has_next %}<a class="outline-button" href="?{% if query_string %}{{ query_string }}&amp;{% endif %}page={{ events.next_page_number }}">Next</a>{% endif %}</span></nav>
         </article>
 
         <article class="management-card" id="new-event">

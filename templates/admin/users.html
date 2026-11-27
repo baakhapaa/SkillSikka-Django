@@ -23,23 +23,7 @@
 @media (max-width:900px){.um-filters{grid-template-columns:1fr 1fr}}
 </style>
 <div class="app-shell">
-    <aside class="sidebar">
-        <div class="brand"><span class="brand-mark small">SS</span><strong>SkillSikka</strong></div>
-        <p class="sidebar-label">Workspace</p>
-        <nav>
-            <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
-            <a class="nav-item" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
-            <a class="nav-item active" href="{% url 'manage_users' %}"><span>◎</span> Users</a>
-            <a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
-            {% include 'admin/course_navigation.html' %}
-            <a class="nav-item" href="{% url 'manage_events' %}"><span>◷</span> Events</a>
-            <a class="nav-item" href="{% url 'manage_banners' %}"><span>▭</span> Banners</a>
-            <a class="nav-item" href="{% url 'manage_payments' %}"><span>₨</span> Payments</a>
-            <a class="nav-item" href="{% url 'manage_streak_settings' %}"><span>◈</span> Streak settings</a>
-            <a class="nav-item" href="{% url 'manage_certificate_criteria' %}"><span>⚑</span> Certificate criteria</a>
-        </nav>
-        {% include 'admin/sidebar_footer.html' %}
-    </aside>
+    {% include 'admin/sidebar.html' %}
     <main class="dashboard-main">
         <header class="topbar"><div><p class="eyebrow">Administration</p><h1>Users</h1></div><div class="top-actions"><a class="outline-button" href="{% url 'dashboard' %}">Back to overview</a></div></header>
         {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
@@ -105,7 +89,7 @@
                                     {% if u.pk == request.user.pk %}
                                         <span class="um-muted">(you)</span>
                                     {% else %}
-                                        <form method="post" action="{% url 'toggle_user_active' u.pk %}">
+                                        <form method="post" action="{% url 'toggle_user_active' u.pk %}"{% if u.is_active %} onsubmit="return confirm('Deactivate {{ u.name|escapejs }}? They will no longer be able to sign in.');"{% endif %}>
                                             {% csrf_token %}
                                             <input type="hidden" name="next" value="{{ request.get_full_path }}">
                                             {% if u.is_active %}

@@ -1,60 +1,59 @@
-﻿{% extends 'base.html' %}
+{% extends 'base.html' %}
 {% block title %}Book Commerce | SkillSikka{% endblock %}
 {% block content %}
 <div class="app-shell">
-    {% include 'admin/bootcamp_sidebar.html' %}
-    <main class="dashboard-main">
-        <header class="topbar"><h1>Book Commerce</h1><a href="{% url 'manage_books' %}">Book Management</a></header>
-        <p>{{ totals.purchases }} verified purchases · NPR {{ totals.revenue|floatformat:2 }} verified revenue</p>
-        <nav aria-label="Book commerce">
-            <a href="?section=orders">Orders</a> ·
-            <a href="?section=entitlements">Entitlements</a> ·
-            <a href="?section=reviews">Reviews</a>
+    {% include 'admin/sidebar.html' %}
+    <main class="dashboard-main book-admin-page">
+        <header class="topbar book-admin-header">
+            <div><p class="eyebrow">Book management</p><h1>Book Commerce</h1></div>
+            <div class="book-admin-header-actions"><a class="book-action-button book-action-button--secondary" href="{% url 'manage_books' %}">Book Management</a></div>
+        </header>
+        {% for message in messages %}<div class="message {{ message.tags }}" role="status">{{ message }}</div>{% endfor %}
+        <p class="book-commerce-summary">Global: {{ totals.purchases }} verified purchases <span aria-hidden="true">&#183;</span> NPR {{ totals.revenue|floatformat:2 }} verified revenue</p>
+        <nav class="book-commerce-tabs" aria-label="Book commerce sections">
+            <a class="book-commerce-tab{% if section == 'orders' %} is-active{% endif %}" href="?section=orders{% if q %}&amp;q={{ q|urlencode }}{% endif %}"{% if section == 'orders' %} aria-current="page"{% endif %}>Orders</a>
+            <a class="book-commerce-tab{% if section == 'entitlements' %} is-active{% endif %}" href="?section=entitlements{% if q %}&amp;q={{ q|urlencode }}{% endif %}"{% if section == 'entitlements' %} aria-current="page"{% endif %}>Entitlements</a>
+            <a class="book-commerce-tab{% if section == 'reviews' %} is-active{% endif %}" href="?section=reviews{% if q %}&amp;q={{ q|urlencode }}{% endif %}"{% if section == 'reviews' %} aria-current="page"{% endif %}>Reviews</a>
         </nav>
-        <form method="get" class="form-stack">
+        <form method="get" class="book-filter-form book-ui-form book-commerce-filter">
             <input type="hidden" name="section" value="{{ section }}">
-            <label for="commerce-search">Book title or account</label>
-            <input id="commerce-search" name="q" value="{{ q }}">
-            <label for="commerce-status">Status</label>
-            <select id="commerce-status" name="status">
-                <option value="">All</option>
-                {% for item in statuses %}<option value="{{ item }}" {% if status == item %}selected{% endif %}>{{ item|title }}</option>{% endfor %}
-            </select>
-            <button class="outline-button">Filter</button>
+            <div class="book-field"><label for="commerce-search">{% if section == 'orders' %}Book, account or order reference{% else %}Book title or account{% endif %}</label><input id="commerce-search" name="q" value="{{ q }}"></div>
+            <div class="book-field"><label for="commerce-status">Status</label><select id="commerce-status" name="status"><option value="">All</option>{% for item in statuses %}<option value="{{ item }}" {% if status == item %}selected{% endif %}>{{ item|title }}</option>{% endfor %}</select></div>
+            <button class="book-action-button book-action-button--secondary" type="submit">Filter</button>
+            <a class="book-action-button book-action-button--secondary" href="?section={{ section }}">Reset</a>
         </form>
-        <div class="table-wrap"><table>
-            <thead><tr><th>Book</th><th>Account</th>
-                {% if section == 'orders' %}<th>Order</th><th>Amount</th><th>Status</th><th>Paid at</th>
-                {% elif section == 'entitlements' %}<th>Source</th><th>Status</th><th>Granted at</th>
-                {% else %}<th>Rating</th><th>Review</th><th>Moderation</th>{% endif %}
-            </tr></thead>
-            <tbody>
-            {% for row in page %}
-                <tr><td>{{ row.book.title }}</td><td>{{ row.user.name }}<br>{{ row.user.email }}</td>
-                {% if section == 'orders' %}
-                    <td>{{ row.reference }}</td><td>{{ row.currency }} {{ row.amount }}</td><td>{{ row.get_status_display }}</td><td>{{ row.paid_at|default_if_none:"—" }}</td>
-                {% elif section == 'entitlements' %}
-                    <td>{{ row.get_source_display }}</td>
-                    <td>{% if row.revoked_at or row.source == 'purchase' and row.order.status != 'paid' %}Revoked{% else %}Active{% endif %}{% if not row.book.is_published %} · Draft{% endif %}</td>
-                    <td>{{ row.granted_at }}</td>
-                {% else %}
-                    <td>{{ row.rating }}</td><td>{{ row.review }}</td>
-                    <td><form method="post">
-                        {% csrf_token %}
-                        <input type="hidden" name="review_id" value="{{ row.pk }}">
-                        {% if row.is_hidden %}<button name="action" value="show">Restore review</button>
-                        {% else %}<button name="action" value="hide">Hide review</button>{% endif %}
-                    </form></td>
-                {% endif %}
-                </tr>
-            {% empty %}<tr><td colspan="6">No records found.</td></tr>{% endfor %}
-            </tbody>
-        </table></div>
-        <p>
-            {% if page.has_previous %}<a href="?section={{ section }}&amp;q={{ q|urlencode }}&amp;status={{ status|urlencode }}&amp;page={{ page.previous_page_number }}">Previous</a>{% endif %}
-            Page {{ page.number }} of {{ page.paginator.num_pages }}
-            {% if page.has_next %}<a href="?section={{ section }}&amp;q={{ q|urlencode }}&amp;status={{ status|urlencode }}&amp;page={{ page.next_page_number }}">Next</a>{% endif %}
-        </p>
+        <div class="table-wrap book-table-wrap">
+            <table class="book-admin-table">
+                <caption class="book-visually-hidden">Book commerce: {{ section }}</caption>
+                <thead><tr><th scope="col">Book</th><th scope="col">Account</th>
+                    {% if section == 'orders' %}<th scope="col">Order</th><th scope="col">Amount</th><th scope="col">Status</th><th scope="col">Paid at</th>
+                    {% elif section == 'entitlements' %}<th scope="col">Source</th><th scope="col">Status</th><th scope="col">Granted at</th>
+                    {% else %}<th scope="col">Rating</th><th scope="col">Review</th><th scope="col">Moderation</th>{% endif %}
+                </tr></thead>
+                <tbody>
+                {% for row in page %}
+                    <tr><td><a href="{% url 'edit_book' row.book.pk %}">{{ row.book.title }}</a></td><td><a href="{% url 'edit_user' row.user.pk %}">{{ row.user.name }}</a><br>{{ row.user.email }}</td>
+                    {% if section == 'orders' %}
+                        <td>{{ row.reference }}</td><td>{{ row.currency }} {{ row.amount }}</td><td><span class="book-status{% if row.status == 'paid' %} book-status--active{% elif row.status == 'failed' or row.status == 'cancelled' or row.status == 'refunded' %} book-status--inactive{% endif %}">{{ row.get_status_display }}</span></td><td>{% if row.paid_at %}{{ row.paid_at }}{% else %}&mdash;{% endif %}</td>
+                    {% elif section == 'entitlements' %}
+                        <td>{{ row.get_source_display }}</td>
+                        <td>{% if row.revoked_at or row.source == 'purchase' and row.order.status != 'paid' %}<span class="book-status book-status--inactive">Revoked</span>{% else %}<span class="book-status book-status--active">Active</span>{% endif %}{% if not row.book.is_published %} &#183; Draft{% endif %}</td>
+                        <td>{{ row.granted_at }}</td>
+                    {% else %}
+                        <td>{{ row.rating }}</td><td>{{ row.review }}</td>
+                        <td><form method="post" class="book-table-actions">{% csrf_token %}<input type="hidden" name="review_id" value="{{ row.pk }}"><input type="hidden" name="next" value="{{ request.get_full_path }}">
+                            {% if row.is_hidden %}<button class="book-action-button book-action-button--secondary" name="action" value="show" type="submit">Restore review</button>
+                            {% else %}<button class="book-action-button book-action-button--danger" name="action" value="hide" type="submit">Hide review</button>{% endif %}
+                        </form></td>
+                    {% endif %}
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="{% if section == 'orders' %}6{% else %}5{% endif %}" class="empty-state">No records found.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <nav class="book-pagination" aria-label="Book commerce pages">{% if page.has_previous %}<a class="book-action-button book-action-button--secondary" href="?section={{ section }}&amp;q={{ q|urlencode }}&amp;status={{ status|urlencode }}&amp;page={{ page.previous_page_number }}">Previous</a>{% endif %}<span class="book-page-count">Page {{ page.number }} of {{ page.paginator.num_pages }}</span>{% if page.has_next %}<a class="book-action-button book-action-button--secondary" href="?section={{ section }}&amp;q={{ q|urlencode }}&amp;status={{ status|urlencode }}&amp;page={{ page.next_page_number }}">Next</a>{% endif %}</nav>
     </main>
 </div>
 {% endblock %}

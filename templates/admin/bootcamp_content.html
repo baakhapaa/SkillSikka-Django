@@ -5,23 +5,7 @@
 .page-intro{color:var(--muted);max-width:620px;margin-bottom:28px}.management-card{background:var(--white);border:1px solid var(--line);padding:24px;border-radius:4px;box-shadow:var(--shadow);margin-bottom:24px}.management-card h2{margin-bottom:0}.count-label{color:var(--muted);font-size:13px}.management-card .form-stack{margin:18px 0 24px}.form-stack select,.form-stack input[type=text],.form-stack input[type=number],.form-stack input[type=url],.form-stack input[type=date],.form-stack textarea{width:100%;padding:15px 16px;border:1px solid #d7e1df;border-radius:3px;background:var(--white);font:inherit;color:var(--ink)}.form-error{color:#b64b45;font-size:12px}.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;margin-top:18px}.summary-grid div small{display:block;color:var(--muted);font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:5px}.summary-grid div strong{font-size:15px}.inline-form{display:inline}.link-button{background:none;border:0;color:#a5413b;font:600 12px 'DM Sans';cursor:pointer;padding:0}
 </style>
 <div class="app-shell">
-    <aside class="sidebar">
-        <div class="brand"><span class="brand-mark small">SS</span><strong>SkillSikka</strong></div>
-        <p class="sidebar-label">Workspace</p>
-        <nav>
-            <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
-            <a class="nav-item" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
-            <a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
-            {% include 'admin/course_navigation.html' %}
-            <a class="nav-item" href="{% url 'manage_events' %}"><span>◷</span> Events</a>
-            <a class="nav-item" href="{% url 'manage_banners' %}"><span>▭</span> Banners</a>
-            <a class="nav-item" href="{% url 'manage_payments' %}"><span>₨</span> Payments</a>
-            <a class="nav-item" href="{% url 'manage_streak_settings' %}"><span>◈</span> Streak settings</a>
-            <a class="nav-item" href="{% url 'manage_certificate_criteria' %}"><span>⚑</span> Certificate criteria</a>
-            <a class="nav-item" href="{% url 'manage_users' %}"><span>◎</span> Users</a>
-        </nav>
-        {% include 'admin/sidebar_footer.html' %}
-    </aside>
+    {% include 'admin/sidebar.html' %}
     <main class="dashboard-main">
         <header class="topbar"><div><p class="eyebrow">ICT &amp; AI Bootcamp</p><h1>{{ course.title }}</h1></div><div class="top-actions"><a class="outline-button" href="{% url 'manage_bootcamps' %}">Back to bootcamps</a></div></header>
         {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
@@ -97,7 +81,7 @@
                                 {% csrf_token %}
                                 <input type="hidden" name="form" value="delete_lesson">
                                 <input type="hidden" name="lesson_id" value="{{ lesson.id }}">
-                                <button class="link-button" type="submit">Remove</button>
+                                <button class="link-button" type="submit" onclick="return confirm('Remove this lesson from the bootcamp?');">Remove</button>
                             </form>
                         </td>
                     </tr>
@@ -169,7 +153,7 @@
                             <input type="hidden" name="form" value="delete_question">
                             <input type="hidden" name="quiz_id" value="{{ editing_quiz.id }}">
                             <input type="hidden" name="question_id" value="{{ question.id }}">
-                            <button class="link-button" type="submit">Remove</button>
+                                <button class="link-button" type="submit" onclick="return confirm('Remove this question from the quiz?');">Remove</button>
                         </form>
                         {% endif %}
                     </td>
@@ -233,7 +217,7 @@
                             {% csrf_token %}
                             <input type="hidden" name="form" value="delete_resource">
                             <input type="hidden" name="resource_id" value="{{ resource.id }}">
-                            <button class="link-button" type="submit">Remove</button>
+                            <button class="link-button" type="submit" onclick="return confirm('Remove this resource file from the bootcamp?');">Remove</button>
                         </form>
                     </td>
                 </tr>

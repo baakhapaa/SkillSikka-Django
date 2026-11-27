@@ -3,23 +3,7 @@
 {% block content %}
 {% include 'admin/_event_styles.html' %}
 <div class="app-shell">
-    <aside class="sidebar">
-        <div class="brand"><span class="brand-mark small">SS</span><strong>SkillSikka</strong></div>
-        <p class="sidebar-label">Workspace</p>
-        <nav>
-            <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
-            <a class="nav-item" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
-            <a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
-            {% include 'admin/course_navigation.html' %}
-            <a class="nav-item active" href="{% url 'manage_events' %}"><span>◷</span> Events</a>
-            <a class="nav-item" href="{% url 'manage_banners' %}"><span>▭</span> Banners</a>
-            <a class="nav-item" href="{% url 'manage_payments' %}"><span>₨</span> Payments</a>
-            <a class="nav-item" href="{% url 'manage_streak_settings' %}"><span>◈</span> Streak settings</a>
-            <a class="nav-item" href="{% url 'manage_certificate_criteria' %}"><span>⚑</span> Certificate criteria</a>
-            <a class="nav-item" href="{% url 'manage_users' %}"><span>◎</span> Users</a>
-        </nav>
-        {% include 'admin/sidebar_footer.html' %}
-    </aside>
+    {% include 'admin/sidebar.html' %}
     <main class="dashboard-main">
         <header class="topbar"><div><p class="eyebrow">Events</p><h1>Edit event</h1></div><div class="top-actions"><a class="outline-button" href="{% url 'manage_events' %}">Back to events</a></div></header>
         {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
@@ -34,11 +18,15 @@
         </article>
 
         <article class="management-card">
-            <div class="section-heading"><div><p class="eyebrow">Sign-ups</p><h2>Registrations</h2></div><span class="count-label">{{ registrations|length }} total{% if event.capacity %} · capacity {{ event.capacity }}{% endif %}</span></div>
+            <div class="section-heading"><div><p class="eyebrow">Sign-ups</p><h2>Registrations</h2></div><span class="count-label">{{ registrations.paginator.count }} total{% if event.capacity %} · capacity {{ event.capacity }}{% endif %}</span></div>
+            <form method="get" class="admin-list-filters" role="search">
+                <div><label for="registration-search">Search attendee name or email</label><input id="registration-search" type="search" name="registration_q" value="{{ registration_query }}"></div>
+                <div class="filter-actions"><button class="primary-button" type="submit">Search registrations</button><a class="outline-button" href="{% url 'edit_event' event.pk %}#registrations">Clear</a></div>
+            </form>
             <div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Status</th><th>Signed up (NPT)</th></tr></thead><tbody>
                 {% for registration in registrations %}
                 <tr>
-                    <td>{{ registration.user.name }}</td>
+                    <td><a href="{% url 'edit_user' registration.user.pk %}">{{ registration.user.name }}</a></td>
                     <td>{{ registration.user.email }}</td>
                     <td><span class="pill {% if registration.status == 'registered' %}verified{% else %}pending{% endif %}">{{ registration.get_status_display }}</span></td>
                     <td>{{ registration.created_at|date:"Y-m-d g:i A" }}</td>
@@ -47,6 +35,10 @@
                 <tr><td colspan="4" class="empty-state">No one has signed up yet.</td></tr>
                 {% endfor %}
             </tbody></table></div>
+            <nav class="admin-list-pager" aria-label="Event registration pages" id="registrations">
+                <span>Page {{ registrations.number }} of {{ registrations.paginator.num_pages }}</span>
+                <span>{% if registrations.has_previous %}<a class="outline-button" href="?{% if registration_query_string %}{{ registration_query_string }}&amp;{% endif %}registration_page={{ registrations.previous_page_number }}#registrations">Previous</a>{% endif %} {% if registrations.has_next %}<a class="outline-button" href="?{% if registration_query_string %}{{ registration_query_string }}&amp;{% endif %}registration_page={{ registrations.next_page_number }}#registrations">Next</a>{% endif %}</span>
+            </nav>
         </article>
 
         <article class="management-card danger-zone">

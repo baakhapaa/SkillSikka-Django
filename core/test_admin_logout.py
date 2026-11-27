@@ -5,7 +5,7 @@ from django.contrib.auth import SESSION_KEY
 from django.contrib.sessions.models import Session
 from django.template import RequestContext, Template
 from django.test import Client, RequestFactory, TestCase
-from django.urls import reverse
+from django.urls import resolve, reverse
 from django.utils import timezone
 from django.utils.dateformat import format as date_format
 
@@ -101,17 +101,19 @@ class AdminLogoutTests(TestCase):
     def test_every_sidebar_renders_shared_post_logout_control(self):
         request = RequestFactory().get(reverse('dashboard'))
         request.user = self.admin
+        request.resolver_match = resolve(reverse('dashboard'))
         templates = Path(settings.BASE_DIR) / 'templates' / 'admin'
         sidebar_templates = [
             path for path in templates.glob('*.html')
-            if '<aside class="sidebar">' in path.read_text(encoding='utf-8')
+            if '<aside class="sidebar"' in path.read_text(encoding='utf-8')
         ]
         self.assertTrue(sidebar_templates)
         for path in sidebar_templates:
             with self.subTest(template=path.name):
                 source = path.read_text(encoding='utf-8')
                 self.assertIn("{% include 'admin/sidebar_footer.html' %}", source)
-                sidebar = source.split('<aside class="sidebar">', 1)[1].split('</aside>', 1)[0]
+                sidebar = source.split('<aside class="sidebar"', 1)[1].split('</aside>', 1)[0]
+                sidebar = '<aside class="sidebar"' + sidebar
                 html = Template(sidebar).render(RequestContext(request))
                 self.assertIn(f'method="post" action="{reverse("logout")}"', html)
                 self.assertIn('name="csrfmiddlewaretoken"', html)

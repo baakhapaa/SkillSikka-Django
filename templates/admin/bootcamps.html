@@ -2,11 +2,20 @@
 {% block title %}ICT &amp; AI Bootcamp | SkillSikka{% endblock %}
 {% block content %}
 <div class="app-shell">
-    {% include 'admin/bootcamp_sidebar.html' %}
+    {% include 'admin/sidebar.html' %}
     <main class="dashboard-main">
         <header class="topbar"><div><p class="eyebrow">Admin content management</p><h1>ICT &amp; AI Bootcamp</h1></div><a class="primary-button" href="{% url 'add_bootcamp' %}">Add Bootcamp</a></header>
         {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
         <p>Manage bootcamp runs, day-by-day content, instructors and resources.</p>
+        <p class="count-label">{{ bootcamps.paginator.count }} bootcamp{{ bootcamps.paginator.count|pluralize }}</p>
+        <form method="get" class="admin-list-filters bootcamp-admin-filters">
+            <div><label for="bootcamp-search">Search name, venue, description or instructor</label><input id="bootcamp-search" type="search" name="q" value="{{ filters.q }}"></div>
+            <div><label for="bootcamp-status">Run status</label><select id="bootcamp-status" name="status"><option value="">All</option>{% for value,label in status_choices %}<option value="{{ value }}"{% if filters.status == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+            <div><label for="bootcamp-publication">Publication</label><select id="bootcamp-publication" name="publication"><option value="">All</option><option value="published"{% if filters.publication == 'published' %} selected{% endif %}>Published</option><option value="draft"{% if filters.publication == 'draft' %} selected{% endif %}>Draft</option></select></div>
+            <div><label for="bootcamp-start-after">Starts on or after</label><input id="bootcamp-start-after" type="date" name="start_after" value="{{ filters.start_after }}"></div>
+            <div><label for="bootcamp-start-before">Starts on or before</label><input id="bootcamp-start-before" type="date" name="start_before" value="{{ filters.start_before }}"></div>
+            <div class="filter-actions"><button class="primary-button" type="submit">Filter</button><a class="outline-button" href="{% url 'manage_bootcamps' %}">Reset</a></div>
+        </form>
         <div class="table-wrap"><table>
             <thead><tr><th>Bootcamp</th><th>Status</th><th>Venue</th><th>Dates</th><th>Days</th><th>Lead instructor</th><th>Instructors</th><th>Lessons</th><th>Enrolled students</th><th>Publication</th><th>Actions</th></tr></thead>
             <tbody>{% for camp in bootcamps %}<tr>
@@ -22,6 +31,7 @@
                     <a href="{% url 'manage_bootcamp_content' camp.id %}#resources">Manage Resources</a></td>
             </tr>{% empty %}<tr><td colspan="11" class="empty-state">No bootcamps yet. Add the first bootcamp to get started.</td></tr>{% endfor %}</tbody>
         </table></div>
+        <nav class="admin-list-pager" aria-label="Bootcamp pages"><span>Page {{ bootcamps.number }} of {{ bootcamps.paginator.num_pages }}</span><span>{% if bootcamps.has_previous %}<a class="outline-button" href="?{% if query_string %}{{ query_string }}&amp;{% endif %}page={{ bootcamps.previous_page_number }}">Previous</a>{% endif %} {% if bootcamps.has_next %}<a class="outline-button" href="?{% if query_string %}{{ query_string }}&amp;{% endif %}page={{ bootcamps.next_page_number }}">Next</a>{% endif %}</span></nav>
     </main>
 </div>
 {% endblock %}

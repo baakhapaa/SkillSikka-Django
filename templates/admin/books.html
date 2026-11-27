@@ -2,23 +2,24 @@
 {% block title %}Book Management | SkillSikka{% endblock %}
 {% block content %}
 <div class="app-shell">
-    {% include 'admin/bootcamp_sidebar.html' %}
-    <main class="dashboard-main">
-        <header class="topbar"><div><p class="eyebrow">Content management</p><h1>Book Management</h1></div><a class="outline-button" href="{% url 'add_book' %}">Add book</a></header>
+    {% include 'admin/sidebar.html' %}
+    <main class="dashboard-main book-admin-page">
+        <header class="topbar book-admin-header"><div><p class="eyebrow">Content management</p><h1>Book Management</h1></div><div class="book-admin-header-actions"><a class="book-action-button book-action-button--primary" href="{% url 'add_book' %}">Add book</a></div></header>
         {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
-        <form method="get" class="form-stack">
-            <label for="book-search">Search title, author or description</label><input id="book-search" name="q" value="{{ q }}">
-            <label for="book-status">Publication</label><select id="book-status" name="status"><option value=""{% if not status %} selected{% endif %}>All</option><option value="published"{% if status == 'published' %} selected{% endif %}>Published</option><option value="draft"{% if status == 'draft' %} selected{% endif %}>Draft</option></select>
-            <label for="book-category">Category</label><select id="book-category" name="category"><option value="">All</option>{% for item in categories %}<option {% if category == item %}selected{% endif %}>{{ item }}</option>{% endfor %}</select>
-            <button class="outline-button" type="submit">Filter books</button>
+        <form method="get" class="book-filter-form book-ui-form">
+            <div class="book-field"><label for="book-search">Search title, author or description</label><input id="book-search" name="q" value="{{ q }}"></div>
+            <div class="book-field"><label for="book-status">Publication</label><select id="book-status" name="status"><option value=""{% if not status %} selected{% endif %}>All</option><option value="published"{% if status == 'published' %} selected{% endif %}>Published</option><option value="draft"{% if status == 'draft' %} selected{% endif %}>Draft</option></select></div>
+            <div class="book-field"><label for="book-category">Category</label><select id="book-category" name="category"><option value="">All</option>{% for item in categories %}<option value="{{ item }}" {% if category == item %}selected{% endif %}>{{ item }}</option>{% endfor %}</select></div>
+            <button class="book-action-button book-action-button--secondary" type="submit">Filter books</button>
+            <a class="book-action-button book-action-button--secondary" href="{% url 'manage_books' %}">Clear filters</a>
         </form>
-        <p>{{ page.paginator.count }} books</p>
-        <p><a href="{% url 'manage_book_commerce' %}">Book orders, entitlements and reviews</a></p>
-        <div class="table-wrap"><table><thead><tr><th>Title / author</th><th>Category</th><th>Price</th><th>Format</th><th>Status</th><th>Purchases</th><th>Manage</th></tr></thead><tbody>
-        {% for book in page %}<tr><td>{{ book.title }}<br>{{ book.author }}</td><td>{{ book.category|default:'—' }}</td><td>{% if book.price == None %}Unknown{% else %}{{ book.currency }} {{ book.price }}{% endif %}</td><td>{{ book.file_format|default:'Legacy URL' }}</td><td>{% if book.is_published %}Published{% else %}Draft{% endif %}</td><td>{{ book.purchase_count }}</td><td><a href="{% url 'edit_book' book.pk %}">Edit</a> · <a href="{% url 'delete_book' book.pk %}">Delete</a></td></tr>
+        <p class="book-result-count">{{ page.paginator.count }} books</p>
+        <p><a class="book-action-link" href="{% url 'manage_book_commerce' %}">Book orders, entitlements and reviews</a></p>
+        <div class="table-wrap book-table-wrap"><table class="book-admin-table"><caption class="book-visually-hidden">Book catalogue</caption><thead><tr><th scope="col">Title / author</th><th scope="col">Category</th><th scope="col">Price</th><th scope="col">Format</th><th scope="col">Status</th><th scope="col">Purchases</th><th scope="col">Manage</th></tr></thead><tbody>
+        {% for book in page %}<tr><td>{{ book.title }}<br>{{ book.author }}</td><td>{{ book.category|default:'—' }}</td><td>{% if book.price == None %}Unknown{% else %}{{ book.currency }} {{ book.price }}{% endif %}</td><td>{{ book.file_format|default:'Legacy URL' }}</td><td><span class="book-status {% if book.is_published %}book-status--active{% else %}book-status--inactive{% endif %}">{% if book.is_published %}Published{% else %}Draft{% endif %}</span></td><td>{{ book.purchase_count }}</td><td><div class="book-table-actions"><a class="book-action-link" href="{% url 'edit_book' book.pk %}">Edit</a><a class="book-action-link book-action-link--danger" href="{% url 'delete_book' book.pk %}">Delete</a></div></td></tr>
         {% empty %}<tr><td colspan="7" class="empty-state">No books found.</td></tr>{% endfor %}
         </tbody></table></div>
-        <p>{% if page.has_previous %}<a href="?q={{ q|urlencode }}&amp;status={{ status|urlencode }}&amp;category={{ category|urlencode }}&amp;page={{ page.previous_page_number }}">Previous</a>{% endif %} Page {{ page.number }} of {{ page.paginator.num_pages }} {% if page.has_next %}<a href="?q={{ q|urlencode }}&amp;status={{ status|urlencode }}&amp;category={{ category|urlencode }}&amp;page={{ page.next_page_number }}">Next</a>{% endif %}</p>
+        <nav class="book-pagination" aria-label="Book catalogue pages">{% if page.has_previous %}<a class="book-action-button book-action-button--secondary" href="?q={{ q|urlencode }}&amp;status={{ status|urlencode }}&amp;category={{ category|urlencode }}&amp;page={{ page.previous_page_number }}">Previous</a>{% endif %}<span class="book-page-count" aria-current="page">Page {{ page.number }} of {{ page.paginator.num_pages }}</span>{% if page.has_next %}<a class="book-action-button book-action-button--secondary" href="?q={{ q|urlencode }}&amp;status={{ status|urlencode }}&amp;category={{ category|urlencode }}&amp;page={{ page.next_page_number }}">Next</a>{% endif %}</nav>
     </main>
 </div>
 {% endblock %}

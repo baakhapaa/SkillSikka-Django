@@ -1,0 +1,11 @@
+<form method="get" class="geo-filter-form">
+    {% for key,value in control.hidden %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}
+    <label for="{{ list_key }}-search">Search {{ label }}</label>
+    <input id="{{ list_key }}-search" type="search" name="{{ list_key }}_q" value="{{ search_value }}">
+    <button class="outline-button" type="submit">Filter</button>
+    <a class="outline-button" href="?{{ control.clear_query }}">Clear</a>
+</form>
+<nav class="geo-pager" aria-label="{{ label|title }} pages">
+    <span>{{ total_count }} total · page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+    <span>{% if page.has_previous %}<a class="outline-button" href="?{% if control.page_query %}{{ control.page_query }}&amp;{% endif %}{{ list_key }}_page={{ page.previous_page_number }}">Previous</a>{% endif %} {% if page.has_next %}<a class="outline-button" href="?{% if control.page_query %}{{ control.page_query }}&amp;{% endif %}{{ list_key }}_page={{ page.next_page_number }}">Next</a>{% endif %}</span>
+</nav>

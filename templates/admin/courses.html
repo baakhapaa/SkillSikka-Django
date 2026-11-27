@@ -5,23 +5,7 @@
 .page-intro{color:var(--muted);max-width:620px;margin-bottom:28px}.management-card{background:var(--white);border:1px solid var(--line);padding:24px;border-radius:4px;box-shadow:var(--shadow);margin-bottom:24px}.management-card h2{margin-bottom:0}.count-label{color:var(--muted);font-size:13px}.management-card .form-stack{margin:18px 0 24px}.form-stack select,.form-stack input[type=text],.form-stack input[type=number],.form-stack input[type=url],.form-stack textarea{width:100%;padding:15px 16px;border:1px solid #d7e1df;border-radius:3px;background:var(--white);font:inherit;color:var(--ink)}.form-error{color:#b64b45;font-size:12px}
 </style>
 <div class="app-shell">
-    <aside class="sidebar">
-        <div class="brand"><span class="brand-mark small">SS</span><strong>SkillSikka</strong></div>
-        <p class="sidebar-label">Workspace</p>
-        <nav>
-            <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
-            <a class="nav-item" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
-            <a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
-            {% include 'admin/course_navigation.html' %}
-            <a class="nav-item" href="{% url 'manage_events' %}"><span>◷</span> Events</a>
-            <a class="nav-item" href="{% url 'manage_banners' %}"><span>▭</span> Banners</a>
-            <a class="nav-item" href="{% url 'manage_payments' %}"><span>₨</span> Payments</a>
-            <a class="nav-item" href="{% url 'manage_streak_settings' %}"><span>◈</span> Streak settings</a>
-            <a class="nav-item" href="{% url 'manage_certificate_criteria' %}"><span>⚑</span> Certificate criteria</a>
-            <a class="nav-item" href="{% url 'manage_users' %}"><span>◎</span> Users</a>
-        </nav>
-        {% include 'admin/sidebar_footer.html' %}
-    </aside>
+    {% include 'admin/sidebar.html' %}
     <main class="dashboard-main">
         <header class="topbar"><div><p class="eyebrow">Content management</p><h1>Course Management</h1></div><div class="top-actions"><a class="outline-button" href="{% url 'dashboard' %}">Back to overview</a></div></header>
         {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
@@ -41,7 +25,14 @@
             </form>
         </article>
         <article class="management-card">
-            <div class="section-heading"><div><p class="eyebrow">All courses</p><h2>Courses</h2></div><span class="count-label">{{ courses|length }} total</span></div>
+            <div class="section-heading"><div><p class="eyebrow">All courses</p><h2>Courses</h2></div><span class="count-label">{{ courses.paginator.count }} total</span></div>
+            <form method="get" class="admin-list-filters course-admin-filters">
+                <div><label for="course-search">Search title, description or instructor</label><input id="course-search" type="search" name="q" value="{{ filters.q }}"></div>
+                <div><label for="course-type">Course type</label><select id="course-type" name="type"><option value="">All types</option>{% for value,label in course_types %}<option value="{{ value }}"{% if filters.type == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+                <div><label for="course-publication">Publication</label><select id="course-publication" name="publication"><option value="">All</option><option value="published"{% if filters.publication == 'published' %} selected{% endif %}>Published</option><option value="draft"{% if filters.publication == 'draft' %} selected{% endif %}>Draft</option></select></div>
+                <div><label for="course-price">Price</label><select id="course-price" name="price"><option value="">All</option><option value="paid"{% if filters.price == 'paid' %} selected{% endif %}>Paid</option><option value="free"{% if filters.price == 'free' %} selected{% endif %}>Free</option></select></div>
+                <div class="filter-actions"><button class="primary-button" type="submit">Filter</button><a class="outline-button" href="{% url 'manage_courses' %}">Reset</a></div>
+            </form>
             <div class="table-wrap"><table><thead><tr><th>Title</th><th>Instructor</th><th>Type</th><th>Price</th><th>Status</th></tr></thead><tbody>
                 {% for course in courses %}
                 <tr>
@@ -52,9 +43,10 @@
                     <td><span class="pill {% if course.is_published %}verified{% else %}pending{% endif %}">{% if course.is_published %}Published{% else %}Draft{% endif %}</span></td>
                 </tr>
                 {% empty %}
-                <tr><td colspan="5" class="empty-state">No courses yet.</td></tr>
+                <tr><td colspan="5" class="empty-state">No courses match these filters.</td></tr>
                 {% endfor %}
             </tbody></table></div>
+            <nav class="admin-list-pager" aria-label="Course pages"><span>Page {{ courses.number }} of {{ courses.paginator.num_pages }}</span><span>{% if courses.has_previous %}<a class="outline-button" href="?{% if query_string %}{{ query_string }}&amp;{% endif %}page={{ courses.previous_page_number }}">Previous</a>{% endif %} {% if courses.has_next %}<a class="outline-button" href="?{% if query_string %}{{ query_string }}&amp;{% endif %}page={{ courses.next_page_number }}">Next</a>{% endif %}</span></nav>
         </article>
     </main>
 </div>

@@ -2,25 +2,7 @@
 {% block title %}Verification queue | SkillSikka{% endblock %}
 {% block content %}
 <div class="app-shell">
-    <aside class="sidebar">
-        <div class="brand"><span class="brand-mark small">SS</span><strong>SkillSikka</strong></div>
-        <p class="sidebar-label">Workspace</p>
-        <nav>
-            <a class="nav-item" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
-            <a class="nav-item active" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
-            {% if request.user.is_superuser or request.user.role.name == 'super_admin' %}
-            <a class="nav-item" href="{% url 'manage_users' %}"><span>◎</span> Users</a>
-            <a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
-            {% include 'admin/course_navigation.html' %}
-            <a class="nav-item" href="{% url 'manage_events' %}"><span>◷</span> Events</a>
-            <a class="nav-item" href="{% url 'manage_banners' %}"><span>▭</span> Banners</a>
-            <a class="nav-item" href="{% url 'manage_payments' %}"><span>₨</span> Payments</a>
-            <a class="nav-item" href="{% url 'manage_streak_settings' %}"><span>◈</span> Streak settings</a>
-            <a class="nav-item" href="{% url 'manage_certificate_criteria' %}"><span>⚑</span> Certificate criteria</a>
-            {% endif %}
-        </nav>
-        {% include 'admin/sidebar_footer.html' %}
-    </aside>
+    {% include 'admin/sidebar.html' %}
     <main class="dashboard-main">
         <header class="topbar">
             <div>
@@ -33,9 +15,13 @@
             <div class="section-heading">
                 <div>
                     <p class="eyebrow">Pending accounts</p>
-                    <h2>{{ pending_users|length }} awaiting review</h2>
+                    <h2>{{ pending_users.paginator.count }} awaiting review</h2>
                 </div>
             </div>
+            <form method="get" class="admin-list-filters" role="search">
+                <div><label for="verification-search">Search name or email</label><input id="verification-search" type="search" name="q" value="{{ filters.q }}"></div>
+                <div class="filter-actions"><button class="primary-button" type="submit">Search</button><a class="outline-button" href="{% url 'verification_queue' %}">Clear</a></div>
+            </form>
             <div class="table-wrap">
                 <table>
                     <thead>
@@ -51,7 +37,7 @@
                         {% for user in pending_users %}
                         <tr>
                             <td>
-                                <div class="person">{% if user.profile_photo_url %}<a href="{{ user.profile_photo_src }}" target="_blank" rel="noopener"><img class="table-avatar" src="{{ user.profile_photo_src }}" alt="Profile photo of {{ user.name }}" style="object-fit:cover"></a>{% else %}<span class="table-avatar">{{ user.name|slice:':1'|upper }}</span>{% endif %}<span><strong>{{ user.name }}</strong><small>{{ user.email }}</small></span></div>
+                                <div class="person">{% if user.profile_photo_url %}<a href="{{ user.profile_photo_src }}" target="_blank" rel="noopener"><img class="table-avatar" src="{{ user.profile_photo_src }}" alt="Profile photo of {{ user.name }}" style="object-fit:cover"></a>{% else %}<span class="table-avatar">{{ user.name|slice:':1'|upper }}</span>{% endif %}<span><strong><a href="{% url 'edit_user' user.pk %}">{{ user.name }}</a></strong><small>{{ user.email }}</small><br><a href="{% url 'edit_user' user.pk %}">Edit user</a></span></div>
                             </td>
                             <td>{{ user.role.name|default:'Unassigned'|title }}</td>
                             <td>
@@ -76,6 +62,7 @@
                             <td>
                                 <form method="post" action="{% url 'review_verification' user.id %}" class="inline-form">
                                     {% csrf_token %}
+                                    <input type="hidden" name="next" value="{{ request.get_full_path }}">
                                     <button type="submit" name="action" value="approve" class="outline-button">Approve</button>
                                     <button type="submit" name="action" value="reject" class="outline-button danger">Reject</button>
                                 </form>
@@ -83,12 +70,16 @@
                         </tr>
                         {% empty %}
                         <tr>
-                            <td colspan="5" class="empty-state">Nothing pending review right now.</td>
+                            <td colspan="5" class="empty-state">{% if filters.q %}No pending users match this search.{% else %}Nothing pending review right now.{% endif %}</td>
                         </tr>
                         {% endfor %}
                     </tbody>
                 </table>
             </div>
+            <nav class="admin-list-pager" aria-label="Verification queue pages">
+                <span>{{ pending_users.paginator.count }} awaiting review · Page {{ pending_users.number }} of {{ pending_users.paginator.num_pages }}</span>
+                <span>{% if pending_users.has_previous %}<a class="outline-button" href="?{% if query_string %}{{ query_string }}&amp;{% endif %}page={{ pending_users.previous_page_number }}">Previous</a>{% endif %} {% if pending_users.has_next %}<a class="outline-button" href="?{% if query_string %}{{ query_string }}&amp;{% endif %}page={{ pending_users.next_page_number }}">Next</a>{% endif %}</span>
+            </nav>
         </section>
     </main>
 </div>

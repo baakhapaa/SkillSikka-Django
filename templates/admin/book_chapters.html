@@ -1,13 +1,61 @@
 {% extends 'base.html' %}
 {% block title %}Book chapters | SkillSikka{% endblock %}
 {% block content %}
-<div class="app-shell">{% include 'admin/bootcamp_sidebar.html' %}<main class="dashboard-main">
-<h1>Chapters: {{ book.title }}</h1><p><a href="{% url 'edit_book' book.pk %}">Book metadata</a></p>
-{% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
-<div class="table-wrap"><table><thead><tr><th>Number / ID</th><th>Title</th><th>PDF pages</th><th>Manage</th></tr></thead><tbody>
-{% for chapter in chapters %}<tr><td>{{ chapter.chapter_number }} / {{ chapter.pk }}</td><td>{{ chapter.title }}</td><td>{{ chapter.pdf_page_start|default:'—' }}–{{ chapter.pdf_page_end|default:'—' }}</td><td><a href="{% url 'edit_book_chapter' book.pk chapter.pk %}">Edit / preview</a> · <a href="{% url 'delete_book_chapter' book.pk chapter.pk %}">Delete</a>{% if book.file_format == 'pdf' %}<form method="post">{% csrf_token %}<input type="hidden" name="action" value="extract-pdf"><input type="hidden" name="chapter_id" value="{{ chapter.pk }}"><button type="submit">Extract empty range text</button></form>{% endif %}</td></tr>{% empty %}<tr><td colspan="4">No chapters. PDF books can use protected whole-file reading; scanned PDFs require a viewer or manually authored text.</td></tr>{% endfor %}
-</tbody></table></div>
-<h2>Add chapter</h2><form method="post" class="form-stack">{% csrf_token %}<input type="hidden" name="action" value="add">{{ form.as_p }}<button class="primary-button" type="submit">Add chapter</button></form>
-<h2>Reorder</h2><form method="post" class="form-stack">{% csrf_token %}<input type="hidden" name="action" value="reorder"><label for="chapter-ids">All chapter IDs, comma separated, in reading order</label><input id="chapter-ids" name="chapter_ids" required><button class="outline-button" type="submit">Save order</button></form>
-{% if book.file_format == 'epub' %}<h2>Import private EPUB</h2><p>Follows spine order. Refresh preserves chapter IDs and refuses manual edits or removed chapters. No assets or scripts are rendered.</p><form method="post">{% csrf_token %}<input type="hidden" name="action" value="import"><label for="import-mode">Import mode</label><select id="import-mode" name="mode"><option value="create">Initial import</option><option value="refresh">Explicit refresh of unmodified imported chapters</option></select><button class="outline-button" type="submit">Import and review results</button></form>{% endif %}
-</main></div>{% endblock %}
+<div class="app-shell">
+    {% include 'admin/sidebar.html' %}
+    <main class="dashboard-main book-admin-page">
+        <header class="topbar book-admin-header">
+            <div><p class="eyebrow">Book management</p><h1>Chapters: {{ book.title }}</h1></div>
+            <div class="book-admin-header-actions"><a class="book-action-button book-action-button--secondary" href="{% url 'edit_book' book.pk %}">Book metadata</a></div>
+        </header>
+        {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
+
+        <section class="book-admin-section" aria-label="Book chapters">
+            <div class="table-wrap book-table-wrap">
+                <table class="book-admin-table">
+                    <caption class="book-visually-hidden">Chapters for {{ book.title }}</caption>
+                    <thead><tr><th scope="col">Number / ID</th><th scope="col">Title</th><th scope="col">PDF pages</th><th scope="col">Manage</th></tr></thead>
+                    <tbody>
+                    {% for chapter in chapters %}
+                        <tr>
+                            <td>{{ chapter.chapter_number }} / {{ chapter.pk }}</td>
+                            <td>{{ chapter.title }}</td>
+                            <td>{% if chapter.pdf_page_start %}{{ chapter.pdf_page_start }}{% else %}&mdash;{% endif %}&#8211;{% if chapter.pdf_page_end %}{{ chapter.pdf_page_end }}{% else %}&mdash;{% endif %}</td>
+                            <td>
+                                <div class="book-table-actions">
+                                    <a class="book-action-link" href="{% url 'edit_book_chapter' book.pk chapter.pk %}">Edit / preview</a>
+                                    <a class="book-action-link book-action-link--danger" href="{% url 'delete_book_chapter' book.pk chapter.pk %}">Delete</a>
+                                    {% if book.file_format == 'pdf' %}
+                                        <form method="post" class="book-inline-form">{% csrf_token %}<input type="hidden" name="action" value="extract-pdf"><input type="hidden" name="chapter_id" value="{{ chapter.pk }}"><button class="book-action-button book-action-button--secondary" type="submit">Extract empty range text</button></form>
+                                    {% endif %}
+                                </div>
+                            </td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="4" class="empty-state">No chapters. PDF books can use protected whole-file reading; scanned PDFs require a viewer or manually authored text.</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="book-admin-section">
+            <h2 class="book-section-title">Add chapter</h2>
+            <form method="post" class="book-ui-form book-chapter-form">{% csrf_token %}<input type="hidden" name="action" value="add">{{ form.as_p }}<button class="book-action-button book-action-button--primary" type="submit">Add chapter</button></form>
+        </section>
+
+        <section class="book-admin-section">
+            <h2 class="book-section-title">Reorder</h2>
+            <form method="post" class="book-ui-form book-single-field-form"><input type="hidden" name="action" value="reorder"><div class="book-field"><label for="chapter-ids">All chapter IDs, comma separated, in reading order</label><input id="chapter-ids" name="chapter_ids" required></div><button class="book-action-button book-action-button--secondary" type="submit">Save order</button></form>
+        </section>
+
+        {% if book.file_format == 'epub' %}
+            <section class="book-admin-section">
+                <h2 class="book-section-title">Import private EPUB</h2>
+                <p class="book-help-copy">Follows spine order. Refresh preserves chapter IDs and refuses manual edits or removed chapters. No assets or scripts are rendered.</p>
+                <form method="post" class="book-ui-form book-single-field-form">{% csrf_token %}<input type="hidden" name="action" value="import"><div class="book-field"><label for="import-mode">Import mode</label><select id="import-mode" name="mode"><option value="create">Initial import</option><option value="refresh">Explicit refresh of unmodified imported chapters</option></select></div><button class="book-action-button book-action-button--secondary" type="submit">Import and review results</button></form>
+            </section>
+        {% endif %}
+    </main>
+</div>
+{% endblock %}

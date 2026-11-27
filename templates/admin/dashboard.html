@@ -2,26 +2,7 @@
 {% block title %}Dashboard | SkillSikka{% endblock %}
 {% block content %}
 <div class="app-shell">
-    <aside class="sidebar">
-        <div class="brand"><span class="brand-mark small">SS</span><strong>SkillSikka</strong></div>
-        <p class="sidebar-label">Workspace</p>
-        <nav>
-            <a class="nav-item active" href="{% url 'dashboard' %}"><span>▦</span> Overview</a>
-            <a class="nav-item" href="#users"><span aria-hidden="true">&#9673;</span> Recent Users</a>
-            <a class="nav-item" href="{% url 'verification_queue' %}"><span>◇</span> Verification queue</a>
-            {% if request.user.is_superuser or request.user.role.name == 'super_admin' %}
-            <a class="nav-item" href="{% url 'manage_geography' %}"><span>⌖</span> Locations & grades</a>
-            {% include 'admin/course_navigation.html' %}
-            <a class="nav-item" href="{% url 'manage_events' %}"><span>◷</span> Events</a>
-            <a class="nav-item" href="{% url 'manage_banners' %}"><span>▭</span> Banners</a>
-            <a class="nav-item" href="{% url 'manage_payments' %}"><span>₨</span> Payments</a>
-            <a class="nav-item" href="{% url 'manage_streak_settings' %}"><span>◈</span> Streak settings</a>
-            <a class="nav-item" href="{% url 'manage_certificate_criteria' %}"><span>⚑</span> Certificate criteria</a>
-            <a class="nav-item" href="{% url 'manage_users' %}"><span>◎</span> Users</a>
-            {% endif %}
-        </nav>
-        {% include 'admin/sidebar_footer.html' %}
-    </aside>
+    {% include 'admin/sidebar.html' %}
     <main class="dashboard-main">
         <header class="topbar"><div><p class="eyebrow">{{ current_date|date:"l, F j, Y" }}</p><h1>Good morning, {{ request.user.name|cut:' '|truncatewords:1 }}</h1></div><div class="top-actions"><span class="eyebrow">Admin overview</span></div></header>
         {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
@@ -29,6 +10,18 @@
             <article class="stat-card accent-teal"><span class="stat-icon">◎</span><p>Total users</p><strong>{{ stats.total_users }}</strong><small>Across all roles</small></article>
             <article class="stat-card accent-amber"><span class="stat-icon">◇</span><p>Pending reviews</p><strong>{{ stats.pending_reviews }}</strong><small>Need your attention</small></article>
             <article class="stat-card accent-blue"><span class="stat-icon">↗</span><p>Active accounts</p><strong>{{ stats.active_users }}</strong><small>Currently enabled</small></article>
+        </section>
+        <section class="dashboard-shortcuts" aria-labelledby="dashboard-shortcuts-title">
+            <h2 id="dashboard-shortcuts-title">Quick access</h2>
+            <nav aria-label="Frequently used admin sections">
+                <a href="{% url 'manage_users' %}">Users</a>
+                <a href="{% url 'manage_courses' %}">Courses</a>
+                <a href="{% url 'manage_bootcamps' %}">Bootcamps</a>
+                <a href="{% url 'manage_books' %}">Books</a>
+                <a href="{% url 'manage_book_commerce' %}">Commerce</a>
+                <a href="{% url 'manage_payments' %}">Payments</a>
+                <a href="{% url 'manage_certificate_criteria' %}">Certificates</a>
+            </nav>
         </section>
         <section class="content-section" id="users">
             <div class="section-heading"><div><p class="eyebrow">People directory</p><h2>Recent users</h2></div><span>Export list unavailable</span></div>

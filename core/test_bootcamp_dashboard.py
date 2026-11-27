@@ -231,9 +231,13 @@ class BootcampDashboardTests(BootcampDashboardTestCase):
             course=course, title='Temporary', content_type='text', content_text='x', day_number=1,
         )
 
-        self.client.post(self.content_url(course), {'form': 'delete_lesson', 'lesson_id': lesson.pk})
+        page = self.client.get(self.content_url(course))
+        self.assertContains(page, "confirm('Remove this lesson from the bootcamp?')")
+
+        response = self.client.post(self.content_url(course), {'form': 'delete_lesson', 'lesson_id': lesson.pk}, follow=True)
 
         self.assertFalse(Lesson.objects.filter(pk=lesson.pk).exists())
+        self.assertContains(response, 'Lesson removed from this bootcamp.')
 
     def test_the_content_page_is_admin_only(self):
         course = self.bootcamp()
@@ -408,6 +412,7 @@ class BootcampDashboardTests(BootcampDashboardTestCase):
         resource = CourseResource.objects.get(course=camp)
         response = self.client.get(self.content_url(camp), {'resource_id': resource.pk})
         self.assertEqual(response.context['resource_form'].initial['title'], 'Worksheet')
+        self.assertContains(self.client.get(self.content_url(camp)), "confirm('Remove this resource file from the bootcamp?')")
         data.update(resource_id=resource.pk, title='Updated worksheet', order=3)
         self.assertEqual(self.client.post(self.content_url(camp), data).status_code, 302)
         resource.refresh_from_db()
@@ -637,6 +642,7 @@ class BootcampQuizDashboardTests(BootcampDashboardTestCase):
         question = quiz.questions.get()
 
         self.assertContains(self.client.get(self.url, {'quiz_id': quiz.pk}), 'its questions are locked')
+        self.assertNotContains(self.client.get(self.url, {'quiz_id': quiz.pk}), "confirm('Remove this question from the quiz?')")
         self.client.post(self.url, self.question_data(quiz))
         self.client.post(self.url, self.question_data(quiz, question_id=question.pk, text='Changed'))
         self.client.post(self.url, {'form': 'delete_question', 'quiz_id': quiz.pk, 'question_id': question.pk})

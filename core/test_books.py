@@ -13,12 +13,13 @@ from django.db import connection, IntegrityError, transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.test import Client, SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 from PIL import Image
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .book_files import PrivateBookStorage, check_book_storage, validate_book_source
-from .models import EBook, Grade, Role, Subject, User
+from .models import BookEntitlement, BookOrder, BookReview, EBook, Grade, Role, Subject, User
 
 
 PDF = b'%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n'
@@ -620,6 +621,120 @@ class BookSectionTests(TestCase):
         self.assertEqual(response.context['page'].paginator.count, 1)
         self.assertContains(response, 'Other')
         self.assertContains(self.client.get(reverse('dashboard')), reverse('manage_books'))
+
+    def test_admin_books_pagination_keeps_search_and_filters(self):
+        self.client.force_login(self.admin)
+        for index in range(26):
+            self.book(title=f'Catalog target {index:02d}', category='Science', is_published=True)
+
+        response = self.client.get(reverse('manage_books'), {
+            'q': 'Catalog', 'status': 'published', 'category': 'Science',
+        })
+        self.assertEqual(response.context['page'].paginator.count, 26)
+        self.assertTrue(response.context['page'].has_next())
+        self.assertContains(
+            response,
+            'href="?q=Catalog&amp;status=published&amp;category=Science&amp;page=2"',
+        )
+        response = self.client.get(reverse('manage_books'), {
+            'q': 'Catalog', 'status': 'published', 'category': 'Science', 'page': 2,
+        })
+        self.assertEqual(response.context['page'].number, 2)
+        self.assertEqual(len(response.context['page'].object_list), 1)
+
+    def test_book_commerce_empty_states_and_active_section_navigation(self):
+        self.client.force_login(self.admin)
+        expected = {'orders': (6, 'Orders'), 'entitlements': (5, 'Entitlements'), 'reviews': (5, 'Reviews')}
+        for section, (column_count, label) in expected.items():
+            with self.subTest(section=section):
+                response = self.client.get(reverse('manage_book_commerce'), {'section': section})
+                self.assertEqual(response.status_code, 200)
+                self.assertContains(
+                    response,
+                    f'<td colspan="{column_count}" class="empty-state">No records found.</td>',
+                    html=True,
+                )
+                self.assertContains(
+                    response,
+                    f'<a class="book-commerce-tab is-active" href="?section={section}" aria-current="page">{label}</a>',
+                    html=True,
+                )
+                content = response.content.decode()
+                commerce_tabs = content.split('<nav class="book-commerce-tabs"', 1)[1].split('</nav>', 1)[0]
+                self.assertEqual(commerce_tabs.count('aria-current="page"'), 1)
+
+    def test_book_commerce_filters_pagination_and_review_moderation(self):
+        self.client.force_login(self.admin)
+        pending_book = self.book(title='Commerce order pending')
+        failed_book = self.book(title='Commerce order failed')
+        BookOrder.objects.create(
+            user=self.student, book=pending_book, original_price=Decimal('12.00'),
+            amount=Decimal('12.00'), status=BookOrder.Status.PENDING,
+        )
+        BookOrder.objects.create(
+            user=self.student, book=failed_book, original_price=Decimal('15.00'),
+            amount=Decimal('15.00'), status=BookOrder.Status.FAILED,
+        )
+        response = self.client.get(reverse('manage_book_commerce'), {
+            'section': 'orders', 'q': 'Commerce order', 'status': 'pending',
+        })
+        self.assertContains(response, 'Commerce order pending')
+        self.assertNotContains(response, 'Commerce order failed')
+        self.assertContains(response, '<option value="pending" selected>Pending</option>', html=True)
+
+        active_book = self.book(title='Commerce active entitlement')
+        revoked_book = self.book(title='Commerce revoked entitlement')
+        BookEntitlement.objects.create(user=self.student, book=active_book, source=BookEntitlement.Source.FREE)
+        BookEntitlement.objects.create(
+            user=self.student, book=revoked_book, source=BookEntitlement.Source.FREE,
+            revoked_at=timezone.now(),
+        )
+        response = self.client.get(reverse('manage_book_commerce'), {
+            'section': 'entitlements', 'q': 'Commerce', 'status': 'active',
+        })
+        self.assertContains(response, 'Commerce active entitlement')
+        self.assertNotContains(response, 'Commerce revoked entitlement')
+        self.assertContains(response, '<option value="active" selected>Active</option>', html=True)
+        response = self.client.get(reverse('manage_book_commerce'), {
+            'section': 'entitlements', 'q': 'Commerce', 'status': 'revoked',
+        })
+        self.assertContains(response, 'Commerce revoked entitlement')
+        self.assertNotContains(response, 'Commerce active entitlement')
+
+        visible = self.book(title='Commerce visible review')
+        review = BookReview.objects.create(book=visible, user=self.student, rating=5, review='Useful')
+        for index in range(26):
+            page_book = self.book(title=f'Commerce page {index:02d}')
+            BookReview.objects.create(book=page_book, user=self.student, rating=4)
+        response = self.client.get(reverse('manage_book_commerce'), {
+            'section': 'reviews', 'q': 'Commerce', 'status': 'visible',
+        })
+        self.assertEqual(response.context['page'].paginator.count, 27)
+        self.assertTrue(response.context['page'].has_next())
+        self.assertContains(response, 'section=reviews&amp;q=Commerce&amp;status=visible&amp;page=2')
+        response = self.client.get(reverse('manage_book_commerce'), {
+            'section': 'reviews', 'q': 'Commerce', 'status': 'visible', 'page': 2,
+        })
+        self.assertEqual(response.context['page'].number, 2)
+        self.assertEqual(len(response.context['page'].object_list), 2)
+
+        response = self.client.post(reverse('manage_book_commerce'), {
+            'review_id': review.pk, 'action': 'hide',
+        })
+        self.assertRedirects(response, reverse('manage_book_commerce') + '?section=reviews', fetch_redirect_response=False)
+        review.refresh_from_db()
+        self.assertTrue(review.is_hidden)
+        response = self.client.get(reverse('manage_book_commerce'), {
+            'section': 'reviews', 'q': 'Commerce visible', 'status': 'hidden',
+        })
+        self.assertContains(response, 'Commerce visible review')
+        self.assertContains(response, 'Restore review')
+        response = self.client.post(reverse('manage_book_commerce'), {
+            'review_id': review.pk, 'action': 'show',
+        })
+        self.assertRedirects(response, reverse('manage_book_commerce') + '?section=reviews', fetch_redirect_response=False)
+        review.refresh_from_db()
+        self.assertFalse(review.is_hidden)
 
     def test_admin_deletion_requires_confirmation_and_retains_files(self):
         response = self.upload()

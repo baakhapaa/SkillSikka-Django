@@ -3,11 +3,13 @@ from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.db.models import Count, ProtectedError, Q, Sum
+from django.db.models import CharField, Count, ProtectedError, Q, Sum, Value
+from django.db.models.functions import Cast, Replace
 from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
 
@@ -37,6 +39,7 @@ from .models import (
 	Event,
 	EBook,
 	BookChapter,
+	BootcampProfile,
 	Payment,
 	AdminAuditLog,
 	CertificateCriteria,
@@ -95,7 +98,7 @@ def dashboard(request):
 		messages.error(request, 'The dashboard is available to administrators only.')
 		return redirect('login')
 
-	users = User.objects.select_related('role').order_by('-created_at')
+	users = User.objects.select_related('role').order_by('-created_at', '-pk')
 	stats = {
 		'total_users': users.count(),
 		'pending_reviews': users.filter(verification_status='pending').count(),
@@ -134,18 +137,81 @@ def manage_geography(request):
 				messages.success(request, f'{record.__class__.__name__} "{record.name}" added successfully.')
 				return redirect('manage_geography')
 
+	querysets = {
+		'province': Province.objects.order_by('name', 'pk'),
+		'district': District.objects.select_related('province').order_by('province__name', 'name', 'pk'),
+		'municipality': Municipality.objects.select_related('district__province').order_by(
+			'district__province__name', 'district__name', 'name', 'pk'),
+		'school': School.objects.select_related('municipality__district__province').order_by(
+			'municipality__district__province__name', 'municipality__district__name', 'municipality__name', 'name', 'pk'),
+		'grade': Grade.objects.order_by('name', 'pk'),
+	}
+	searches = {name: request.GET.get(f'{name}_q', '').strip() for name in querysets}
+	if searches['province']:
+		querysets['province'] = querysets['province'].filter(name__icontains=searches['province'])
+	if searches['district']:
+		querysets['district'] = querysets['district'].filter(
+			Q(name__icontains=searches['district']) | Q(province__name__icontains=searches['district']))
+	if searches['municipality']:
+		querysets['municipality'] = querysets['municipality'].filter(
+			Q(name__icontains=searches['municipality']) | Q(district__name__icontains=searches['municipality'])
+			| Q(district__province__name__icontains=searches['municipality']))
+	if searches['school']:
+		querysets['school'] = querysets['school'].filter(
+			Q(name__icontains=searches['school']) | Q(sector__icontains=searches['school'])
+			| Q(municipality__name__icontains=searches['school'])
+			| Q(municipality__district__name__icontains=searches['school'])
+			| Q(municipality__district__province__name__icontains=searches['school']))
+	if searches['grade']:
+		querysets['grade'] = querysets['grade'].filter(name__icontains=searches['grade'])
+
+	page_size = 20
+	pages, counts, controls = {}, {}, {}
+	for name, queryset in querysets.items():
+		page_key = f'{name}_page'
+		page = Paginator(queryset, page_size).get_page(request.GET.get(page_key))
+		pages[name] = page
+		counts[name] = page.paginator.count
+		page_params = request.GET.copy()
+		page_params.pop(page_key, None)
+		clear_params = request.GET.copy()
+		clear_params.pop(f'{name}_q', None)
+		clear_params.pop(page_key, None)
+		hidden = []
+		for other_name in querysets:
+			if other_name != name:
+				other_search = f'{other_name}_q'
+				if request.GET.get(other_search):
+					hidden.append((other_search, request.GET[other_search]))
+			other_page = f'{other_name}_page'
+			if other_page != page_key and request.GET.get(other_page):
+				hidden.append((other_page, request.GET[other_page]))
+		controls[name] = {
+			'hidden': hidden,
+			'clear_query': clear_params.urlencode(),
+			'page_query': page_params.urlencode(),
+		}
+
 	return render(request, 'admin/geography.html', {
 		'forms': forms,
-		'provinces': Province.objects.order_by('name'),
-		'districts': District.objects.select_related('province').order_by('province__name', 'name'),
-		'municipalities': Municipality.objects.select_related('district__province').order_by('district__province__name', 'district__name', 'name'),
-		'grades': Grade.objects.order_by('name'),
-		'schools': School.objects.select_related('municipality__district__province').order_by('name'),
+		'provinces': pages['province'], 'province_count': counts['province'], 'province_q': searches['province'],
+		'districts': pages['district'], 'district_count': counts['district'], 'district_q': searches['district'],
+		'municipalities': pages['municipality'], 'municipality_count': counts['municipality'], 'municipality_q': searches['municipality'],
+		'schools': pages['school'], 'school_count': counts['school'], 'school_q': searches['school'],
+		'grades': pages['grade'], 'grade_count': counts['grade'], 'grade_q': searches['grade'],
+		'geo_controls': controls,
 	})
 
 
 def is_admin(user):
 	return user.is_superuser or getattr(user.role, 'name', '') == 'super_admin'
+
+
+def _admin_query_string(request):
+	"""Keep active filters in pagination links without carrying the old page."""
+	params = request.GET.copy()
+	params.pop('page', None)
+	return params.urlencode()
 
 
 @login_required
@@ -167,7 +233,7 @@ def manage_books(request):
 		books = books.filter(category=category)
 	return render(request, 'admin/books.html', {
 		'page': Paginator(books, 25).get_page(request.GET.get('page')),
-		'q': search, 'status': status, 'category': category,
+		'q': search, 'status': status if status in ('published', 'draft') else '', 'category': category,
 		'categories': EBook.objects.exclude(category='').values_list('category', flat=True).distinct().order_by('category'),
 	})
 
@@ -322,13 +388,23 @@ def verification_queue(request):
 		messages.error(request, 'You do not have permission to review verifications.')
 		return redirect('dashboard')
 
+	query = request.GET.get('q', '').strip()
 	pending_users = User.objects.filter(
 		verification_status='pending',
 	).select_related('role').prefetch_related(
 		'verification_documents', 'student_profile', 'instructor_profile',
-	).order_by('created_at')
+	).order_by('created_at', 'pk')
+	if query:
+		pending_users = pending_users.filter(Q(name__icontains=query) | Q(email__icontains=query))
+	page = Paginator(pending_users, 25).get_page(request.GET.get('page'))
+	params = request.GET.copy()
+	params.pop('page', None)
 
-	return render(request, 'admin/verifications.html', {'pending_users': pending_users})
+	return render(request, 'admin/verifications.html', {
+		'pending_users': page,
+		'filters': {'q': query},
+		'query_string': params.urlencode(),
+	})
 
 
 @login_required
@@ -361,6 +437,9 @@ def review_verification(request, user_id):
 		else:
 			messages.error(request, 'Invalid action.')
 
+	next_url = request.POST.get('next', '')
+	if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}, require_https=request.is_secure()):
+		return redirect(next_url)
 	return redirect('verification_queue')
 
 
@@ -388,7 +467,7 @@ def manage_users(request):
 	status_filter = request.GET.get('status', '').strip()
 	verification_filter = request.GET.get('verification', '').strip()
 
-	users = User.objects.select_related('role').order_by('-created_at')
+	users = User.objects.select_related('role').order_by('-created_at', '-pk')
 
 	if query:
 		users = users.filter(Q(name__icontains=query) | Q(email__icontains=query))
@@ -527,9 +606,31 @@ def manage_courses(request):
 			messages.success(request, f'Course "{course.title}" added successfully.')
 			return redirect('manage_courses')
 
+	query = request.GET.get('q', '').strip()
+	type_filter = request.GET.get('type', '').strip()
+	publication_filter = request.GET.get('publication', '').strip()
+	price_filter = request.GET.get('price', '').strip()
+	courses = Course.objects.filter(course_type__in=['academic', 'skill', 'premium']).select_related(
+		'instructor', 'subject', 'grade',
+	).order_by('-created_at', '-pk')
+	if query:
+		courses = courses.filter(
+			Q(title__icontains=query) | Q(description__icontains=query)
+			| Q(instructor__name__icontains=query) | Q(instructor__email__icontains=query)
+		)
+	if type_filter in ('academic', 'skill', 'premium'):
+		courses = courses.filter(course_type=type_filter)
+	if publication_filter in ('published', 'draft'):
+		courses = courses.filter(is_published=publication_filter == 'published')
+	if price_filter in ('paid', 'free'):
+		courses = courses.filter(is_paid=price_filter == 'paid')
+	page = Paginator(courses, 25).get_page(request.GET.get('page'))
 	return render(request, 'admin/courses.html', {
 		'form': form,
-		'courses': Course.objects.filter(course_type__in=['academic', 'skill', 'premium']).select_related('instructor', 'subject', 'grade').order_by('-created_at', '-pk'),
+		'courses': page,
+		'filters': {'q': query, 'type': type_filter, 'publication': publication_filter, 'price': price_filter},
+		'course_types': [choice for choice in Course.COURSE_TYPE_CHOICES if choice[0] != 'bootcamp'],
+		'query_string': _admin_query_string(request),
 	})
 
 
@@ -537,12 +638,45 @@ def manage_courses(request):
 def manage_bootcamps(request):
 	if not is_admin(request.user):
 		return redirect('dashboard')
+	query = request.GET.get('q', '').strip()
+	status_filter = request.GET.get('status', '').strip()
+	publication_filter = request.GET.get('publication', '').strip()
+	start_after_value = request.GET.get('start_after', '').strip()
+	start_before_value = request.GET.get('start_before', '').strip()
+	start_after, start_before = parse_date(start_after_value), parse_date(start_before_value)
 	bootcamps = Course.objects.filter(course_type='bootcamp').select_related('bootcamp_profile', 'instructor').annotate(
 		instructors_count=Count('instructors', distinct=True),
 		lessons_count=Count('lessons', distinct=True),
 		enrolled_count=Count('enrollments', filter=Q(enrollments__status__in=['active', 'completed']), distinct=True),
 	).order_by('-created_at', '-pk')
-	return render(request, 'admin/bootcamps.html', {'bootcamps': bootcamps})
+	if query:
+		bootcamps = bootcamps.filter(
+			Q(title__icontains=query) | Q(description__icontains=query)
+			| Q(bootcamp_profile__venue_name__icontains=query)
+			| Q(bootcamp_profile__short_description__icontains=query)
+			| Q(instructor__name__icontains=query) | Q(instructor__email__icontains=query)
+		)
+	valid_statuses = [value for value, _label in BootcampProfile.STATUS_CHOICES]
+	if status_filter in valid_statuses:
+		bootcamps = bootcamps.filter(bootcamp_profile__status=status_filter)
+	if publication_filter in ('published', 'draft'):
+		bootcamps = bootcamps.filter(is_published=publication_filter == 'published')
+	if start_after:
+		bootcamps = bootcamps.filter(bootcamp_profile__starts_on__gte=start_after)
+	if start_before:
+		bootcamps = bootcamps.filter(bootcamp_profile__starts_on__lte=start_before)
+	page = Paginator(bootcamps, 25).get_page(request.GET.get('page'))
+	return render(request, 'admin/bootcamps.html', {
+		'bootcamps': page,
+		'filters': {
+			'q': query, 'status': status_filter if status_filter in valid_statuses else '',
+			'publication': publication_filter if publication_filter in ('published', 'draft') else '',
+			'start_after': start_after.isoformat() if start_after else '',
+			'start_before': start_before.isoformat() if start_before else '',
+		},
+		'status_choices': BootcampProfile.STATUS_CHOICES,
+		'query_string': _admin_query_string(request),
+	})
 
 
 @login_required
@@ -629,12 +763,18 @@ def manage_bootcamp_content(request, course_id):
 				messages.success(request, f'File "{resource.title}" saved.')
 				return redirect('manage_bootcamp_content', course_id=course.pk)
 		elif action == 'delete_lesson':
-			Lesson.objects.filter(pk=request.POST.get('lesson_id'), course=course).delete()
-			messages.success(request, 'Lesson removed.')
+			deleted, _ = Lesson.objects.filter(pk=request.POST.get('lesson_id'), course=course).delete()
+			if deleted:
+				messages.success(request, 'Lesson removed from this bootcamp.')
+			else:
+				messages.error(request, 'The lesson could not be found; nothing was removed.')
 			return redirect('manage_bootcamp_content', course_id=course.pk)
 		elif action == 'delete_resource':
-			CourseResource.objects.filter(pk=request.POST.get('resource_id'), course=course).delete()
-			messages.success(request, 'File removed.')
+			deleted, _ = CourseResource.objects.filter(pk=request.POST.get('resource_id'), course=course).delete()
+			if deleted:
+				messages.success(request, 'Resource removed from this bootcamp.')
+			else:
+				messages.error(request, 'The resource could not be found; nothing was removed.')
 			return redirect('manage_bootcamp_content', course_id=course.pk)
 		elif action == 'quiz':
 			quiz_form = BootcampQuizForm(request.POST, bootcamp=course, instance=editing_quiz, request=request)
@@ -671,7 +811,7 @@ def manage_bootcamp_content(request, course_id):
 					except ProtectedError:
 						messages.error(request, QUESTION_IN_USE)
 					else:
-						messages.success(request, 'Question removed.')
+						messages.success(request, 'Question removed from the quiz.')
 				return redirect(quiz_url)
 
 	lessons = Lesson.objects.filter(course=course).order_by('day_number', 'order', 'pk')
@@ -777,14 +917,40 @@ def manage_events(request):
 				messages.success(request, f'Event "{event.title}" created.')
 				return redirect('manage_events')
 
+		query = request.GET.get('q', '').strip()
+		publication_filter = request.GET.get('publication', '').strip()
+		start_after_value = request.GET.get('start_after', '').strip()
+		start_before_value = request.GET.get('start_before', '').strip()
+		start_after, start_before = parse_date(start_after_value), parse_date(start_before_value)
 		events = Event.objects.select_related('host', 'district').annotate(
 			registered_count=Count('registrations', filter=Q(registrations__status='registered')),
 			waitlist_count=Count('registrations', filter=Q(registrations__status='waitlisted')),
-		).order_by('-start_at')
+		).order_by('-start_at', '-pk')
+		if query:
+			events = events.filter(
+				Q(title__icontains=query) | Q(description__icontains=query)
+				| Q(venue_name__icontains=query) | Q(city__icontains=query)
+				| Q(host__name__icontains=query) | Q(host__email__icontains=query)
+			)
+		if publication_filter in ('published', 'draft'):
+			events = events.filter(is_published=publication_filter == 'published')
+		if start_after:
+			events = events.filter(start_at__date__gte=start_after)
+		if start_before:
+			events = events.filter(start_at__date__lte=start_before)
+		page = Paginator(events, 25).get_page(request.GET.get('page'))
 
 		return render(request, 'admin/events.html', {
 			'form': form,
-			'events': events,
+			'events': page,
+			'filters': {
+				'q': query,
+				'publication': publication_filter if publication_filter in ('published', 'draft') else '',
+				'start_after': start_after.isoformat() if start_after else '',
+				'start_before': start_before.isoformat() if start_before else '',
+			},
+			'publication_choices': [('published', 'Published'), ('draft', 'Draft')],
+			'query_string': _admin_query_string(request),
 			'now': timezone.now(),
 		})
 
@@ -810,10 +976,22 @@ def edit_event(request, event_id):
 		else:
 			form = EventForm(instance=event)
 
+		registration_query = request.GET.get('registration_q', '').strip()
+		registrations = event.registrations.select_related('user').order_by('created_at', 'pk')
+		if registration_query:
+			registrations = registrations.filter(
+				Q(user__name__icontains=registration_query) | Q(user__email__icontains=registration_query)
+			)
+		registration_page = Paginator(registrations, 25).get_page(request.GET.get('registration_page'))
+		registration_params = request.GET.copy()
+		registration_params.pop('registration_page', None)
+
 		return render(request, 'admin/event_edit.html', {
 			'form': form,
 			'event': event,
-			'registrations': event.registrations.select_related('user'),
+			'registrations': registration_page,
+			'registration_query': registration_query,
+			'registration_query_string': registration_params.urlencode(),
 		})
 
 
@@ -895,7 +1073,7 @@ def manage_banners(request):
 
 		now = timezone.now()
 		banners = _ordered_banners()
-		archived = list(Advertisement.objects.filter(archived_at__isnull=False).order_by('-archived_at'))
+		archived = list(Advertisement.objects.filter(archived_at__isnull=False).order_by('-archived_at', '-pk'))
 		for banner in banners + archived:
 			banner.status = _banner_status(banner, now)
 		return render(request, 'admin/banners.html', {
@@ -1001,7 +1179,7 @@ def manage_payments(request):
 	provider_filter = request.GET.get('provider', '').strip()
 	query = request.GET.get('q', '').strip()
 
-	payments = Payment.objects.select_related('student', 'course').order_by('-created_at')
+	payments = Payment.objects.select_related('student', 'course').order_by('-created_at', '-pk')
 	if status_filter in dict(Payment.STATUS_CHOICES):
 		payments = payments.filter(status=status_filter)
 	if provider_filter in dict(Payment.PROVIDER_CHOICES):
@@ -1067,7 +1245,11 @@ def manage_book_commerce(request):
             review = get_object_or_404(BookReview.objects.select_for_update(), pk=int(review_id))
             review.is_hidden = action == 'hide'
             review.save(update_fields=['is_hidden', 'updated_at'])
-        return redirect('manage_book_commerce')
+        messages.success(request, 'Review hidden from readers.' if review.is_hidden else 'Review restored for readers.')
+        next_url = request.POST.get('next', '')
+        if next_url and url_has_allowed_host_and_scheme(next_url, allowed_hosts={request.get_host()}, require_https=request.is_secure()):
+            return redirect(next_url)
+        return redirect(f"{reverse('manage_book_commerce')}?section=reviews")
 
     groups = {
         'orders': BookOrder.objects.all(),
@@ -1082,13 +1264,23 @@ def manage_book_commerce(request):
         rows = rows.select_related('order')
     term = request.GET.get('q', '').strip()
     if term:
-        rows = rows.filter(Q(book__title__icontains=term) | Q(user__name__icontains=term) | Q(user__email__icontains=term))
+        search_filter = Q(book__title__icontains=term) | Q(user__name__icontains=term) | Q(user__email__icontains=term)
+        if section == 'orders':
+            reference_term = term.replace('-', '').strip()
+            if reference_term and all(char in '0123456789abcdefABCDEF' for char in reference_term):
+                rows = rows.annotate(
+                    reference_text=Replace(Cast('reference', output_field=CharField()), Value('-'), Value('')),
+                )
+                search_filter |= Q(reference_text__icontains=reference_term)
+        rows = rows.filter(search_filter)
     status = request.GET.get('status', '')
     statuses = {
         'orders': BookOrder.Status.values,
         'entitlements': ['active', 'revoked'],
         'reviews': ['visible', 'hidden'],
     }[section]
+    if status not in statuses:
+        status = ''
     if status in statuses:
         if section == 'orders':
             rows = rows.filter(status=status)

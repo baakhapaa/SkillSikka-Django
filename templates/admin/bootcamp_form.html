@@ -5,7 +5,7 @@
 .bootcamp-form{background:var(--white);border:1px solid var(--line);padding:24px;border-radius:4px;box-shadow:var(--shadow);max-width:900px}.bootcamp-form select,.bootcamp-form textarea{width:100%;padding:15px 16px;border:1px solid #d7e1df;border-radius:3px;font:inherit;color:var(--ink)}.bootcamp-form input[type=checkbox]{width:auto}.bootcamp-form .errorlist{color:#b64b45}.bootcamp-form .helptext{display:block;color:var(--muted);font-size:13px}
 </style>
 <div class="app-shell">
-    {% include 'admin/bootcamp_sidebar.html' %}
+    {% include 'admin/sidebar.html' %}
     <main class="dashboard-main">
         <header class="topbar"><div><p class="eyebrow">ICT &amp; AI Bootcamp</p><h1>{{ heading }}</h1>{% if course %}<p>{{ course.title }}</p>{% endif %}</div><a class="outline-button" href="{% url 'manage_bootcamps' %}">Back to bootcamps</a></header>
         {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
